@@ -4,6 +4,7 @@ import os
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -106,6 +107,9 @@ def test_real_ftp_and_ftps_listing_is_recursive_and_uses_utc_mdtm(
         ssl_mode="preferred",
     ).normalized()
     transport = FtpTransport(connection, secret="password")
+    target = BytesIO(b"to")
+    target.seek(2)
+    restarts = []
     with transport:
         result = transport.list_files(
             connection.remote_paths,
@@ -113,12 +117,24 @@ def test_real_ftp_and_ftps_listing_is_recursive_and_uses_utc_mdtm(
             max_depth=1,
         )
         metadata = transport.stat("/entrada/today.csv")
+        transfer = transport.download_to(
+            "/entrada/today.csv",
+            target,
+            offset=2,
+            block_size=1024,
+            on_chunk=lambda chunk: None,
+            on_restart=lambda: restarts.append(True),
+        )
     assert {item.name for item in result.files} == {"today.csv", "deep.csv"}
     assert result.warnings == ()
     assert all(item.timestamp_source == "MDTM" for item in result.files)
     assert metadata.size_bytes == 5
     assert metadata.mtime_utc is not None
     assert metadata.mtime_utc.tzinfo == timezone.utc
+    assert target.getvalue() == b"today"
+    assert transfer.resumed_from == 2
+    assert transfer.resume_supported
+    assert restarts == []
 
 
 def _create_certificate(path: Path) -> Path:

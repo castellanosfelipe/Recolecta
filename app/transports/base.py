@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import BinaryIO, Callable
 from types import TracebackType
 
 
@@ -53,6 +54,15 @@ class ListingResult:
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True)
+class TransferResult:
+    """Protocol result needed to audit resume behavior."""
+
+    bytes_received: int
+    resumed_from: int
+    resume_supported: bool = True
+
+
 class Transport(ABC):
     """Synchronous listing/stat interface shared by every protocol."""
 
@@ -89,3 +99,16 @@ class Transport(ABC):
     @abstractmethod
     def stat(self, remote_path: str) -> RemoteFile:
         """Return current metadata for one remote file."""
+
+    @abstractmethod
+    def download_to(
+        self,
+        remote_path: str,
+        target: BinaryIO,
+        *,
+        offset: int,
+        block_size: int,
+        on_chunk: Callable[[bytes], None],
+        on_restart: Callable[[], None],
+    ) -> TransferResult:
+        """Stream a remote file into an already opened staging file."""

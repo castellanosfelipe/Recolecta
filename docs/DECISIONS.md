@@ -59,3 +59,27 @@ FTP consulta `MDTM` por archivo, usa el dato `modify` de `MLSD` si `MDTM` no est
 ## D-015 · Adaptadores de metadatos sin lectura de contenido
 
 SFTP usa `listdir_attr` y TOFU en `data/known_hosts`; WebDAV usa `PROPFIND` con `getlastmodified`; SMB usa `stat` sobre UNC y puede establecer credenciales explícitas con `WNetAddConnection2`. Ningún adaptador de Fase 2 ejecuta comandos de descarga.
+
+## D-016 · Staging determinista por identidad remota
+
+El `.part` usa un UUIDv5 derivado de conexión, ruta remota, mtime y tamaño. Sigue teniendo un nombre opaco, pero puede localizarse tras reiniciar sin persistir un nombre aleatorio adicional. Un cambio real del archivo remoto produce otro staging y evita mezclar contenidos.
+
+## D-017 · Publicación atómica después de integridad
+
+El staging vive bajo el mismo `dest_root` que el archivo definitivo. Después de `flush`, `fsync` y validación de tamaño/SHA-256, `os.replace` publica el archivo atómicamente. No se crea ninguna carpeta ni sesión remota si falla el pre-flight de espacio.
+
+## D-018 · Hash de parciales antes de reanudar
+
+Con SHA-256, un proceso reiniciado lee una vez el parcial existente para reconstruir el estado del hash y continúa actualizándolo con los bloques de red. Nunca relee el archivo completo después de terminar. En modo `size`, el parcial no se relee.
+
+## D-019 · Reinicio controlado cuando resume no está disponible
+
+FTP intenta `REST`, SFTP hace `seek` y WebDAV exige `206` para un `Range`. Si el servidor rechaza la operación o responde `200`, el transporte trunca el staging, reinicia los contadores/hash y registra `resume_supported=false`.
+
+## D-020 · Saneamiento y truncación resistente a colisiones
+
+Los componentes Windows se limpian de caracteres inválidos, nombres reservados y terminaciones prohibidas. Las rutas remotas con `..`, drive o UNC se rechazan. Si MAX_PATH obliga a truncar, se preserva la extensión y se incorpora un hash corto del nombre original para reducir colisiones.
+
+## D-021 · Cortesía compartida entre trabajadores
+
+El motor usa un lock breve por host para espaciar aperturas, un semáforo global y un token bucket compartido por conexión. Los reintentos aplican backoff exponencial con jitter; autenticación, permisos e integridad no se reintentan.

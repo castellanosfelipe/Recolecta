@@ -6,11 +6,12 @@ import posixpath
 import stat as stat_module
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO, Callable
 
 import paramiko
 
 from app.models import AuthType, Connection
-from app.transports.base import ListingResult, RemoteFile, Transport
+from app.transports.base import ListingResult, RemoteFile, TransferResult, Transport
 
 
 class SftpTransport(Transport):
@@ -101,6 +102,43 @@ class SftpTransport(Transport):
         path = _normalize(remote_path)
         attributes = sftp.lstat(path)
         return _attributes_to_file(path, attributes)
+
+    def download_to(
+        self,
+        remote_path: str,
+        target: BinaryIO,
+        *,
+        offset: int,
+        block_size: int,
+        on_chunk: Callable[[bytes], None],
+        on_restart: Callable[[], None],
+    ) -> TransferResult:
+        sftp = self._require_client()
+        path = _normalize(remote_path)
+        bytes_received = 0
+        resumed_from = offset
+        resume_supported = True
+        with sftp.open(path, "rb") as remote:
+            if offset:
+                try:
+                    remote.seek(offset)
+                except Exception:
+                    target.seek(0)
+                    target.truncate(0)
+                    on_restart()
+                    resumed_from = 0
+                    resume_supported = False
+                    remote.seek(0)
+            while True:
+                chunk = remote.read(block_size)
+                if not chunk:
+                    break
+                on_chunk(chunk)
+                written = target.write(chunk)
+                if written != len(chunk):
+                    raise OSError("No fue posible escribir el bloque SFTP completo.")
+                bytes_received += len(chunk)
+        return TransferResult(bytes_received, resumed_from, resume_supported)
 
     def _walk(
         self,

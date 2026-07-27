@@ -6,9 +6,10 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO, Callable
 
 from app.models import Connection
-from app.transports.base import ListingResult, RemoteFile, Transport
+from app.transports.base import ListingResult, RemoteFile, TransferResult, Transport
 
 
 _UNC_SHARE = re.compile(r"^(\\\\[^\\]+\\[^\\]+)")
@@ -69,6 +70,32 @@ class SmbTransport(Transport):
         if not path.exists() and not path.is_symlink():
             raise FileNotFoundError(f"No existe el archivo SMB {path}.")
         return _path_to_remote_file(path)
+
+    def download_to(
+        self,
+        remote_path: str,
+        target: BinaryIO,
+        *,
+        offset: int,
+        block_size: int,
+        on_chunk: Callable[[bytes], None],
+        on_restart: Callable[[], None],
+    ) -> TransferResult:
+        path = self._resolve(remote_path)
+        self._ensure_credentials(path)
+        bytes_received = 0
+        with path.open("rb") as remote:
+            remote.seek(offset)
+            while True:
+                chunk = remote.read(block_size)
+                if not chunk:
+                    break
+                on_chunk(chunk)
+                written = target.write(chunk)
+                if written != len(chunk):
+                    raise OSError("No fue posible escribir el bloque SMB completo.")
+                bytes_received += len(chunk)
+        return TransferResult(bytes_received, offset, True)
 
     def _walk(
         self,

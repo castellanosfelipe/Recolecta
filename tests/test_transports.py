@@ -3,6 +3,7 @@ import stat
 import sys
 from dataclasses import replace
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 
 import httpx
@@ -95,6 +96,48 @@ def test_ftp_list_fallback_marks_timestamp_unreliable() -> None:
     assert result.files[0].timestamp_source == "LIST"
 
 
+def test_ftp_resumes_with_rest_and_restarts_when_unsupported() -> None:
+    class DownloadFtp:
+        def __init__(self, supports_rest: bool):
+            self.supports_rest = supports_rest
+
+        def retrbinary(
+            self, command, callback, blocksize=8192, rest=None
+        ):
+            if rest and not self.supports_rest:
+                from ftplib import error_perm
+
+                raise error_perm("500 REST not understood")
+            content = b"abcdefgh"
+            start = rest or 0
+            for index in range(start, len(content), blocksize):
+                callback(content[index : index + blocksize])
+            return "226 Transfer complete"
+
+    for supports_rest, expected_resume in ((True, 3), (False, 0)):
+        target = BytesIO(b"abc")
+        target.seek(3)
+        restarts = []
+        transport = FtpTransport(
+            connection(Protocol.FTP),
+            secret="x",
+            client=DownloadFtp(supports_rest),
+        )
+        with transport:
+            result = transport.download_to(
+                "/root/a.bin",
+                target,
+                offset=3,
+                block_size=2,
+                on_chunk=lambda chunk: None,
+                on_restart=lambda: restarts.append(True),
+            )
+        assert target.getvalue() == b"abcdefgh"
+        assert result.resumed_from == expected_resume
+        assert result.resume_supported is supports_rest
+        assert bool(restarts) is (not supports_rest)
+
+
 class FakeSftp:
     def __init__(self) -> None:
         self.entries = {
@@ -176,6 +219,32 @@ def test_sftp_connect_enables_tofu_and_disables_ambient_credentials(
     assert ssh.arguments["password"] == "password"
 
 
+def test_sftp_download_seeks_to_partial_offset(tmp_path: Path) -> None:
+    class DownloadSftp(FakeSftp):
+        def open(self, path, mode):
+            return BytesIO(b"abcdefgh")
+
+    target = BytesIO(b"abc")
+    target.seek(3)
+    transport = SftpTransport(
+        connection(Protocol.SFTP),
+        secret="x",
+        known_hosts=tmp_path / "known_hosts",
+        sftp_client=DownloadSftp(),
+    )
+    with transport:
+        result = transport.download_to(
+            "/root/a.bin",
+            target,
+            offset=3,
+            block_size=2,
+            on_chunk=lambda chunk: None,
+            on_restart=lambda: None,
+        )
+    assert target.getvalue() == b"abcdefgh"
+    assert result.resumed_from == 3
+
+
 def _dav_multistatus(entries: list[tuple[str, bool, int | None]]) -> bytes:
     responses = []
     for path, is_directory, size in entries:
@@ -239,6 +308,45 @@ def test_webdav_propfind_lists_recursively_and_never_uses_get() -> None:
     client.close()
 
 
+def test_webdav_range_resume_and_200_restart() -> None:
+    content = b"abcdefgh"
+    for supports_range, expected_resume in ((True, 3), (False, 0)):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "GET"
+            if supports_range:
+                assert request.headers["Range"] == "bytes=3-"
+                return httpx.Response(
+                    206,
+                    content=content[3:],
+                    headers={"Content-Range": "bytes 3-7/8"},
+                )
+            return httpx.Response(200, content=content)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        target = BytesIO(b"abc")
+        target.seek(3)
+        restarts = []
+        transport = WebDavTransport(
+            connection(Protocol.WEBDAV),
+            secret="x",
+            client=client,
+        )
+        with transport:
+            result = transport.download_to(
+                "/root/a.bin",
+                target,
+                offset=3,
+                block_size=2,
+                on_chunk=lambda chunk: None,
+                on_restart=lambda: restarts.append(True),
+            )
+        assert target.getvalue() == content
+        assert result.resumed_from == expected_resume
+        assert result.resume_supported is supports_range
+        assert bool(restarts) is (not supports_range)
+        client.close()
+
+
 def test_smb_lists_local_tree_for_development(tmp_path: Path) -> None:
     root = tmp_path / "share"
     nested = root / "nested"
@@ -263,6 +371,28 @@ def test_smb_lists_local_tree_for_development(tmp_path: Path) -> None:
     assert metadata.mtime_utc == datetime(
         2026, 7, 26, 3, 4, 5, tzinfo=timezone.utc
     )
+
+
+def test_smb_download_resumes_from_offset(tmp_path: Path) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"abcdefgh")
+    target = BytesIO(b"abc")
+    target.seek(3)
+    transport = SmbTransport(
+        connection(Protocol.SMB, remote_paths=(str(source),)),
+        secret=None,
+    )
+    with transport:
+        result = transport.download_to(
+            str(source),
+            target,
+            offset=3,
+            block_size=2,
+            on_chunk=lambda chunk: None,
+            on_restart=lambda: None,
+        )
+    assert target.getvalue() == b"abcdefgh"
+    assert result.resumed_from == 3
 
 
 def test_smb_builds_netresource_for_explicit_credentials(

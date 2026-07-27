@@ -166,6 +166,18 @@ class RecordingTransport(Transport):
     def stat(self, remote_path: str) -> RemoteFile:
         raise AssertionError("dry-run no necesita stat ni descarga")
 
+    def download_to(
+        self,
+        remote_path,
+        target,
+        *,
+        offset,
+        block_size,
+        on_chunk,
+        on_restart,
+    ):
+        raise AssertionError("dry-run no descarga contenido")
+
 
 def test_dry_run_only_lists_and_closes_transport() -> None:
     started = datetime(2026, 7, 27, 2, tzinfo=timezone.utc)

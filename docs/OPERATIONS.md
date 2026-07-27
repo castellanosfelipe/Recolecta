@@ -15,3 +15,9 @@ Nunca copie una base de datos con secretos DPAPI a otra máquina esperando que p
 ## Advertencia `timestamp_unreliable`
 
 Indica que un FTP antiguo no soportó `MDTM` ni `MLSD` y fue necesario interpretar `LIST`. La corrida puede continuar como parcial, pero la zona y la precisión del timestamp no están garantizadas. Solicite habilitar RFC 3659 en el servidor o use `since_last_run` con solape suficiente.
+
+## Archivos `.part`
+
+Una cancelación o pérdida de red conserva archivos en `<dest_root>/.staging`. No los renombre ni los copie como archivos terminados. La siguiente corrida de la misma identidad los reanuda; la limpieza de huérfanos solo elimina nombres que no estén referenciados por trabajos pendientes recuperados.
+
+Si aparece `disk_space`, libere al menos el tamaño planificado más 10 % de reserva. El motor aborta antes de abrir conexiones o crear staging.

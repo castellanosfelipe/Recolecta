@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Final
 
 from app.models import (
@@ -21,7 +22,9 @@ from app.models import (
 )
 
 if TYPE_CHECKING:
+    from app.downloader import DownloadOutcome
     from app.platform.secretstore import SecretStore
+    from app.transports.base import RemoteFile
 
 
 MIGRATIONS: Final[dict[int, tuple[str, ...]]] = {
@@ -299,6 +302,168 @@ class ConnectionRepository:
         return self.secret_store.decrypt(token) if token else None
 
 
+class RunRepository:
+    """Persist run/file lifecycle and download outcomes."""
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def start_run(
+        self,
+        *,
+        connection_id: int,
+        trigger: str,
+        window_start_utc: datetime,
+        window_end_utc: datetime,
+        started_at: datetime | None = None,
+    ) -> int:
+        started = started_at or datetime.now(timezone.utc)
+        with self.database.connect() as database:
+            cursor = database.execute(
+                """
+                INSERT INTO runs(
+                    connection_id, trigger, window_start_utc, window_end_utc,
+                    started_at, status
+                ) VALUES (?, ?, ?, ?, ?, 'running')
+                """,
+                (
+                    connection_id,
+                    trigger,
+                    _aware_iso(window_start_utc),
+                    _aware_iso(window_end_utc),
+                    _aware_iso(started),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def add_file(
+        self,
+        *,
+        run_id: int,
+        connection_id: int,
+        remote_file: "RemoteFile",
+        status: str = "pending",
+    ) -> int:
+        with self.database.connect() as database:
+            cursor = database.execute(
+                """
+                INSERT INTO run_files(
+                    run_id, connection_id, remote_path, size_bytes,
+                    mtime_utc, status
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    connection_id,
+                    remote_file.remote_path,
+                    remote_file.size_bytes,
+                    (
+                        remote_file.mtime_utc.isoformat(timespec="seconds")
+                        if remote_file.mtime_utc is not None
+                        else None
+                    ),
+                    status,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def mark_downloading(
+        self, run_file_id: int, *, attempts: int, bytes_done: int
+    ) -> None:
+        with self.database.connect() as database:
+            database.execute(
+                """
+                UPDATE run_files
+                SET status = 'downloading', attempts = ?, bytes_done = ?,
+                    started_at = COALESCE(started_at, ?)
+                WHERE id = ?
+                """,
+                (attempts, bytes_done, utc_now_iso(), run_file_id),
+            )
+
+    def record_download_outcome(
+        self, run_file_id: int, outcome: "DownloadOutcome"
+    ) -> None:
+        status_value = outcome.status.value
+        persisted_status = "pending" if status_value == "cancelled" else status_value
+        finished_at = None if status_value == "cancelled" else utc_now_iso()
+        with self.database.connect() as database:
+            cursor = database.execute(
+                """
+                UPDATE run_files
+                SET local_path = ?, size_bytes = ?, bytes_done = ?, sha256 = ?,
+                    status = ?, attempts = ?, error_type = ?, error_msg = ?,
+                    finished_at = ?, duration_s = ?
+                WHERE id = ?
+                """,
+                (
+                    str(outcome.local_path) if outcome.local_path else None,
+                    outcome.remote_file.size_bytes,
+                    outcome.bytes_done,
+                    outcome.sha256,
+                    persisted_status,
+                    outcome.attempts,
+                    outcome.error_type.value if outcome.error_type else None,
+                    outcome.error_msg,
+                    finished_at,
+                    outcome.duration_s,
+                    run_file_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"No existe el archivo de corrida {run_file_id}.")
+
+    def finish_run(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        error_type: str | None = None,
+        error_msg: str = "",
+    ) -> None:
+        with self.database.connect() as database:
+            counts = database.execute(
+                """
+                SELECT
+                    COUNT(*) AS files_found,
+                    SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END)
+                        AS files_downloaded,
+                    SUM(CASE WHEN status IN ('skipped', 'duplicate') THEN 1 ELSE 0 END)
+                        AS files_skipped,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)
+                        AS files_failed,
+                    SUM(CASE WHEN status = 'ok' THEN bytes_done ELSE 0 END)
+                        AS bytes_downloaded
+                FROM run_files
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            cursor = database.execute(
+                """
+                UPDATE runs
+                SET finished_at = ?, status = ?, files_found = ?,
+                    files_downloaded = ?, files_skipped = ?, files_failed = ?,
+                    bytes_downloaded = ?, error_type = ?, error_msg = ?
+                WHERE id = ?
+                """,
+                (
+                    utc_now_iso(),
+                    status,
+                    counts["files_found"] or 0,
+                    counts["files_downloaded"] or 0,
+                    counts["files_skipped"] or 0,
+                    counts["files_failed"] or 0,
+                    counts["bytes_downloaded"] or 0,
+                    error_type,
+                    error_msg,
+                    run_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"No existe la corrida {run_id}.")
+
+
 def _connection_db_values(
     connection: Connection,
     *,
@@ -386,3 +551,9 @@ def _connection_from_row(row: sqlite3.Row) -> Connection:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _aware_iso(value: datetime) -> str:
+    if value.tzinfo is None:
+        raise ValueError("Los timestamps de corrida deben incluir zona horaria.")
+    return value.astimezone(timezone.utc).isoformat(timespec="microseconds")

@@ -5,13 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timezone
 from email.utils import parsedate_to_datetime
+from typing import BinaryIO, Callable
 from urllib.parse import quote, unquote, urlsplit
 from xml.etree import ElementTree
 
 import httpx
 
 from app.models import Connection, Protocol
-from app.transports.base import ListingResult, RemoteFile, Transport
+from app.transports.base import ListingResult, RemoteFile, TransferResult, Transport
 
 
 _PROPFIND_BODY = b"""<?xml version="1.0" encoding="utf-8"?>
@@ -113,6 +114,49 @@ class WebDavTransport(Transport):
             if not entry.is_directory and entry.file is not None:
                 return entry.file
         raise FileNotFoundError(f"No existe el archivo WebDAV {path}.")
+
+    def download_to(
+        self,
+        remote_path: str,
+        target: BinaryIO,
+        *,
+        offset: int,
+        block_size: int,
+        on_chunk: Callable[[bytes], None],
+        on_restart: Callable[[], None],
+    ) -> TransferResult:
+        client = self._require_client()
+        path = _normalize_path(remote_path)
+        headers = {"Range": f"bytes={offset}-"} if offset else {}
+        bytes_received = 0
+        resumed_from = offset
+        resume_supported = True
+        with client.stream("GET", self._url(path), headers=headers) as response:
+            if offset and response.status_code == 206:
+                content_range = response.headers.get("Content-Range", "")
+                if content_range and not content_range.startswith(f"bytes {offset}-"):
+                    raise RuntimeError(
+                        "WebDAV devolvió un Content-Range distinto del solicitado."
+                    )
+            elif offset and response.status_code == 200:
+                target.seek(0)
+                target.truncate(0)
+                on_restart()
+                resumed_from = 0
+                resume_supported = False
+            else:
+                response.raise_for_status()
+            for chunk in response.iter_bytes(block_size):
+                if not chunk:
+                    continue
+                on_chunk(chunk)
+                written = target.write(chunk)
+                if written != len(chunk):
+                    raise OSError(
+                        "No fue posible escribir el bloque WebDAV completo."
+                    )
+                bytes_received += len(chunk)
+        return TransferResult(bytes_received, resumed_from, resume_supported)
 
     def _walk(
         self,

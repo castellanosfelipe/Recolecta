@@ -7,11 +7,11 @@ import posixpath
 import re
 import ssl
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import BinaryIO, Callable
 from zoneinfo import ZoneInfo
 
 from app.models import Connection, Protocol
-from app.transports.base import ListingResult, RemoteFile, Transport
+from app.transports.base import ListingResult, RemoteFile, TransferResult, Transport
 
 
 _UNIX_LIST_RE = re.compile(
@@ -142,6 +142,58 @@ class FtpTransport(Transport):
             if item.name == name:
                 return item
         raise FileNotFoundError(f"No existe el archivo remoto {path}.")
+
+    def download_to(
+        self,
+        remote_path: str,
+        target: BinaryIO,
+        *,
+        offset: int,
+        block_size: int,
+        on_chunk: Callable[[bytes], None],
+        on_restart: Callable[[], None],
+    ) -> TransferResult:
+        ftp = self._require_client()
+        path = _normalize_remote_path(remote_path)
+        bytes_received = 0
+
+        def write_chunk(chunk: bytes) -> None:
+            nonlocal bytes_received
+            on_chunk(chunk)
+            written = target.write(chunk)
+            if written != len(chunk):
+                raise OSError("No fue posible escribir el bloque FTP completo.")
+            bytes_received += len(chunk)
+
+        if offset > 0:
+            try:
+                ftp.retrbinary(
+                    f"RETR {path}",
+                    write_chunk,
+                    blocksize=block_size,
+                    rest=offset,
+                )
+                return TransferResult(bytes_received, offset, True)
+            except ftplib.error_perm as exc:
+                if not str(exc).startswith(_MLSD_UNSUPPORTED):
+                    raise
+                target.seek(0)
+                target.truncate(0)
+                on_restart()
+                bytes_received = 0
+                ftp.retrbinary(
+                    f"RETR {path}",
+                    write_chunk,
+                    blocksize=block_size,
+                )
+                return TransferResult(bytes_received, 0, False)
+
+        ftp.retrbinary(
+            f"RETR {path}",
+            write_chunk,
+            blocksize=block_size,
+        )
+        return TransferResult(bytes_received, 0, True)
 
     def _walk_mlsd(
         self,
