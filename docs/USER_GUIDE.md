@@ -8,3 +8,11 @@ La guía completa se desarrollará junto con las funciones operativas de las fas
 - Modo B: tarea programada como `SYSTEM`, requiere administrador y permanece activa sin sesión interactiva.
 
 En modo `SYSTEM` no habrá bandeja ni notificaciones de escritorio. El dashboard local seguirá disponible y los secretos deberán cifrarse con DPAPI de máquina.
+
+## Portabilidad de credenciales
+
+- `dpapi:` solo puede descifrarse con la misma cuenta de Windows en el mismo equipo.
+- `dpapi-machine:` solo puede descifrarse en el mismo equipo y requiere conservar `data/.entropy`.
+- `fernet:` requiere la misma `HARVESTER_SECRET_KEY` o el mismo `data/.secret.key`.
+
+Un respaldo de configuración no exportará estos tokens. Después de mover la instalación a otro equipo, vuelva a ingresar las credenciales.

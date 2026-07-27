@@ -7,6 +7,7 @@ import importlib
 import multiprocessing
 import sys
 from collections.abc import Sequence
+from zoneinfo import ZoneInfo
 
 from app import __version__
 from app.config import AppConfig
@@ -15,8 +16,13 @@ from app.logging_setup import configure_logging
 
 SELF_TEST_IMPORTS = (
     "app.config",
+    "app.db",
     "app.errors",
     "app.logging_setup",
+    "app.models",
+    "app.platform.secretstore",
+    "app.platform.secrets_fernet",
+    "cryptography.hazmat.primitives",
 )
 
 
@@ -33,6 +39,7 @@ def run_self_test() -> int:
         config = AppConfig.from_env(create_directories=False)
         if config.port <= 0:
             failures.append("configuración de puerto inválida")
+        ZoneInfo("America/Bogota")
     except Exception as exc:  # pragma: no cover - failure path is diagnostic
         failures.append(f"configuración: {exc}")
 

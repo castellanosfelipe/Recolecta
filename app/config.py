@@ -84,6 +84,14 @@ class AppPaths:
             directory.mkdir(parents=True, exist_ok=True)
         return self
 
+    @property
+    def database(self) -> Path:
+        return self.data / "harvester.db"
+
+    @property
+    def known_hosts(self) -> Path:
+        return self.data / "known_hosts"
+
 
 @dataclass(frozen=True)
 class AppConfig:
