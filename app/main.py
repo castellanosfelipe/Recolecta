@@ -16,14 +16,19 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.alerts import AlertManager, AlertRepository
 from app.api.routes import create_router
 from app.config import AppConfig
 from app.db import ConnectionRepository, Database, RunRepository
+from app.exports import ExportService
 from app.logging_setup import configure_logging
 from app.orchestrator import RunCoordinator
 from app.platform.secretstore import create_secret_store
 from app.platform.single_instance import SingleInstance
+from app.platform.tray_windows import create_tray
 from app.progress import ProgressRegistry
+from app.run_logging import RunLogStore
+from app.retention import RetentionService
 from app.scheduler import SchedulerService, SchedulerSettings
 from app.settings_store import SettingsStore
 from app.throttle import ThrottleManager
@@ -39,6 +44,11 @@ class RuntimeComponents:
     runs: RunRepository
     settings: SettingsStore
     progress: ProgressRegistry
+    run_logs: RunLogStore
+    alert_repository: AlertRepository
+    alerts: AlertManager
+    export_service: ExportService
+    retention: RetentionService
     coordinator: RunCoordinator
     scheduler: SchedulerService
     recovered_runs: int
@@ -56,14 +66,48 @@ def build_runtime(config: AppConfig) -> RuntimeComponents:
     global_parallelism = int(settings.get("concurrency.global", 4))
     throttle = ThrottleManager(global_parallelism=global_parallelism)
     progress = ProgressRegistry(persist_progress=runs.update_file_progress)
+    run_logs = RunLogStore(config.paths.run_logs)
+    alert_repository = AlertRepository(database)
+    alerts = AlertManager(
+        alert_repository,
+        runs,
+        settings,
+        configured_mode=config.mode,
+    )
+    export_service = ExportService(
+        paths=config.paths,
+        runs=runs,
+        connections=connections,
+        settings=settings,
+        run_logs=run_logs,
+    )
+    retention = RetentionService(
+        database,
+        run_logs=config.paths.run_logs,
+        exports=config.paths.exports,
+    )
     coordinator = RunCoordinator(
         database,
         connections,
         config.paths,
         throttle=throttle,
         progress=progress,
+        run_logs=run_logs,
+        alerts=alerts,
+        minimum_spacing_s=float(
+            settings.get("courtesy.minimum_spacing_s", 0)
+        ),
+        reserve_ratio=float(settings.get("disk.reserve_percent", 10)) / 100,
+        global_bandwidth_limit_kbps=(
+            int(settings.get("bandwidth.global_kbps", 0)) or None
+        ),
     )
-    scheduler = SchedulerService(coordinator, connections, runs)
+    scheduler = SchedulerService(
+        coordinator,
+        connections,
+        runs,
+        retention_callback=lambda days: retention.purge(days=days),
+    )
     scheduler.configure(SchedulerSettings.load(settings))
     return RuntimeComponents(
         database,
@@ -71,6 +115,11 @@ def build_runtime(config: AppConfig) -> RuntimeComponents:
         runs,
         settings,
         progress,
+        run_logs,
+        alert_repository,
+        alerts,
+        export_service,
+        retention,
         coordinator,
         scheduler,
         recovered_runs,
@@ -113,6 +162,10 @@ def create_app(config: AppConfig, runtime: RuntimeComponents | None = None) -> F
             settings=components.settings,
             progress=components.progress,
             scheduler=components.scheduler,
+            run_logs=components.run_logs,
+            alert_repository=components.alert_repository,
+            export_service=components.export_service,
+            retention=components.retention,
         )
     )
     resources = _resource_root()
@@ -176,13 +229,30 @@ def run_resident(config: AppConfig | None = None) -> int:
         return 2
     try:
         app = create_app(resolved)
-        uvicorn.run(
-            app,
-            host=resolved.host,
-            port=resolved.port,
-            log_config=None,
-            access_log=False,
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=resolved.host,
+                port=resolved.port,
+                log_config=None,
+                access_log=False,
+            )
         )
+        runtime = app.state.runtime
+        tray = create_tray(
+            configured_mode=resolved.mode,
+            dashboard_url=f"http://127.0.0.1:{resolved.port}",
+            run_all=lambda: runtime.coordinator.execute_all(trigger="manual"),
+            shutdown=lambda: setattr(server, "should_exit", True),
+            status_provider=lambda: _tray_status(runtime),
+        )
+        if tray is not None:
+            tray.start()
+        try:
+            server.run()
+        finally:
+            if tray is not None:
+                tray.stop()
         return 0
     finally:
         guard.release()
@@ -193,3 +263,17 @@ def _resource_root() -> Path:
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS)
     return Path(__file__).resolve().parent.parent
+
+
+def _tray_status(runtime: RuntimeComponents) -> str:
+    if runtime.progress.snapshot()["active"]:
+        return "running"
+    summaries = runtime.runs.dashboard_summary()
+    statuses = {item["last_status"] for item in summaries if item["enabled"]}
+    if "failed" in statuses:
+        return "failed"
+    if "partial" in statuses:
+        return "partial"
+    if "ok" in statuses:
+        return "ok"
+    return "paused"

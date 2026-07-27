@@ -5,6 +5,7 @@
     connections: [],
     runs: [],
     files: [],
+    alerts: [],
     progress: { active: false, active_runs: 0, runs: [] },
     chart: null,
     pollTimer: null,
@@ -160,6 +161,11 @@
     });
   }
 
+  async function loadAlerts() {
+    state.alerts = (await api("/api/alerts?limit=50")).items;
+    renderAlerts();
+  }
+
   function renderSummary(connections) {
     const enabled = connections.filter((item) => item.enabled).length;
     const ok = connections.filter((item) => item.last_status === "ok").length;
@@ -255,7 +261,8 @@
         <td>${statusBadge(file.status)}</td>
         <td>${escapeHtml(formatBytes(file.size_bytes))}</td>
         <td>${escapeHtml(formatDuration(file.duration_s))}</td>
-      </tr>`).join("") : `<tr><td colspan="6">No hay archivos para estos filtros.</td></tr>`;
+        <td>${file.average_bps === null ? "—" : `${escapeHtml(formatBytes(file.average_bps))}/s`}</td>
+      </tr>`).join("") : `<tr><td colspan="7">No hay archivos para estos filtros.</td></tr>`;
   }
 
   function renderConnections() {
@@ -273,6 +280,18 @@
           <button class="btn danger small" data-delete="${item.id}">Eliminar</button>
         </div></td>
       </tr>`).join("") : `<tr><td colspan="6">No hay conexiones configuradas.</td></tr>`;
+  }
+
+  function renderAlerts() {
+    $("#alerts-body").innerHTML = state.alerts.length ? state.alerts.map((alert) => `
+      <tr>
+        <td>${escapeHtml(formatDate(alert.created_at))}</td>
+        <td>${escapeHtml(alert.connection_name || "Sistema")}</td>
+        <td class="mono">${escapeHtml(alert.cause)}</td>
+        <td>${escapeHtml(alert.channel)}</td>
+        <td>${statusBadge(alert.status === "sent" ? "ok" : "failed")}</td>
+        <td class="path-cell" title="${escapeHtml(alert.message)}">${escapeHtml(alert.message)}</td>
+      </tr>`).join("") : `<tr><td colspan="6">No hay alertas registradas.</td></tr>`;
   }
 
   function renderConnectionOptions() {
@@ -414,6 +433,7 @@
           <div><span>Fallidos</span><strong>${run.files_failed || 0}</strong></div>
           <div><span>Volumen</span><strong>${escapeHtml(formatBytes(run.bytes_downloaded))}</strong></div>
         </div>
+        <p><a class="btn secondary small" href="/api/runs/${run.id}/log.jsonl">Descargar log JSONL</a></p>
         <div class="table-panel"><table><thead><tr><th>Archivo</th><th>Estado</th><th>Tamaño</th><th>Error</th></tr></thead><tbody>
           ${run.files.length ? run.files.map((file) => `<tr><td class="path-cell mono">${escapeHtml(file.remote_path)}</td><td>${statusBadge(file.status)}</td><td>${escapeHtml(formatBytes(file.size_bytes))}</td><td>${escapeHtml(file.error_msg || "—")}</td></tr>`).join("") : `<tr><td colspan="4">La corrida no contiene archivos.</td></tr>`}
         </tbody></table></div>`;
@@ -478,6 +498,15 @@
     } catch (error) { toast(error.message, true); }
   }
 
+  async function runRetention() {
+    if (!window.confirm("Se eliminará historial, logs JSONL y exports anteriores al periodo configurado. Las descargas no se tocarán. ¿Continuar?")) return;
+    try {
+      const result = await api("/api/retention/run", { method: "POST" });
+      toast(`Retención completada: ${result.runs_deleted} corrida(s) y ${result.logs_deleted} log(s) eliminados.`);
+      await Promise.all([loadRuns(), loadFiles(), loadAlerts()]);
+    } catch (error) { toast(error.message, true); }
+  }
+
   async function pollProgress() {
     window.clearTimeout(state.pollTimer);
     try {
@@ -496,7 +525,7 @@
 
   async function refreshAll() {
     try {
-      await Promise.all([loadConnections(), loadDashboard(), loadRuns(), loadFiles(), loadSettings()]);
+      await Promise.all([loadConnections(), loadDashboard(), loadRuns(), loadFiles(), loadSettings(), loadAlerts()]);
       $("#api-dot").className = "health-dot ok";
       $("#api-status").textContent = "Operativo";
     } catch (error) {
@@ -515,6 +544,7 @@
     $("#history-filters").addEventListener("submit", (event) => submitFilters(event, "runs"));
     $("#file-filters").addEventListener("submit", (event) => submitFilters(event, "files"));
     $("#settings-form").addEventListener("submit", saveSettings);
+    $("#retention-button").addEventListener("click", runRetention);
     $("[data-close-detail]").addEventListener("click", () => $("#detail-dialog").close());
   }
 

@@ -9,6 +9,7 @@ from datetime import date
 import httpx
 
 from app.config import AppConfig
+from app.logging_setup import redact_secrets
 from app.main import build_runtime
 from app.platform.single_instance import SingleInstance
 
@@ -55,7 +56,10 @@ def execute_run_now(
         )
         return 0
     except Exception as exc:
-        print(f"No fue posible ejecutar la corrida: {exc}")
+        print(
+            "No fue posible ejecutar la corrida: "
+            f"{redact_secrets(exc)}"
+        )
         return 1
     finally:
         guard.release()
@@ -90,10 +94,13 @@ def _delegate(
             response = getattr(exc, "response", None)
             if response is not None:
                 detail = response.text
-            print(f"La instancia residente rechazó la corrida: {detail or exc}")
+            print(
+                "La instancia residente rechazó la corrida: "
+                f"{redact_secrets(detail or exc)}"
+            )
             return 1
     print(
         "FileHarvester está activo, pero su API local no respondió. "
-        f"Último error: {last_error}"
+        f"Último error: {redact_secrets(last_error)}"
     )
     return 1

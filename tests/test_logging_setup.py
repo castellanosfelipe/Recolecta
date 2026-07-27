@@ -24,3 +24,28 @@ def test_configured_log_never_writes_secret(tmp_path: Path) -> None:
     contents = log_path.read_text(encoding="utf-8")
     assert "visible-secret" not in contents
     assert "password=***" in contents
+
+
+def test_redacts_sensitive_query_parameters() -> None:
+    redacted = redact_secrets(
+        "https://hooks.example.test/send?token=real-token&room=ops&sig=abc"
+    )
+    assert "real-token" not in redacted
+    assert "token=***" in redacted
+    assert "sig=***" in redacted
+
+
+def test_configured_log_redacts_exception_traceback(tmp_path: Path) -> None:
+    log_path = configure_logging(tmp_path)
+    try:
+        raise RuntimeError(
+            "Falló https://hooks.test/send?token=traceback-secret"
+        )
+    except RuntimeError:
+        logging.getLogger("test").exception("Falló el webhook")
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    contents = log_path.read_text(encoding="utf-8")
+    assert "traceback-secret" not in contents
+    assert "token=***" in contents
+    assert "Traceback" in contents

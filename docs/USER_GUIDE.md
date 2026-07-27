@@ -1,6 +1,6 @@
 # Guía de usuario
 
-La guía se ampliará con instalación, alertas y respaldo en las fases 6 a 8.
+La guía se ampliará con instalación y empaquetado offline en la Fase 7.
 
 ## Dashboard local
 
@@ -16,6 +16,38 @@ Abra `http://127.0.0.1:8091` mientras FileHarvester está en ejecución. La inte
 El botón **Cancelar corrida** solicita una parada cooperativa. El archivo `.part` se conserva para reanudarlo posteriormente.
 
 Las respuestas del API nunca incluyen la credencial; solo muestran `has_secret`.
+
+## Logs y bundle de soporte
+
+Cada corrida produce `logs/runs/<fecha>_<conexion>_<id>.jsonl`. Registra planificación, inicio de archivo, avance cada 10 %, resultado y cierre. Desde el detalle de Historial puede descargar ese JSONL.
+
+En **Ajustes → Descargar bundle** se genera un ZIP de los últimos siete días con:
+
+- `app.log` y sus rotaciones;
+- logs JSONL recientes;
+- `runs.csv` y `files.csv`;
+- configuración pública sin secretos;
+- reporte HTML autocontenido.
+
+El reporte HTML y los CSV también se descargan por separado. Los valores CSV que podrían interpretarse como fórmulas se neutralizan automáticamente.
+
+La retención predeterminada es 180 días. Purga historial, alertas, JSONL y exports antiguos, pero **jamás borra los archivos descargados**.
+
+## Alertas y bandeja
+
+En Windows con sesión interactiva aparece la bandeja de FileHarvester. Su color resume el estado: verde correcto, amarillo parcial/en curso, rojo fallo y gris pausa. Permite abrir el dashboard, ejecutar todas las conexiones o cerrar el residente.
+
+Los disparadores son corrida fallida, parcial por encima del umbral, credencial rechazada, espacio insuficiente y silencio sospechoso. Cada causa se envía una sola vez por corrida y canal.
+
+El canal de log está siempre activo. En **Ajustes** puede activar toast, SMTP y webhook. Las credenciales no se guardan en SQLite:
+
+```powershell
+$env:HARVESTER_SMTP_USER = "fileharvester"
+$env:HARVESTER_SMTP_PASSWORD = "clave-smtp"
+$env:HARVESTER_ALERT_WEBHOOK_URL = "https://hooks.interno.local/fileharvester"
+```
+
+En modo `SYSTEM` se omiten bandeja y toast; se usa Windows Event Log además de los canales remotos habilitados.
 
 ## Acceso desde la LAN
 

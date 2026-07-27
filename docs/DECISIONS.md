@@ -115,3 +115,27 @@ FastAPI sirve HTML, CSS, JavaScript vanilla y Chart.js 4.4.7 vendorizado. El son
 ## D-029 · API pública de salud y Basic Auth perimetral
 
 Cuando existen las dos variables de credenciales, un middleware protege dashboard, estáticos, documentación y API con comparación constante. `/healthz` siempre queda exento. Exponer a la LAN sin Basic Auth produce una advertencia explícita.
+
+## D-030 · JSONL apendable con progreso por umbrales
+
+Cada corrida abre un archivo propio y hace `flush` después de cada evento. El progreso se registra únicamente cuando cruza un múltiplo del 10 %, mientras la UI conserva granularidad por bloque en memoria. Un corte puede perder como máximo el evento en curso, no el historial previo.
+
+## D-031 · Exports seguros y reproducibles
+
+CSV usa UTF-8 con BOM y antepone una comilla a valores que Excel podría ejecutar como fórmula. El bundle reúne CSV, HTML, configuración pública y logs por un rango común. Las claves sensibles se excluyen y todos los errores persistidos pasan por el mismo redactor de credenciales.
+
+## D-032 · Retención por evidencia, nunca por contenido descargado
+
+Una tarea global a las 03:30 UTC elimina corridas anteriores al periodo configurado; las claves foráneas limpian archivos y alertas relacionados. JSONL y exports se purgan por mtime. `downloads/` no se pasa al servicio de retención y no existe una política automática para borrarlo.
+
+## D-033 · Anti-spam mediante claim transaccional
+
+Antes de enviar, cada canal inserta `(run_id, cause, channel)` en `alerts_log`. El índice único convierte reintentos, reinicios o evaluaciones concurrentes en no-op. La fila termina en `sent` o `failed`, conservando evidencia de entrega sin duplicar avisos.
+
+## D-034 · Integraciones de escritorio cargadas de forma perezosa
+
+`runtime_mode()` separa desarrollo, Windows interactivo y `SYSTEM`. `winotify`, `pystray`, Pillow y Event Log sólo se importan dentro del código que los usa. El residente interactivo crea bandeja; el modo headless conserva dashboard, log, Event Log, SMTP y webhook sin depender de la sesión 0.
+
+## D-035 · Los fallos de listado también son corridas auditables
+
+La ventana se calcula antes de autenticar o listar. Si ese pre-flight falla durante una ejecución real, se crea una corrida `failed`, un JSONL terminal y las alertas correspondientes. El dry-run continúa sin efectos laterales.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import traceback
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Final
@@ -21,6 +22,9 @@ _URL_CREDENTIAL = re.compile(
 _TOKEN_SECRET = re.compile(
     r"(?i)\b(dpapi(?:-machine)?|fernet):[A-Za-z0-9_+/=-]+"
 )
+_QUERY_SECRET = re.compile(
+    r"(?i)([?&](?:token|key|api_key|signature|sig|secret)=)[^&#\s]+"
+)
 
 
 def redact_secrets(value: object) -> str:
@@ -28,6 +32,7 @@ def redact_secrets(value: object) -> str:
     text = str(value)
     text = _KEY_VALUE_SECRET.sub(r"\1\2***", text)
     text = _URL_CREDENTIAL.sub(r"\g<scheme>\g<user>:***@", text)
+    text = _QUERY_SECRET.sub(r"\1***", text)
     return _TOKEN_SECRET.sub(r"\1:***", text)
 
 
@@ -36,6 +41,12 @@ class SensitiveDataFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         rendered = record.getMessage()
+        if record.exc_info:
+            rendered += "\n" + "".join(
+                traceback.format_exception(*record.exc_info)
+            )
+            record.exc_info = None
+            record.exc_text = None
         record.msg = redact_secrets(rendered)
         record.args = ()
         return True

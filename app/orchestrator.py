@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from enum import StrEnum
 from pathlib import PurePosixPath
@@ -13,17 +14,22 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from app.config import AppPaths
+from app.alerts import AlertManager
 from app.db import ConnectionRepository, Database, RunRepository
 from app.downloader import DownloadEngine, DownloadOutcome, DownloadStatus
 from app.errors import ErrorType, HarvesterError, classify_exception
 from app.models import Connection, WindowMode
 from app.progress import ProgressRegistry
+from app.run_logging import RunEventLog, RunLogStore
 from app.throttle import ThrottleManager
 from app.transports import create_transport
 from app.transports.base import ListingResult, RemoteFile, Transport
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -121,6 +127,11 @@ class RunCoordinator:
         *,
         throttle: ThrottleManager | None = None,
         progress: ProgressRegistry | None = None,
+        run_logs: RunLogStore | None = None,
+        alerts: AlertManager | None = None,
+        minimum_spacing_s: float = 0.0,
+        reserve_ratio: float = 0.10,
+        global_bandwidth_limit_kbps: int | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.database = database
@@ -131,6 +142,11 @@ class RunCoordinator:
         self.progress = progress or ProgressRegistry(
             persist_progress=self.runs.update_file_progress
         )
+        self.run_logs = run_logs or RunLogStore(paths.run_logs)
+        self.alerts = alerts
+        self.minimum_spacing_s = minimum_spacing_s
+        self.reserve_ratio = reserve_ratio
+        self.global_bandwidth_limit_kbps = global_bandwidth_limit_kbps
         self.now = now or (lambda: datetime.now(timezone.utc))
         self._state_lock = threading.Lock()
         self._connection_locks: dict[int, threading.Lock] = {}
@@ -163,21 +179,38 @@ class RunCoordinator:
             reference = window_reference_at or actual_started
             if actual_started.tzinfo is None or reference.tzinfo is None:
                 raise ValueError("started_at debe incluir zona horaria.")
-            secret = self.connections.get_secret(connection_id)
             last_end = self.runs.last_successful_end(connection_id)
-            listing_transport = create_transport(
+            expected_window = calculate_window(
                 connection,
-                secret=secret,
-                known_hosts=self.paths.known_hosts,
-            )
-            plan = dry_run(
-                connection,
-                listing_transport,
                 started_at=reference,
-                database=self.database,
                 last_successful_end_utc=last_end,
                 selected_date=selected_date,
             )
+            try:
+                secret = self.connections.get_secret(connection_id)
+                listing_transport = create_transport(
+                    connection,
+                    secret=secret,
+                    known_hosts=self.paths.known_hosts,
+                )
+                plan = dry_run(
+                    connection,
+                    listing_transport,
+                    started_at=reference,
+                    database=self.database,
+                    last_successful_end_utc=last_end,
+                    selected_date=selected_date,
+                )
+            except Exception as exc:
+                if not dry_run_only:
+                    self._record_preflight_failure(
+                        connection,
+                        trigger=trigger,
+                        started_at=actual_started,
+                        window=expected_window,
+                        exc=exc,
+                    )
+                raise
             if dry_run_only:
                 return RunExecution(
                     connection_id,
@@ -255,6 +288,21 @@ class RunCoordinator:
             window_end_utc=plan.window.end_utc,
             started_at=started_at,
         )
+        run_log = self.run_logs.create(
+            run_id=run_id,
+            connection_name=connection.name,
+            started_at=started_at,
+        )
+        run_log.write(
+            "run_started",
+            run_id=run_id,
+            connection_id=connection.id,
+            connection_name=connection.name,
+            trigger=trigger,
+            window_start_utc=plan.window.start_utc.isoformat(),
+            window_end_utc=plan.window.end_utc.isoformat(),
+            warnings=list(plan.warnings),
+        )
         file_ids: dict[
             tuple[str, str | None, int | None], int
         ] = {}
@@ -270,6 +318,20 @@ class RunCoordinator:
                 connection_id=connection.id,
                 remote_file=item.file,
                 status=persisted_status,
+            )
+            run_log.write(
+                "file_planned",
+                run_file_id=file_id,
+                remote_path=item.file.remote_path,
+                size_bytes=item.file.size_bytes,
+                mtime_utc=(
+                    item.file.mtime_utc.isoformat()
+                    if item.file.mtime_utc is not None
+                    else None
+                ),
+                status=persisted_status,
+                plan_status=item.status.value,
+                reason=item.reason,
             )
             if item.status == PlanStatus.PLANNED:
                 file_ids[item.file.identity] = file_id
@@ -291,9 +353,21 @@ class RunCoordinator:
         cancel = threading.Event()
         with self._state_lock:
             self._cancel_events[run_id] = cancel
+        started_files: set[int] = set()
+        logged_percent: dict[int, int] = {}
+        event_lock = threading.Lock()
         try:
+            engine_connection = connection
+            if (
+                connection.bandwidth_limit_kbps is None
+                and self.global_bandwidth_limit_kbps
+            ):
+                engine_connection = replace(
+                    connection,
+                    bandwidth_limit_kbps=self.global_bandwidth_limit_kbps,
+                )
             engine = DownloadEngine(
-                connection,
+                engine_connection,
                 portable_root=self.paths.root,
                 transport_factory=lambda: create_transport(
                     connection,
@@ -301,21 +375,55 @@ class RunCoordinator:
                     known_hosts=self.paths.known_hosts,
                 ),
                 throttle=self.throttle,
+                minimum_spacing_s=self.minimum_spacing_s,
+                reserve_ratio=self.reserve_ratio,
             )
 
             def persist(outcome: DownloadOutcome) -> None:
                 file_id = file_ids[outcome.remote_file.identity]
                 self.runs.record_download_outcome(file_id, outcome)
                 self.progress.finish_file(run_id, file_id, outcome)
+                _log_outcome(run_log, file_id, outcome)
 
             def report_progress(
                 remote_file: RemoteFile,
                 bytes_done: int,
                 size_bytes: int | None,
             ) -> None:
+                file_id = file_ids[remote_file.identity]
+                with event_lock:
+                    if file_id not in started_files:
+                        started_files.add(file_id)
+                        run_log.write(
+                            "file_started",
+                            run_file_id=file_id,
+                            remote_path=remote_file.remote_path,
+                            size_bytes=size_bytes,
+                            worker=threading.current_thread().name,
+                        )
+                    if size_bytes and size_bytes > 0:
+                        bucket = min(
+                            100, int(bytes_done * 100 / size_bytes) // 10 * 10
+                        )
+                        previous_bucket = logged_percent.get(file_id, 0)
+                        if bucket >= 10 and bucket > previous_bucket:
+                            logged_percent[file_id] = bucket
+                            for threshold in range(
+                                previous_bucket + 10,
+                                bucket + 1,
+                                10,
+                            ):
+                                run_log.write(
+                                    "file_progress",
+                                    run_file_id=file_id,
+                                    remote_path=remote_file.remote_path,
+                                    bytes_done=bytes_done,
+                                    size_bytes=size_bytes,
+                                    percent=threshold,
+                                )
                 self.progress.update_file(
                     run_id,
-                    file_ids[remote_file.identity],
+                    file_id,
                     bytes_done,
                     size_bytes=size_bytes,
                     worker=threading.current_thread().name,
@@ -330,6 +438,27 @@ class RunCoordinator:
             )
             status = _run_status(outcomes, plan.warnings)
             self.runs.finish_run(run_id, status=status)
+            run_log.write(
+                "run_finished",
+                run_id=run_id,
+                status=status,
+                files_found=len(plan.items),
+                files_planned=len(plan.files_to_download),
+                outcomes={
+                    outcome_status.value: sum(
+                        outcome.status == outcome_status
+                        for outcome in outcomes
+                    )
+                    for outcome_status in DownloadStatus
+                },
+                bytes_downloaded=sum(
+                    outcome.bytes_done
+                    for outcome in outcomes
+                    if outcome.status == DownloadStatus.OK
+                ),
+            )
+            if self.alerts is not None:
+                self._evaluate_alerts(run_id)
             return RunExecution(
                 connection.id,
                 run_id,
@@ -351,16 +480,84 @@ class RunCoordinator:
                 error_type=error_type.value,
                 error_msg=str(exc),
             )
+            run_log.write(
+                "run_finished",
+                run_id=run_id,
+                status="failed",
+                error_type=error_type.value,
+                error_msg=str(exc),
+            )
+            if self.alerts is not None:
+                self._evaluate_alerts(run_id)
             raise
         finally:
             self.progress.finish_run(run_id)
             with self._state_lock:
                 self._cancel_events.pop(run_id, None)
 
+    def _record_preflight_failure(
+        self,
+        connection: Connection,
+        *,
+        trigger: str,
+        started_at: datetime,
+        window: TimeWindow,
+        exc: Exception,
+    ) -> int:
+        assert connection.id is not None
+        error_type = classify_exception(exc)
+        run_id = self.runs.start_run(
+            connection_id=connection.id,
+            trigger=trigger,
+            window_start_utc=window.start_utc,
+            window_end_utc=window.end_utc,
+            started_at=started_at,
+        )
+        run_log = self.run_logs.create(
+            run_id=run_id,
+            connection_name=connection.name,
+            started_at=started_at,
+        )
+        run_log.write(
+            "run_started",
+            run_id=run_id,
+            connection_id=connection.id,
+            connection_name=connection.name,
+            trigger=trigger,
+            window_start_utc=window.start_utc.isoformat(),
+            window_end_utc=window.end_utc.isoformat(),
+        )
+        self.runs.finish_run(
+            run_id,
+            status="failed",
+            error_type=error_type.value,
+            error_msg=str(exc),
+        )
+        run_log.write(
+            "run_finished",
+            run_id=run_id,
+            status="failed",
+            error_type=error_type.value,
+            error_msg=str(exc),
+        )
+        self._evaluate_alerts(run_id)
+        return run_id
+
     def _connection_lock(self, connection_id: int) -> threading.Lock:
         with self._state_lock:
             return self._connection_locks.setdefault(
                 connection_id, threading.Lock()
+            )
+
+    def _evaluate_alerts(self, run_id: int) -> None:
+        if self.alerts is None:
+            return
+        try:
+            self.alerts.evaluate_run(run_id)
+        except Exception:
+            logger.exception(
+                "No se pudieron evaluar las alertas de la corrida %s.",
+                run_id,
             )
 
 
@@ -596,6 +793,35 @@ def _canonical_timestamp(value: str | None) -> str | None:
         return None
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return _aware_utc(parsed, "mtime_utc").isoformat(timespec="seconds")
+
+
+def _log_outcome(
+    run_log: RunEventLog,
+    run_file_id: int,
+    outcome: DownloadOutcome,
+) -> None:
+    event = (
+        "file_failed"
+        if outcome.status == DownloadStatus.FAILED
+        else "file_done"
+    )
+    run_log.write(
+        event,
+        run_file_id=run_file_id,
+        remote_path=outcome.remote_file.remote_path,
+        local_path=str(outcome.local_path) if outcome.local_path else None,
+        status=outcome.status.value,
+        bytes_done=outcome.bytes_done,
+        attempts=outcome.attempts,
+        duration_s=outcome.duration_s,
+        sha256=outcome.sha256,
+        error_type=(
+            outcome.error_type.value if outcome.error_type else None
+        ),
+        error_msg=outcome.error_msg,
+        resumed_from=outcome.resumed_from,
+        resume_supported=outcome.resume_supported,
+    )
 
 
 def _run_status(

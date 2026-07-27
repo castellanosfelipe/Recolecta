@@ -30,6 +30,7 @@ class SchedulerSettings:
     catchup_enabled: bool = True
     catchup_max_days: int = 3
     startup_delay_s: int = 60
+    retention_days: int = 180
 
     @classmethod
     def load(cls, settings: SettingsStore) -> "SchedulerSettings":
@@ -40,6 +41,7 @@ class SchedulerSettings:
             catchup_enabled=bool(settings.get("catchup.enabled", True)),
             catchup_max_days=int(settings.get("catchup.max_days", 3)),
             startup_delay_s=int(settings.get("catchup.startup_delay_s", 60)),
+            retention_days=int(settings.get("retention.days", 180)),
         ).validated()
 
     def validated(self) -> "SchedulerSettings":
@@ -53,6 +55,8 @@ class SchedulerSettings:
             raise ValueError("catchup.max_days debe ser al menos uno.")
         if self.startup_delay_s < 0:
             raise ValueError("startup_delay_s no puede ser negativo.")
+        if self.retention_days < 1:
+            raise ValueError("retention.days debe ser al menos uno.")
         return self
 
 
@@ -180,6 +184,7 @@ class SchedulerService:
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         sleeper: Callable[[float], None] = time.sleep,
         jump_detector: ClockJumpDetector | None = None,
+        retention_callback: Callable[[int], object] | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.connections = connections
@@ -188,6 +193,7 @@ class SchedulerService:
         self.now = now
         self.sleeper = sleeper
         self.jump_detector = jump_detector or ClockJumpDetector(wall_clock=now)
+        self.retention_callback = retention_callback
         self.settings = SchedulerSettings()
 
     def configure(self, settings: SchedulerSettings) -> None:
@@ -226,6 +232,19 @@ class SchedulerService:
             coalesce=True,
             max_instances=1,
         )
+        if self.retention_callback is not None:
+            self.scheduler.add_job(
+                self._run_retention,
+                trigger=CronTrigger(
+                    hour=3,
+                    minute=30,
+                    timezone=timezone.utc,
+                ),
+                id="audit-retention",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+            )
 
     def start(self) -> None:
         if not self.scheduler.running:
@@ -292,6 +311,15 @@ class SchedulerService:
                 "Se detectó reanudación del equipo; comprobando catch-up."
             )
             self.run_catchup(apply_startup_delay=False)
+
+    def _run_retention(self) -> None:
+        if self.retention_callback is None:
+            return
+        try:
+            result = self.retention_callback(self.settings.retention_days)
+            logger.info("Retención nocturna completada: %s", result)
+        except Exception:
+            logger.exception("La retención nocturna falló.")
 
 
 def _symmetric_jitter_fields(

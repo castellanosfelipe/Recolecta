@@ -20,6 +20,7 @@ from app.models import (
     WindowMode,
     utc_now_iso,
 )
+from app.logging_setup import redact_secrets
 
 if TYPE_CHECKING:
     from app.downloader import DownloadOutcome
@@ -141,6 +142,9 @@ MIGRATIONS: Final[dict[int, tuple[str, ...]]] = {
             ON alerts_log(run_id, cause, channel)
             WHERE run_id IS NOT NULL
         """,
+    ),
+    2: (
+        "ALTER TABLE run_files ADD COLUMN average_bps REAL",
     ),
 }
 
@@ -407,7 +411,7 @@ class RunRepository:
                 UPDATE run_files
                 SET local_path = ?, size_bytes = ?, bytes_done = ?, sha256 = ?,
                     status = ?, attempts = ?, error_type = ?, error_msg = ?,
-                    finished_at = ?, duration_s = ?
+                    finished_at = ?, duration_s = ?, average_bps = ?
                 WHERE id = ?
                 """,
                 (
@@ -418,9 +422,14 @@ class RunRepository:
                     persisted_status,
                     outcome.attempts,
                     outcome.error_type.value if outcome.error_type else None,
-                    outcome.error_msg,
+                    redact_secrets(outcome.error_msg),
                     finished_at,
                     outcome.duration_s,
+                    (
+                        outcome.bytes_done / outcome.duration_s
+                        if outcome.duration_s > 0
+                        else 0.0
+                    ),
                     run_file_id,
                 ),
             )
@@ -470,7 +479,7 @@ class RunRepository:
                     counts["files_failed"] or 0,
                     counts["bytes_downloaded"] or 0,
                     error_type,
-                    error_msg,
+                    redact_secrets(error_msg),
                     run_id,
                 ),
             )
@@ -551,7 +560,12 @@ class RunRepository:
                     finished_at = ?
                 WHERE run_id = ? AND status IN ('pending', 'downloading')
                 """,
-                (error_type, error_msg, utc_now_iso(), run_id),
+                (
+                    error_type,
+                    redact_secrets(error_msg),
+                    utc_now_iso(),
+                    run_id,
+                ),
             ).rowcount
 
     def list_runs(

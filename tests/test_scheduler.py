@@ -85,6 +85,19 @@ def test_apscheduler_jobs_preserve_misfire_and_coalescing(
     assert aps.get_job("clock-jump-detector") is not None
 
 
+def test_scheduler_adds_retention_job(scheduler_data) -> None:
+    _, connections, runs, _ = scheduler_data
+    service = SchedulerService(
+        type("Coordinator", (), {})(),
+        connections,
+        runs,
+        scheduler=BackgroundScheduler(timezone=timezone.utc),
+        retention_callback=lambda days: days,
+    )
+    service.configure(SchedulerSettings(retention_days=45))
+    assert service.scheduler.get_job("audit-retention") is not None
+
+
 def test_catchup_finds_only_windows_without_success(
     scheduler_data,
 ) -> None:

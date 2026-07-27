@@ -4,7 +4,7 @@ Descargador programado y auditable para FTP, FTPS, SFTP, WebDAV(S) y SMB, diseñ
 
 ## Estado
 
-Fases 0 a 5 completadas: configuración y persistencia, transportes, motor atómico reanudable, APScheduler diario, catch-up, recuperación tras reinicio, instancia única, CLI delegable y dashboard local offline con progreso en vivo.
+Fases 0 a 6 completadas: configuración y persistencia, transportes, motor atómico reanudable, agenda y catch-up, dashboard local, logs JSONL, exports CSV/HTML/ZIP, retención, alertas y bandeja interactiva.
 
 ## Desarrollo
 
@@ -34,6 +34,8 @@ FileHarvester.exe --run-now --connection 3 --date 2026-07-26
 Si la instancia residente está activa, el CLI delega la orden a su API local en vez de abrir una segunda corrida.
 
 Para exponer el dashboard a la LAN, defina `HARVESTER_BIND_LAN=1`. Se recomienda configurar a la vez `HARVESTER_DASH_USER` y `HARVESTER_DASH_PASS`; `/healthz` permanece público para monitoreo.
+
+Desde Ajustes se puede descargar un bundle de soporte con `app.log`, logs JSONL, CSV, reporte HTML y configuración sin secretos. La retención predeterminada es de 180 días y nunca elimina los archivos descargados.
 
 ## Documentación
 

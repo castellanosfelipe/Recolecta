@@ -104,7 +104,7 @@
       <section id="view-archivos" class="view" aria-labelledby="files-heading">
         <div class="section-heading">
           <div><p class="eyebrow">CATÁLOGO</p><h2 id="files-heading">Archivos procesados</h2></div>
-          <a class="btn secondary" href="/api/files/export.csv">Exportar CSV</a>
+          <a class="btn secondary" href="/api/export/files.csv">Exportar CSV</a>
         </div>
         <form id="file-filters" class="filter-bar">
           <label class="grow">Buscar<input name="search" type="search" placeholder="Nombre o ruta del archivo"></label>
@@ -113,7 +113,7 @@
         </form>
         <div class="table-panel">
           <table>
-            <thead><tr><th>Archivo remoto</th><th>Conexión</th><th>Fecha</th><th>Estado</th><th>Tamaño</th><th>Duración</th></tr></thead>
+            <thead><tr><th>Archivo remoto</th><th>Conexión</th><th>Fecha</th><th>Estado</th><th>Tamaño</th><th>Duración</th><th>Velocidad</th></tr></thead>
             <tbody id="files-body"></tbody>
           </table>
         </div>
@@ -133,19 +133,60 @@
       </section>
 
       <section id="view-ajustes" class="view" aria-labelledby="settings-heading">
-        <div class="section-heading"><div><p class="eyebrow">SISTEMA</p><h2 id="settings-heading">Ajustes globales</h2></div></div>
+        <div class="section-heading">
+          <div><p class="eyebrow">SISTEMA</p><h2 id="settings-heading">Ajustes globales</h2></div>
+          <div class="actions">
+            <a class="btn secondary" href="/api/export/report.html?days=30">Reporte HTML</a>
+            <a class="btn primary" href="/api/export/bundle.zip?days=7">Descargar bundle</a>
+          </div>
+        </div>
         <form id="settings-form" class="panel form-panel">
+          <div class="form-section">
+            <p class="eyebrow">AGENDA Y RETENCIÓN</p>
+            <h3>Operación automática</h3>
+          </div>
           <div class="form-grid">
             <label>Hora diaria<input name="schedule.daily_time" type="time" value="02:00"></label>
             <label>Zona horaria<input name="schedule.timezone" value="America/Bogota"></label>
             <label>Concurrencia global<input name="concurrency.global" type="number" min="1" max="32" value="4"></label>
             <label>Jitter (segundos)<input name="schedule.jitter_s" type="number" min="0" value="300"></label>
-            <label>Retención (días)<input name="retention.days" type="number" min="1" value="90"></label>
+            <label>Retención (días)<input name="retention.days" type="number" min="1" value="180"></label>
             <label>Catch-up máximo (días)<input name="catchup.max_days" type="number" min="1" value="3"></label>
+            <label>Ancho de banda global (KB/s)<input name="bandwidth.global_kbps" type="number" min="0" value="0"><small>0 conserva los límites por conexión.</small></label>
+            <label>Reserva de disco (%)<input name="disk.reserve_percent" type="number" min="0" max="100" value="10"></label>
+            <label>Separación entre aperturas (s)<input name="courtesy.minimum_spacing_s" type="number" min="0" step="0.1" value="0"></label>
           </div>
           <label class="check"><input name="catchup.enabled" type="checkbox" checked> Recuperar corridas perdidas al iniciar</label>
+          <div class="form-section">
+            <p class="eyebrow">ALERTAS</p>
+            <h3>Canales y umbrales</h3>
+            <p>Las contraseñas SMTP y la URL del webhook se leen de variables de entorno y nunca se guardan en la base.</p>
+          </div>
+          <div class="form-grid">
+            <label>Fallos para estado parcial<input name="alerts.partial_threshold" type="number" min="1" value="1"></label>
+            <label>Servidor SMTP<input name="alerts.smtp.host" placeholder="smtp.interno.local"></label>
+            <label>Puerto SMTP<input name="alerts.smtp.port" type="number" min="1" max="65535" value="25"></label>
+            <label>Remitente<input name="alerts.smtp.from" type="email" placeholder="fileharvester@empresa.local"></label>
+            <label class="span-2">Destinatarios<input name="alerts.smtp.to" placeholder="operaciones@empresa.local, soporte@empresa.local"></label>
+          </div>
+          <div class="check-row">
+            <label class="check"><input name="alerts.toast.enabled" type="checkbox" checked> Toast de Windows</label>
+            <label class="check"><input name="alerts.smtp.enabled" type="checkbox"> SMTP</label>
+            <label class="check"><input name="alerts.smtp.starttls" type="checkbox"> STARTTLS</label>
+            <label class="check"><input name="alerts.webhook.enabled" type="checkbox"> Webhook</label>
+          </div>
           <div class="form-actions"><button class="btn primary" type="submit">Guardar ajustes</button></div>
         </form>
+        <div class="section-heading alerts-heading">
+          <div><p class="eyebrow">ENTREGAS RECIENTES</p><h2>Registro de alertas</h2></div>
+          <button class="btn secondary" id="retention-button" type="button">Ejecutar retención ahora</button>
+        </div>
+        <div class="table-panel">
+          <table>
+            <thead><tr><th>Fecha</th><th>Conexión</th><th>Causa</th><th>Canal</th><th>Entrega</th><th>Mensaje</th></tr></thead>
+            <tbody id="alerts-body"></tbody>
+          </table>
+        </div>
       </section>
     </main>
   </div>

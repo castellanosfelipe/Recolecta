@@ -103,6 +103,10 @@ def test_history_files_dashboard_settings_and_csv(tmp_path: Path) -> None:
             },
         )
         exported = client.get("/api/files/export.csv")
+        rejected_secret = client.put(
+            "/api/settings",
+            json={"values": {"alerts.smtp.password": "no-guardar"}},
+        )
     assert history.json()["items"][0]["connection_name"] == "Auditoría"
     assert detail.json()["files"] == []
     assert dashboard.json()["connections"][0]["last_status"] == "ok"
@@ -112,3 +116,5 @@ def test_history_files_dashboard_settings_and_csv(tmp_path: Path) -> None:
     assert settings.json()["values"]["schedule.jitter_minutes"] == 2
     assert exported.status_code == 200
     assert exported.text.startswith("id,run_id,connection_name")
+    assert rejected_secret.status_code == 422
+    assert "no-guardar" not in rejected_secret.text

@@ -1,7 +1,10 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import json
+import ftplib
 
 from cryptography.fernet import Fernet
+import pytest
 
 import app.orchestrator as orchestrator_module
 from app.config import AppPaths
@@ -106,6 +109,19 @@ def test_coordinator_plans_downloads_persists_and_deduplicates(
     assert run["status"] == "ok"
     assert run_file["status"] == "ok"
     assert run_file["sha256"]
+    assert run_file["average_bps"] > 0
+    log_path = next(paths.run_logs.glob(f"*_{execution.run_id}.jsonl"))
+    events = [
+        json.loads(line)["event"]
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[0] == "run_started"
+    assert "file_planned" in events
+    assert "file_started" in events
+    assert "file_progress" in events
+    assert events.count("file_progress") == 10
+    assert "file_done" in events
+    assert events[-1] == "run_finished"
 
     dry = coordinator.execute_connection(
         saved.id,
@@ -123,3 +139,63 @@ def test_coordinator_plans_downloads_persists_and_deduplicates(
     assert scheduled_again.run_id is None
     with database.connect() as db:
         assert db.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+
+
+def test_coordinator_persists_and_redacts_listing_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    now = datetime(2026, 7, 27, 12, tzinfo=timezone.utc)
+
+    class BrokenTransport(Transport):
+        def connect(self):
+            return None
+
+        def close(self):
+            return None
+
+        def list_files(self, remote_paths, *, recursive, max_depth):
+            raise ftplib.error_perm("530 password=credencial-real")
+
+        def stat(self, remote_path):
+            raise AssertionError
+
+        def download_to(self, *args, **kwargs):
+            raise AssertionError
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "create_transport",
+        lambda connection, secret, known_hosts: BrokenTransport(),
+    )
+    paths = AppPaths.from_root(tmp_path).ensure()
+    database = Database(paths.database)
+    database.initialize()
+    connections = ConnectionRepository(
+        database, FernetSecretStore(Fernet.generate_key())
+    )
+    saved = connections.create(
+        Connection(
+            name="Credencial",
+            host="example.test",
+            remote_paths=("/entrada",),
+            window_mode=WindowMode.ROLLING_HOURS,
+        )
+    )
+    coordinator = RunCoordinator(
+        database,
+        connections,
+        paths,
+        now=lambda: now,
+    )
+    with pytest.raises(ftplib.error_perm):
+        coordinator.execute_connection(saved.id, trigger="manual")
+    with database.connect() as db:
+        run = db.execute("SELECT * FROM runs").fetchone()
+    assert run["status"] == "failed"
+    assert run["error_type"] == "auth"
+    assert "credencial-real" not in run["error_msg"]
+    assert "password=***" in run["error_msg"]
+    log_text = next(paths.run_logs.glob("*.jsonl")).read_text(
+        encoding="utf-8"
+    )
+    assert "credencial-real" not in log_text

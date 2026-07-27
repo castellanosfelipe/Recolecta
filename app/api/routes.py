@@ -9,6 +9,7 @@ import threading
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi.responses import FileResponse, HTMLResponse
 
 from app import __version__
 from app.api.schemas import (
@@ -19,13 +20,19 @@ from app.api.schemas import (
     RunNowResponse,
     SettingsUpdate,
 )
+from app.alerts import AlertRepository
 from app.db import ConnectionRepository, RunRepository
 from app.errors import HarvesterError
 from app.models import Connection
+from app.exports import ExportService
+from app.logging_setup import redact_secrets
 from app.orchestrator import DryRunPlan, RunCoordinator
 from app.progress import ProgressRegistry
+from app.retention import RetentionService
+from app.run_logging import RunLogStore
 from app.scheduler import SchedulerService, SchedulerSettings
 from app.settings_store import SettingsStore
+from app.throttle import ThrottleManager
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +46,10 @@ def create_router(
     settings: SettingsStore | None = None,
     progress: ProgressRegistry | None = None,
     scheduler: SchedulerService | None = None,
+    run_logs: RunLogStore | None = None,
+    alert_repository: AlertRepository | None = None,
+    export_service: ExportService | None = None,
+    retention: RetentionService | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -67,9 +78,13 @@ def create_router(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except HarvesterError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=409, detail=redact_secrets(exc)
+            ) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=422, detail=redact_secrets(exc)
+            ) from exc
         return RunNowResponse(
             executions=[execution.summary() for execution in executions]
         )
@@ -224,7 +239,9 @@ def create_router(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (HarvesterError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=422, detail=redact_secrets(exc)
+            ) from exc
         return _plan_response(execution.plan)
 
     @router.post(
@@ -349,13 +366,126 @@ def create_router(
             },
         )
 
+    if export_service is not None:
+
+        @router.get("/api/export/files.csv")
+        def export_files_filtered(
+            run_id: int | None = None,
+            connection_id: int | None = None,
+            date_from: date | None = Query(default=None, alias="from"),
+            date_to: date | None = Query(default=None, alias="to"),
+            file_status: str | None = Query(default=None, alias="status"),
+        ) -> Response:
+            return Response(
+                export_service.files_csv(
+                    run_id=run_id,
+                    connection_id=connection_id,
+                    date_from=(
+                        date_from.isoformat() if date_from else None
+                    ),
+                    date_to=date_to.isoformat() if date_to else None,
+                    status=file_status,
+                ),
+                media_type="text/csv; charset=utf-8",
+                headers={
+                    "Content-Disposition": (
+                        'attachment; filename="fileharvester-files.csv"'
+                    )
+                },
+            )
+
+        @router.get("/api/export/runs.csv")
+        def export_runs_csv(
+            days: int = Query(default=30, ge=1, le=3650),
+        ) -> Response:
+            return Response(
+                export_service.runs_csv(days=days),
+                media_type="text/csv; charset=utf-8",
+                headers={
+                    "Content-Disposition": (
+                        'attachment; filename="fileharvester-runs.csv"'
+                    )
+                },
+            )
+
+        @router.get("/api/export/report.html", response_class=HTMLResponse)
+        def export_html_report(
+            days: int = Query(default=30, ge=1, le=3650),
+            client: str | None = None,
+        ) -> HTMLResponse:
+            return HTMLResponse(
+                export_service.html_report(days=days, client=client),
+                headers={
+                    "Content-Disposition": (
+                        'attachment; filename="fileharvester-report.html"'
+                    )
+                },
+            )
+
+        @router.get("/api/export/bundle.zip")
+        def export_bundle(
+            days: int = Query(default=7, ge=1, le=3650),
+        ) -> FileResponse:
+            path = export_service.support_bundle(days=days)
+            return FileResponse(
+                path,
+                media_type="application/zip",
+                filename=path.name,
+            )
+
+    if run_logs is not None:
+
+        @router.get("/api/runs/{run_id}/log.jsonl")
+        def download_run_log(run_id: int) -> FileResponse:
+            try:
+                runs.get_run(run_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            path = run_logs.find(run_id)
+            if path is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"La corrida {run_id} no tiene log JSONL.",
+                )
+            return FileResponse(
+                path,
+                media_type="application/x-ndjson",
+                filename=path.name,
+            )
+
+    if alert_repository is not None:
+
+        @router.get("/api/alerts")
+        def list_alerts(
+            limit: int = Query(default=100, ge=1, le=500),
+        ) -> dict[str, object]:
+            return {"items": alert_repository.list(limit=limit)}
+
+    if retention is not None:
+
+        @router.post("/api/retention/run")
+        def run_retention() -> dict[str, object]:
+            days = int(settings.get("retention.days", 180))
+            return retention.purge(days=days).__dict__
+
     @router.get("/api/settings")
     def get_settings() -> dict[str, object]:
-        return {"values": _settings_for_ui(settings.all())}
+        return {"values": _settings_for_ui(_public_settings(settings.all()))}
 
     @router.put("/api/settings")
     def update_settings(payload: SettingsUpdate) -> dict[str, object]:
         values = dict(payload.values)
+        forbidden = [
+            key for key in values if _sensitive_setting_key(key)
+        ]
+        if forbidden:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Los secretos de alertas deben configurarse mediante "
+                    "variables de entorno."
+                ),
+            )
         daily_time = values.get("schedule.daily_time")
         if daily_time is not None:
             try:
@@ -400,14 +530,65 @@ def create_router(
                 startup_delay_s=int(
                     projected.get("catchup.startup_delay_s", 60)
                 ),
+                retention_days=int(projected.get("retention.days", 180)),
             ).validated()
+            global_parallelism = int(
+                projected.get("concurrency.global", 4)
+            )
+            global_bandwidth = int(
+                projected.get("bandwidth.global_kbps", 0)
+            )
+            reserve_percent = float(
+                projected.get("disk.reserve_percent", 10)
+            )
+            minimum_spacing = float(
+                projected.get("courtesy.minimum_spacing_s", 0)
+            )
+            partial_threshold = int(
+                projected.get("alerts.partial_threshold", 1)
+            )
+            smtp_port = int(projected.get("alerts.smtp.port", 25))
+            if global_parallelism < 1:
+                raise ValueError(
+                    "concurrency.global debe ser al menos uno."
+                )
+            if global_bandwidth < 0:
+                raise ValueError(
+                    "bandwidth.global_kbps no puede ser negativo."
+                )
+            if not 0 <= reserve_percent <= 100:
+                raise ValueError(
+                    "disk.reserve_percent debe estar entre 0 y 100."
+                )
+            if minimum_spacing < 0:
+                raise ValueError(
+                    "courtesy.minimum_spacing_s no puede ser negativo."
+                )
+            if partial_threshold < 1:
+                raise ValueError(
+                    "alerts.partial_threshold debe ser al menos uno."
+                )
+            if not 1 <= smtp_port <= 65535:
+                raise ValueError(
+                    "alerts.smtp.port debe estar entre 1 y 65535."
+                )
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         for key, value in values.items():
             settings.set(key, value)
         if scheduler is not None:
             scheduler.configure(schedule_settings)
-        return {"values": _settings_for_ui(settings.all())}
+        coordinator.throttle = ThrottleManager(
+            global_parallelism=global_parallelism
+        )
+        coordinator.global_bandwidth_limit_kbps = (
+            global_bandwidth or None
+        )
+        coordinator.reserve_ratio = reserve_percent / 100
+        coordinator.minimum_spacing_s = minimum_spacing
+        return {
+            "values": _settings_for_ui(_public_settings(settings.all()))
+        }
 
     return router
 
@@ -462,3 +643,28 @@ def _all_files(
         if len(page) < 1000:
             return rows
         offset += len(page)
+
+
+def _public_settings(values: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in values.items()
+        if not _sensitive_setting_key(key)
+    }
+
+
+def _sensitive_setting_key(key: str) -> bool:
+    normalized = key.casefold()
+    return (
+        any(
+            token in normalized
+            for token in (
+                "password",
+                "secret",
+                "passphrase",
+                "token",
+                "credential",
+            )
+        )
+        or normalized == "alerts.webhook.url"
+    )
