@@ -20,7 +20,7 @@ from app.settings_store import SettingsStore
 
 @pytest.fixture
 def scheduler_data(tmp_path: Path):
-    database = Database(tmp_path / "harvester.db")
+    database = Database(tmp_path / "recolecta.db")
     database.initialize()
     connections = ConnectionRepository(
         database, FernetSecretStore(Fernet.generate_key())
@@ -39,7 +39,7 @@ def scheduler_data(tmp_path: Path):
 
 
 def test_scheduler_settings_load_and_validation(tmp_path: Path) -> None:
-    database = Database(tmp_path / "harvester.db")
+    database = Database(tmp_path / "recolecta.db")
     database.initialize()
     store = SettingsStore(database)
     store.set("schedule.hour", 3)

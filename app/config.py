@@ -8,14 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-APP_NAME = "FileHarvester"
+APP_NAME = "Recolecta"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8091
 
 
 def base_dir() -> Path:
     """Return the portable application data root."""
-    env = os.environ.get("HARVESTER_DATA_DIR", "").strip()
+    env = os.environ.get("RECOLECTA_DATA_DIR", "").strip()
     if env:
         return Path(env)
     if getattr(sys, "frozen", False):
@@ -86,7 +86,7 @@ class AppPaths:
 
     @property
     def database(self) -> Path:
-        return self.data / "harvester.db"
+        return self.data / "recolecta.db"
 
     @property
     def known_hosts(self) -> Path:
@@ -107,19 +107,19 @@ class AppConfig:
 
     @classmethod
     def from_env(cls, *, create_directories: bool = True) -> "AppConfig":
-        bind_lan = _env_bool("HARVESTER_BIND_LAN")
-        user = os.environ.get("HARVESTER_DASH_USER", "").strip() or None
-        password = os.environ.get("HARVESTER_DASH_PASS", "").strip() or None
+        bind_lan = _env_bool("RECOLECTA_BIND_LAN")
+        user = os.environ.get("RECOLECTA_DASH_USER", "").strip() or None
+        password = os.environ.get("RECOLECTA_DASH_PASS", "").strip() or None
         if bool(user) != bool(password):
             raise ValueError(
-                "HARVESTER_DASH_USER y HARVESTER_DASH_PASS deben definirse juntos."
+                "RECOLECTA_DASH_USER y RECOLECTA_DASH_PASS deben definirse juntos."
             )
 
-        mode = os.environ.get("HARVESTER_MODE", "").strip().lower() or (
+        mode = os.environ.get("RECOLECTA_MODE", "").strip().lower() or (
             "windows" if sys.platform == "win32" else "dev"
         )
         if mode not in {"windows", "service", "dev"}:
-            raise ValueError("HARVESTER_MODE debe ser windows, service o dev.")
+            raise ValueError("RECOLECTA_MODE debe ser windows, service o dev.")
 
         paths = AppPaths.from_root()
         if create_directories:
@@ -127,7 +127,7 @@ class AppConfig:
 
         return cls(
             host="0.0.0.0" if bind_lan else DEFAULT_HOST,
-            port=_env_port("HARVESTER_PORT", DEFAULT_PORT),
+            port=_env_port("RECOLECTA_PORT", DEFAULT_PORT),
             bind_lan=bind_lan,
             dashboard_user=user,
             dashboard_password=password,

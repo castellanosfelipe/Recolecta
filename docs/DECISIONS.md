@@ -2,7 +2,7 @@
 
 ## D-001 · Estado portable bajo una única raíz
 
-Toda ruta mutable se deriva de `HARVESTER_DATA_DIR`, del directorio del ejecutable congelado o de la raíz del repositorio en desarrollo. Así el paquete no depende del directorio de trabajo y puede moverse como una unidad.
+Toda ruta mutable se deriva de `RECOLECTA_DATA_DIR`, del directorio del ejecutable congelado o de la raíz del repositorio en desarrollo. Así el paquete no depende del directorio de trabajo y puede moverse como una unidad.
 
 ## D-002 · Configuración de proceso por variables de entorno validadas
 
@@ -34,7 +34,7 @@ Cada token lleva el prefijo `fernet:`, `dpapi:` o `dpapi-machine:`. Un proceso q
 
 ## D-009 · Fernet persistente para desarrollo y CI
 
-En modo `dev`, `HARVESTER_SECRET_KEY` tiene prioridad. Si no existe, se crea atómicamente `data/.secret.key` con permisos restrictivos. Esto permite reiniciar el proceso sin perder acceso a secretos y conserva builds reproducibles cuando CI inyecta una clave.
+En modo `dev`, `RECOLECTA_SECRET_KEY` tiene prioridad. Si no existe, se crea atómicamente `data/.secret.key` con permisos restrictivos. Esto permite reiniciar el proceso sin perder acceso a secretos y conserva builds reproducibles cuando CI inyecta una clave.
 
 ## D-010 · DPAPI de máquina con entropía protegida
 
@@ -98,7 +98,7 @@ Al arrancar, las corridas `running` pasan a `failed/interrupted` y sus archivos 
 
 ## D-025 · Mutex global y delegación HTTP local
 
-Windows usa `Global\FileHarvester.Singleton`; desarrollo usa un lock de archivo. Un CLI que no obtiene el mutex no compite por SQLite ni por el servidor: envía la orden a `127.0.0.1` y la instancia propietaria aplica el lock por conexión.
+Windows usa `Global\Recolecta.Singleton`; desarrollo usa un lock de archivo. Un CLI que no obtiene el mutex no compite por SQLite ni por el servidor: envía la orden a `127.0.0.1` y la instancia propietaria aplica el lock por conexión.
 
 ## D-026 · Salud rápida y catch-up diferido
 
@@ -154,13 +154,13 @@ tzdata. Un fallo impide crear el ZIP.
 El modo usuario usa una tarea al logon y DPAPI de usuario. El modo headless usa
 una tarea al startup como `SYSTEM`, privilegio máximo y el argumento interno
 `--service`, que fuerza DPAPI de máquina aunque el entorno heredado no defina
-`HARVESTER_MODE`. Ambos usan `IgnoreNew`, reinicio continuo, inicio tardío,
+`RECOLECTA_MODE`. Ambos usan `IgnoreNew`, reinicio continuo, inicio tardío,
 batería permitida y duración ilimitada; el modo `SYSTEM` añade `WakeToRun`.
 
 ## D-038 · La desinstalación separa ejecución de datos
 
 `uninstall.ps1` desregistra ambos nombres de tarea y solo detiene procesos
-`FileHarvester.exe` cuya carpeta coincide con el bundle desde el que se
+`Recolecta.exe` cuya carpeta coincide con el bundle desde el que se
 ejecuta. No elimina aplicación, base, logs, exports, staging ni descargas. La
 eliminación de evidencia y contenido queda como decisión manual posterior.
 
@@ -184,7 +184,7 @@ una revisión que incumpla el umbral.
 
 El smoke test no ejecuta código fuente ni Python: valida el hash de release,
 extrae el ZIP en una carpeta nueva, ejecuta el autodiagnóstico congelado,
-arranca `FileHarvester.exe` en un puerto libre y exige `/healthz`, dashboard y
+arranca `Recolecta.exe` en un puerto libre y exige `/healthz`, dashboard y
 JavaScript local en menos de cinco segundos. Siempre detiene el PID exacto y
 elimina únicamente su directorio temporal verificado. CI publica el JSON de
 evidencia junto al ZIP.
@@ -195,3 +195,14 @@ evidencia junto al ZIP.
 de modo interactivo usa ese módulo y está probada para sesión 0, sesión de
 usuario, cuenta SYSTEM, plataforma no Windows y error conservador. Esto evita
 que el modo usuario falle antes de crear la bandeja.
+
+## D-043 · Recolecta es la identidad única del producto
+
+La renombrada abarca interfaz, API, alertas, exportaciones, base de datos,
+variables `RECOLECTA_*`, mutex, tareas programadas, Event Log, ejecutable,
+bundle y ZIP. El build limpia `dist` antes de congelar para impedir que una
+release mezcle artefactos con identidades anteriores.
+
+Los enlaces de GitHub y LinkedIn usan SVG embebido para conservar la operación
+offline. Se abren en una pestaña nueva con `noopener noreferrer`, incluyen
+etiquetas accesibles y no incorporan scripts, fuentes ni imágenes remotas.

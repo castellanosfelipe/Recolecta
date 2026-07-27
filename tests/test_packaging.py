@@ -153,7 +153,7 @@ def test_ci_packages_and_releases_tags() -> None:
         "expand-archive",
         "actions/upload-artifact@v4",
         "softprops/action-gh-release@v2",
-        "fileharvester-win64.zip",
+        "recolecta-win64.zip",
         "sha256sums.txt",
         "acceptance-smoke.json",
     ):
@@ -164,7 +164,7 @@ def test_acceptance_smoke_uses_only_frozen_bundle() -> None:
     script = _read("scripts/acceptance_smoke.ps1").lower()
     for expected in (
         "expand-archive",
-        "fileharvester.exe",
+        "recolecta.exe",
         "--self-test",
         "/healthz",
         "/static/app.js",
@@ -176,3 +176,40 @@ def test_acceptance_smoke_uses_only_frozen_bundle() -> None:
         assert expected in script
     assert "-m pytest" not in script
     assert "python.exe -" not in script
+
+
+def test_legacy_product_name_is_absent_from_source() -> None:
+    legacy_product = "".join(
+        chr(value)
+        for value in (
+            102, 105, 108, 101, 104, 97, 114, 118, 101, 115, 116, 101, 114
+        )
+    )
+    excluded = {
+        ".git",
+        ".python-build",
+        ".venv-build",
+        "build",
+        "dist",
+        "wheelhouse",
+        "work",
+    }
+    text_suffixes = {
+        ".css",
+        ".html",
+        ".ini",
+        ".js",
+        ".md",
+        ".ps1",
+        ".py",
+        ".txt",
+        ".yml",
+    }
+    for path in ROOT.rglob("*"):
+        if (
+            not path.is_file()
+            or excluded.intersection(path.parts)
+            or path.suffix.lower() not in text_suffixes
+        ):
+            continue
+        assert legacy_product not in path.read_text(encoding="utf-8").lower(), path

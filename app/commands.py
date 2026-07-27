@@ -100,7 +100,7 @@ def _delegate(
             )
             return 1
     print(
-        "FileHarvester está activo, pero su API local no respondió. "
+        "Recolecta está activo, pero su API local no respondió. "
         f"Último error: {redact_secrets(last_error)}"
     )
     return 1

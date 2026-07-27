@@ -17,7 +17,7 @@ from app.config import AppPaths
 from app.alerts import AlertManager
 from app.db import ConnectionRepository, Database, RunRepository
 from app.downloader import DownloadEngine, DownloadOutcome, DownloadStatus
-from app.errors import ErrorType, HarvesterError, classify_exception
+from app.errors import ErrorType, RecolectaError, classify_exception
 from app.models import Connection, WindowMode
 from app.progress import ProgressRegistry
 from app.run_logging import RunEventLog, RunLogStore
@@ -164,13 +164,13 @@ class RunCoordinator:
     ) -> RunExecution:
         connection = self.connections.get(connection_id)
         if not connection.enabled and not dry_run_only:
-            raise HarvesterError(
+            raise RecolectaError(
                 ErrorType.INTERRUPTED,
                 f"La conexión {connection.name} está en pausa.",
             )
         lock = self._connection_lock(connection_id)
         if not lock.acquire(blocking=False):
-            raise HarvesterError(
+            raise RecolectaError(
                 ErrorType.INTERRUPTED,
                 f"Ya hay una corrida activa para {connection.name}.",
             )

@@ -14,8 +14,8 @@ def test_run_now_cli_parses_date_and_connection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     captured = {}
-    monkeypatch.setenv("HARVESTER_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("HARVESTER_MODE", "dev")
+    monkeypatch.setenv("RECOLECTA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("RECOLECTA_MODE", "dev")
 
     def execute(config, **arguments):
         captured.update(arguments)

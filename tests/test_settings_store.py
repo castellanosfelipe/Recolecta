@@ -8,7 +8,7 @@ from app.settings_store import SettingsStore
 
 @pytest.fixture
 def store(tmp_path: Path) -> SettingsStore:
-    database = Database(tmp_path / "harvester.db")
+    database = Database(tmp_path / "recolecta.db")
     database.initialize()
     return SettingsStore(database)
 

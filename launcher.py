@@ -86,7 +86,7 @@ def run_self_test(report_path: str | None = None) -> int:
         message = "Autodiagnóstico fallido:\n- " + "\n- ".join(failures)
         exit_code = 1
     else:
-        message = f"FileHarvester {__version__}: autodiagnóstico correcto."
+        message = f"Recolecta {__version__}: autodiagnóstico correcto."
         exit_code = 0
     if report_path:
         Path(report_path).write_text(message + "\n", encoding="utf-8")
@@ -97,7 +97,7 @@ def run_self_test(report_path: str | None = None) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="FileHarvester")
+    parser = argparse.ArgumentParser(prog="Recolecta")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument(
         "--self-test-report", metavar="PATH", help=argparse.SUPPRESS

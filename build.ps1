@@ -9,8 +9,8 @@ $venv = Join-Path $root ".venv-build"
 $wheelhouse = Join-Path $root "wheelhouse"
 $vendorInstaller = Join-Path $root "vendor\python-3.12.10-amd64.exe"
 $distRoot = Join-Path $root "dist"
-$bundle = Join-Path $distRoot "FileHarvester"
-$zipPath = Join-Path $distRoot "FileHarvester-win64.zip"
+$bundle = Join-Path $distRoot "Recolecta"
+$zipPath = Join-Path $distRoot "Recolecta-win64.zip"
 
 function Invoke-Checked {
     param(
@@ -137,7 +137,7 @@ Invoke-Checked "Ejecutar autodiagnóstico en código fuente" {
 }
 
 $pyinstallerArgs = @(
-    "--name", "FileHarvester",
+    "--name", "Recolecta",
     "--onedir",
     "--noconsole",
     "--noconfirm",
@@ -162,7 +162,20 @@ $pyinstallerArgs = @(
     "--collect-submodules", "tzdata",
     (Join-Path $root "launcher.py")
 )
-Invoke-Checked "Congelar FileHarvester con PyInstaller" {
+
+$distResolved = [System.IO.Path]::GetFullPath($distRoot)
+$rootResolved = [System.IO.Path]::GetFullPath($root)
+if (-not $distResolved.StartsWith(
+    $rootResolved + [System.IO.Path]::DirectorySeparatorChar,
+    [StringComparison]::OrdinalIgnoreCase
+)) {
+    throw "Ruta de distribución insegura: $distResolved"
+}
+if (Test-Path -LiteralPath $distResolved) {
+    Remove-Item -LiteralPath $distResolved -Recurse -Force
+}
+
+Invoke-Checked "Congelar Recolecta con PyInstaller" {
     & $buildPython -m PyInstaller @pyinstallerArgs
 }
 
@@ -174,7 +187,7 @@ Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination $bundle -Force
 Copy-Item -LiteralPath (Join-Path $root "docs") -Destination $bundle -Recurse -Force
 
 $required = @(
-    (Join-Path $bundle "FileHarvester.exe"),
+    (Join-Path $bundle "Recolecta.exe"),
     (Join-Path $bundle "install.ps1"),
     (Join-Path $bundle "install-service.ps1"),
     (Join-Path $bundle "uninstall.ps1"),
@@ -188,7 +201,7 @@ foreach ($path in $required) {
 }
 $selfTestReport = Join-Path $root "build\frozen-self-test.txt"
 $frozenTest = Start-Process `
-    -FilePath (Join-Path $bundle "FileHarvester.exe") `
+    -FilePath (Join-Path $bundle "Recolecta.exe") `
     -ArgumentList @("--self-test", "--self-test-report", $selfTestReport) `
     -WorkingDirectory $bundle `
     -Wait `
@@ -213,7 +226,7 @@ Compress-Archive -LiteralPath $bundle -DestinationPath $zipPath -CompressionLeve
 $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 [System.IO.File]::WriteAllText(
     (Join-Path $distRoot "SHA256SUMS.txt"),
-    "$zipHash *FileHarvester-win64.zip`r`n"
+    "$zipHash *Recolecta-win64.zip`r`n"
 )
 
 Write-Host "`nBundle listo: $bundle"

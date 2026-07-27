@@ -14,7 +14,7 @@ from app.transports.base import RemoteFile
 
 @pytest.fixture
 def database(tmp_path: Path) -> Database:
-    value = Database(tmp_path / "data" / "harvester.db")
+    value = Database(tmp_path / "data" / "recolecta.db")
     value.initialize()
     return value
 

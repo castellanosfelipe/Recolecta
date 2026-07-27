@@ -218,7 +218,7 @@ class SchedulerService:
                 trigger=trigger,
                 args=(connection.id,),
                 id=f"connection-{connection.id}",
-                name=f"FileHarvester · {connection.name}",
+                name=f"Recolecta · {connection.name}",
                 replace_existing=True,
                 misfire_grace_time=None,
                 coalesce=True,

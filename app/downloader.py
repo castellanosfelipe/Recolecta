@@ -14,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Callable
 
-from app.errors import ErrorType, HarvesterError, classify_exception, is_retryable
+from app.errors import ErrorType, RecolectaError, classify_exception, is_retryable
 from app.integrity import StreamingVerifier, ensure_disk_space
 from app.models import Connection
 from app.naming import (
@@ -59,7 +59,7 @@ class _PreparedDownload:
     part_path: Path
 
 
-class DownloadCancelled(HarvesterError):
+class DownloadCancelled(RecolectaError):
     def __init__(self) -> None:
         super().__init__(
             ErrorType.INTERRUPTED,
@@ -163,7 +163,7 @@ class DownloadEngine:
                         part_path,
                     )
                 )
-            except HarvesterError as exc:
+            except RecolectaError as exc:
                 outcomes[index] = DownloadOutcome(
                     remote_file,
                     DownloadStatus.FAILED,
@@ -194,7 +194,7 @@ class DownloadEngine:
 
         with ThreadPoolExecutor(
             max_workers=self.connection.max_parallel_files,
-            thread_name_prefix="harvester-download",
+            thread_name_prefix="recolecta-download",
         ) as pool:
             futures = {
                 pool.submit(

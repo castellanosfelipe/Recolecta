@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from zoneinfo import ZoneInfo
 
-from app.errors import ErrorType, HarvesterError
+from app.errors import ErrorType, RecolectaError
 from app.models import ConflictMode, Connection
 from app.transports.base import RemoteFile
 
@@ -37,13 +37,13 @@ class Destination:
 def sanitize_windows_segment(value: str) -> str:
     """Sanitize one path component while preserving useful readability."""
     if value in {".", ".."}:
-        raise HarvesterError(
+        raise RecolectaError(
             ErrorType.PATH_INVALID,
             "La ruta contiene un segmento de navegación no permitido.",
         )
     sanitized = _INVALID_WINDOWS.sub("_", value).rstrip(" .")
     if not sanitized:
-        raise HarvesterError(
+        raise RecolectaError(
             ErrorType.PATH_INVALID,
             "Un componente de la ruta queda vacío después del saneamiento.",
         )
@@ -56,9 +56,9 @@ def sanitize_windows_segment(value: str) -> str:
 def validate_remote_path(remote_path: str) -> tuple[str, ...]:
     """Reject traversal/absolute Windows paths and return POSIX components."""
     if not remote_path or "\x00" in remote_path:
-        raise HarvesterError(ErrorType.PATH_INVALID, "La ruta remota no es válida.")
+        raise RecolectaError(ErrorType.PATH_INVALID, "La ruta remota no es válida.")
     if remote_path.startswith("\\\\") or _DRIVE_ABSOLUTE.match(remote_path):
-        raise HarvesterError(
+        raise RecolectaError(
             ErrorType.PATH_INVALID,
             "El servidor devolvió una ruta absoluta de Windows.",
         )
@@ -67,7 +67,7 @@ def validate_remote_path(remote_path: str) -> tuple[str, ...]:
         component for component in PurePosixPath(normalized).parts if component != "/"
     )
     if not components or any(component in {".", ".."} for component in components):
-        raise HarvesterError(
+        raise RecolectaError(
             ErrorType.PATH_INVALID,
             "El servidor devolvió una ruta con navegación '..' o sin nombre.",
         )
@@ -113,7 +113,7 @@ def build_destination(
     template = connection.dest_template.strip()
     if "{root}" in template:
         if not template.replace("\\", "/").startswith("{root}/"):
-            raise HarvesterError(
+            raise RecolectaError(
                 ErrorType.PATH_INVALID,
                 "El token {root} solo puede aparecer al inicio de la plantilla.",
             )
@@ -121,12 +121,12 @@ def build_destination(
     try:
         rendered = template.format(root=str(root), **tokens)
     except (KeyError, ValueError) as exc:
-        raise HarvesterError(
+        raise RecolectaError(
             ErrorType.PATH_INVALID,
             f"La plantilla de destino contiene un token no válido: {exc}.",
         ) from exc
     if _DRIVE_ABSOLUTE.match(rendered) or rendered.startswith(("/", "\\")):
-        raise HarvesterError(
+        raise RecolectaError(
             ErrorType.PATH_INVALID,
             "La plantilla produjo una ruta absoluta fuera del destino.",
         )
@@ -134,13 +134,13 @@ def build_destination(
         part for part in re.split(r"[/\\]+", rendered) if part
     ]
     if not rendered_parts:
-        raise HarvesterError(
+        raise RecolectaError(
             ErrorType.PATH_INVALID, "La plantilla de destino quedó vacía."
         )
     safe_parts = [sanitize_windows_segment(part) for part in rendered_parts]
     candidate = root.joinpath(*safe_parts).resolve(strict=False)
     if not candidate.is_relative_to(root):
-        raise HarvesterError(
+        raise RecolectaError(
             ErrorType.PATH_INVALID,
             "La ruta final intenta escapar de la carpeta de destino.",
         )
@@ -181,7 +181,7 @@ def _fit_windows_path(path: Path) -> tuple[Path, bool]:
     marker = f"__{digest}"
     stem_length = allowed_name_length - len(suffix) - len(marker)
     if stem_length < 1:
-        raise HarvesterError(
+        raise RecolectaError(
             ErrorType.PATH_INVALID,
             "La ruta supera MAX_PATH y sus carpetas no permiten truncar el nombre.",
         )

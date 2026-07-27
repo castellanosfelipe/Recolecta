@@ -131,7 +131,7 @@ class WebhookChannel:
         response = httpx.post(
             self.url,
             json={
-                "app": "FileHarvester",
+                "app": "Recolecta",
                 "run_id": alert.run_id,
                 "connection": alert.connection_name,
                 "cause": alert.cause,
@@ -243,7 +243,7 @@ class AlertManager:
                     run_id,
                     connection_name,
                     "run_failed",
-                    f"FileHarvester: falló {connection_name}",
+                    f"Recolecta: falló {connection_name}",
                     str(run["error_msg"] or "La corrida terminó con error."),
                 )
             )
@@ -254,7 +254,7 @@ class AlertManager:
                     run_id,
                     connection_name,
                     "partial_run",
-                    f"FileHarvester: corrida parcial en {connection_name}",
+                    f"Recolecta: corrida parcial en {connection_name}",
                     f"Fallaron {run['files_failed']} archivo(s).",
                 )
             )
@@ -264,7 +264,7 @@ class AlertManager:
                     run_id,
                     connection_name,
                     "auth_rejected",
-                    f"FileHarvester: credencial rechazada en {connection_name}",
+                    f"Recolecta: credencial rechazada en {connection_name}",
                     str(run["error_msg"] or "Revise la credencial configurada."),
                 )
             )
@@ -274,7 +274,7 @@ class AlertManager:
                     run_id,
                     connection_name,
                     "disk_space",
-                    "FileHarvester: espacio insuficiente",
+                    "Recolecta: espacio insuficiente",
                     str(run["error_msg"] or "Revise el volumen de destino."),
                 )
             )
@@ -287,7 +287,7 @@ class AlertManager:
                     run_id,
                     connection_name,
                     "suspicious_silence",
-                    f"FileHarvester: silencio sospechoso en {connection_name}",
+                    f"Recolecta: silencio sospechoso en {connection_name}",
                     "La corrida no encontró archivos, aunque el origen tenía "
                     "actividad en corridas anteriores.",
                 )
@@ -318,12 +318,12 @@ class AlertManager:
         if mode == RuntimeMode.HEADLESS:
             channels.append(EventLogChannel())
         if bool(self.settings.get("alerts.webhook.enabled", False)):
-            url = os.environ.get("HARVESTER_ALERT_WEBHOOK_URL", "").strip()
+            url = os.environ.get("RECOLECTA_ALERT_WEBHOOK_URL", "").strip()
             if url:
                 channels.append(WebhookChannel(url))
             else:
                 logger.warning(
-                    "Webhook habilitado sin HARVESTER_ALERT_WEBHOOK_URL."
+                    "Webhook habilitado sin RECOLECTA_ALERT_WEBHOOK_URL."
                 )
         if bool(self.settings.get("alerts.smtp.enabled", False)):
             host = str(self.settings.get("alerts.smtp.host", "")).strip()
@@ -343,11 +343,11 @@ class AlertManager:
                         sender=sender,
                         recipients=recipients,
                         username=(
-                            os.environ.get("HARVESTER_SMTP_USER", "").strip()
+                            os.environ.get("RECOLECTA_SMTP_USER", "").strip()
                             or None
                         ),
                         password=(
-                            os.environ.get("HARVESTER_SMTP_PASSWORD", "")
+                            os.environ.get("RECOLECTA_SMTP_PASSWORD", "")
                             or None
                         ),
                         starttls=bool(

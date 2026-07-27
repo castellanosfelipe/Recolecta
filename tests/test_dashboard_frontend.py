@@ -30,11 +30,23 @@ def test_dashboard_and_assets_are_local(tmp_path: Path) -> None:
         styles = client.get("/static/app.css")
         chart = client.get("/static/vendor/chart.umd.js")
     assert page.status_code == 200
-    assert "FileHarvester" in page.text
+    assert "Recolecta" in page.text
     assert "/static/vendor/chart.umd.js" in page.text
-    combined = page.text + script.text + styles.text
-    assert "https://" not in combined
-    assert "http://" not in combined
+    assert 'src="http' not in page.text
+    assert 'href="http' not in page.text.replace(
+        'href="https://github.com/castellanosfelipe/'
+        'Recolecta-Automatizaci-n-confiable-de-archivos"',
+        "",
+    ).replace(
+        'href="https://www.linkedin.com/in/'
+        'bairon-felipe-peña-castellanos-ab18411b5?'
+        'utm_source=share_via&amp;utm_content=profile&amp;'
+        'utm_medium=member_ios"',
+        "",
+    )
+    assert "Abrir el repositorio de Recolecta en GitHub" in page.text
+    assert "Bairon Felipe Peña Castellanos en LinkedIn" in page.text
+    assert 'rel="noopener noreferrer"' in page.text
     assert script.status_code == styles.status_code == chart.status_code == 200
     assert len(chart.content) > 100_000
 
@@ -70,7 +82,7 @@ def test_support_exports_and_alert_api(tmp_path: Path) -> None:
     assert alerts.json() == {"items": []}
     assert runs_csv.text.startswith("\ufeffid,connection_id")
     assert files_csv.text.startswith("\ufeffid,run_id")
-    assert "<title>Reporte FileHarvester" in report.text
+    assert "<title>Reporte Recolecta" in report.text
     with zipfile.ZipFile(io.BytesIO(bundle.content)) as archive:
         assert "exports/configuration.json" in archive.namelist()
     assert missing_log.status_code == 404

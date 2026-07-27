@@ -4,9 +4,9 @@
 
 Ejecute en este orden:
 
-1. `FileHarvester.exe --self-test`.
+1. `Recolecta.exe --self-test`.
 2. `Invoke-WebRequest http://127.0.0.1:8091/healthz -UseBasicParsing`.
-3. `Get-ScheduledTask FileHarvester* | Get-ScheduledTaskInfo`.
+3. `Get-ScheduledTask Recolecta* | Get-ScheduledTaskInfo`.
 4. Revise `logs\app.log` y el JSONL de la corrida en `logs\runs\`.
 5. Confirme espacio libre y permisos de escritura del destino.
 6. Use **Probar conexión** y después una corrida `--dry-run`.
@@ -29,7 +29,7 @@ abrir conexiones.
 
 ## Forzar una descarga controlada
 
-FileHarvester evita por diseño volver a bajar una identidad que ya terminó
+Recolecta evita por diseño volver a bajar una identidad que ya terminó
 correctamente. Para una excepción auditable:
 
 1. En **Conexiones**, duplique la conexión original.
@@ -71,7 +71,7 @@ DPAPI de usuario requiere la misma cuenta en el mismo equipo.
 `dpapi-machine` requiere el mismo equipo y `data\.entropy`. Copiar la base a
 otro host no vuelve portables los tokens. En el destino, reingrese cada
 credencial y pruebe las conexiones. Para desarrollo con Fernet, conserve
-`HARVESTER_SECRET_KEY` o `data\.secret.key` por un canal seguro.
+`RECOLECTA_SECRET_KEY` o `data\.secret.key` por un canal seguro.
 
 ## Logs y bundle de soporte
 
@@ -89,8 +89,8 @@ de reiniciar.
 
 En **Ajustes → Registro de alertas**, `failed` conserva el error del canal:
 
-- SMTP usa `HARVESTER_SMTP_USER` y `HARVESTER_SMTP_PASSWORD`.
-- Webhook usa `HARVESTER_ALERT_WEBHOOK_URL`.
+- SMTP usa `RECOLECTA_SMTP_USER` y `RECOLECTA_SMTP_PASSWORD`.
+- Webhook usa `RECOLECTA_ALERT_WEBHOOK_URL`.
 - Toast requiere sesión interactiva.
 - Event Log corresponde al modo `SYSTEM`.
 
@@ -103,12 +103,12 @@ La clave única `(run_id, cause, channel)` evita duplicados después de reinicio
 archivos descargados. Antes de reducir la retención, exporte un bundle.
 
 Respalde juntos `data\`, `logs\` y `exports\`; incluya los destinos según su
-política. No copie `data\harvester.db` mientras el proceso escribe: detenga la
+política. No copie `data\recolecta.db` mientras el proceso escribe: detenga la
 tarea o use una herramienta de backup compatible con SQLite.
 
 ## Paquete y actualización
 
-Verifique `FileHarvester-win64.zip` contra `SHA256SUMS.txt`. Para actualizar:
+Verifique `Recolecta-win64.zip` contra `SHA256SUMS.txt`. Para actualizar:
 
 1. respalde `data\`, `logs\` y `exports\`;
 2. desinstale la tarea;

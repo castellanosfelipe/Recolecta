@@ -23,7 +23,7 @@ def test_fernet_round_trip_and_scheme_prefix() -> None:
 def test_fernet_keyfile_survives_process_restart(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.delenv("HARVESTER_SECRET_KEY", raising=False)
+    monkeypatch.delenv("RECOLECTA_SECRET_KEY", raising=False)
     first = FernetSecretStore.from_environment(tmp_path)
     token = first.encrypt("persistente")
     second = FernetSecretStore.from_environment(tmp_path)
@@ -35,7 +35,7 @@ def test_environment_key_does_not_create_keyfile(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     key = Fernet.generate_key().decode("ascii")
-    monkeypatch.setenv("HARVESTER_SECRET_KEY", key)
+    monkeypatch.setenv("RECOLECTA_SECRET_KEY", key)
     store = create_secret_store("dev", tmp_path)
     assert store.decrypt(store.encrypt("desde-env")) == "desde-env"
     assert not (tmp_path / ".secret.key").exists()

@@ -24,7 +24,7 @@ class DpapiScope(StrEnum):
 class DpapiSecretStore:
     """Protect credentials using the current Windows identity or local machine."""
 
-    description: ClassVar[str] = "FileHarvester credential"
+    description: ClassVar[str] = "Recolecta credential"
 
     def __init__(self, *, scope: DpapiScope, data_dir: Path) -> None:
         if sys.platform != "win32":

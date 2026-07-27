@@ -5,7 +5,9 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$shotData = Join-Path $root "work\screenshot-data"
+$shotData = Join-Path $root (
+    "work\screenshot-data-" + [guid]::NewGuid().ToString("N")
+)
 $imageDir = Join-Path $root "docs\images"
 $edgeProfile = Join-Path $root "work\edge-profile"
 New-Item -ItemType Directory -Path $shotData, $imageDir, $edgeProfile -Force |
@@ -17,10 +19,20 @@ if (-not (Test-Path -LiteralPath $edge -PathType Leaf)) {
 }
 $python = Join-Path $root ".venv-build\Scripts\python.exe"
 $screenshot = Join-Path $imageDir "dashboard.png"
-$oldData = $env:HARVESTER_DATA_DIR
+$oldData = $env:RECOLECTA_DATA_DIR
+$oldPort = $env:RECOLECTA_PORT
+$listener = [System.Net.Sockets.TcpListener]::new(
+    [System.Net.IPAddress]::Loopback,
+    0
+)
+$listener.Start()
+$port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+$listener.Stop()
+$dashboardUrl = "http://127.0.0.1:$port/"
 $appProcess = $null
 try {
-    $env:HARVESTER_DATA_DIR = $shotData
+    $env:RECOLECTA_DATA_DIR = $shotData
+    $env:RECOLECTA_PORT = [string]$port
     $appProcess = Start-Process `
         -FilePath $python `
         -ArgumentList @((Join-Path $root "launcher.py"), "--service") `
@@ -30,9 +42,12 @@ try {
 
     $ready = $false
     for ($attempt = 0; $attempt -lt 40; $attempt++) {
+        if ($appProcess.HasExited) {
+            throw "Recolecta terminó con código $($appProcess.ExitCode)."
+        }
         try {
             $response = Invoke-WebRequest `
-                -Uri "http://127.0.0.1:8091/healthz" `
+                -Uri ($dashboardUrl + "healthz") `
                 -UseBasicParsing `
                 -TimeoutSec 1
             if ($response.StatusCode -eq 200) {
@@ -55,7 +70,7 @@ try {
         "--user-data-dir=$edgeProfile",
         "--window-size=1440,1000",
         "--screenshot=$screenshot",
-        "http://127.0.0.1:8091/"
+        $dashboardUrl
     )
     $edgeProcess = Start-Process `
         -FilePath $edge `
@@ -72,5 +87,6 @@ try {
     if ($null -ne $appProcess -and -not $appProcess.HasExited) {
         Stop-Process -Id $appProcess.Id -Force
     }
-    $env:HARVESTER_DATA_DIR = $oldData
+    $env:RECOLECTA_DATA_DIR = $oldData
+    $env:RECOLECTA_PORT = $oldPort
 }

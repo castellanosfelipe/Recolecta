@@ -7,7 +7,7 @@ Set-StrictMode -Version Latest
 $installDir = [System.IO.Path]::GetFullPath(
     (Split-Path -Parent $MyInvocation.MyCommand.Path)
 ).TrimEnd('\')
-$taskNames = @("FileHarvester", "FileHarvester-Service")
+$taskNames = @("Recolecta", "Recolecta-Service")
 
 foreach ($taskName in $taskNames) {
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -18,7 +18,7 @@ foreach ($taskName in $taskNames) {
     }
 }
 
-$processes = Get-CimInstance Win32_Process -Filter "Name = 'FileHarvester.exe'"
+$processes = Get-CimInstance Win32_Process -Filter "Name = 'Recolecta.exe'"
 foreach ($process in $processes) {
     if (-not $process.ExecutablePath) {
         continue
@@ -32,5 +32,5 @@ foreach ($process in $processes) {
     }
 }
 
-Write-Host "FileHarvester quedó desregistrado."
+Write-Host "Recolecta quedó desregistrado."
 Write-Host "Se conservaron la aplicación, data\, logs\, exports\ y todos los archivos descargados."

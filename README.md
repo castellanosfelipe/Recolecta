@@ -1,19 +1,19 @@
-# FileHarvester
+# Recolecta
 
-FileHarvester descarga de forma programada y auditable archivos desde FTP,
+Recolecta descarga de forma programada y auditable archivos desde FTP,
 FTPS, SFTP, WebDAV(S) y SMB. Está diseñado para Windows 10/11 x64, funciona
 sin internet y ofrece un dashboard local sin recursos externos.
 
-![Dashboard de FileHarvester](docs/images/dashboard.png)
+![Dashboard de Recolecta](docs/images/dashboard.png)
 
 ## Instalación rápida
 
-El paquete `FileHarvester-win64.zip` ya contiene Python y todas las
+El paquete `Recolecta-win64.zip` ya contiene Python y todas las
 dependencias. No instale Python en el equipo destino.
 
 1. Extraiga el ZIP en una carpeta permanente y escribible, por ejemplo
-   `C:\FileHarvester` o `%LOCALAPPDATA%\FileHarvester`.
-2. Abra PowerShell dentro de `FileHarvester`.
+   `C:\Recolecta` o `%LOCALAPPDATA%\Recolecta`.
+2. Abra PowerShell dentro de `Recolecta`.
 3. Instale para el usuario actual:
 
 ```powershell
@@ -69,8 +69,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Salida:
 
-- `dist\FileHarvester\`
-- `dist\FileHarvester-win64.zip`
+- `dist\Recolecta\`
+- `dist\Recolecta-win64.zip`
 - `dist\SHA256SUMS.txt`
 
 El pipeline de GitHub Actions repite el mismo build en Windows. Los tags con
@@ -90,9 +90,9 @@ py -3.12 -m venv .venv
 El CLI también permite corridas manuales:
 
 ```powershell
-FileHarvester.exe --run-now
-FileHarvester.exe --run-now --connection 3 --dry-run
-FileHarvester.exe --run-now --connection 3 --date 2026-07-26
+Recolecta.exe --run-now
+Recolecta.exe --run-now --connection 3 --dry-run
+Recolecta.exe --run-now --connection 3 --date 2026-07-26
 ```
 
 ## Documentación

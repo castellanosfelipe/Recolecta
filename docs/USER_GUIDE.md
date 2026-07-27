@@ -2,37 +2,37 @@
 
 ## Requisitos y preparación
 
-FileHarvester funciona en Windows 10/11 x64 sin internet y sin una instalación
+Recolecta funciona en Windows 10/11 x64 sin internet y sin una instalación
 previa de Python. Elija una carpeta permanente donde la cuenta que ejecutará
 la aplicación pueda escribir. No use una carpeta temporal ni mueva archivos
 individuales fuera del bundle.
 
-1. Copie `FileHarvester-win64.zip` al equipo.
+1. Copie `Recolecta-win64.zip` al equipo.
 2. Compare su SHA-256 con `SHA256SUMS.txt`:
 
 ```powershell
-Get-FileHash .\FileHarvester-win64.zip -Algorithm SHA256
+Get-FileHash .\Recolecta-win64.zip -Algorithm SHA256
 ```
 
-3. Extraiga el ZIP, por ejemplo en `C:\FileHarvester`.
+3. Extraiga el ZIP, por ejemplo en `C:\Recolecta`.
 4. Si Windows marcó los archivos como descargados de internet:
 
 ```powershell
-Get-ChildItem C:\FileHarvester -Recurse | Unblock-File
+Get-ChildItem C:\Recolecta -Recurse | Unblock-File
 ```
 
 ## Modo A: usuario actual, sin administrador
 
-Este modo inicia FileHarvester cuando el usuario abre sesión, muestra el icono
+Este modo inicia Recolecta cuando el usuario abre sesión, muestra el icono
 de bandeja y permite notificaciones toast.
 
 ```powershell
-cd C:\FileHarvester\FileHarvester
+cd C:\Recolecta\Recolecta
 Set-ExecutionPolicy -Scope Process Bypass
 .\install.ps1
 ```
 
-El script registra la tarea `FileHarvester`, la inicia y espera hasta 20
+El script registra la tarea `Recolecta`, la inicia y espera hasta 20
 segundos por `http://127.0.0.1:8091/healthz`. La tarea se reinicia después de
 un fallo, no duplica instancias, puede iniciar con batería y no tiene límite de
 duración.
@@ -43,12 +43,12 @@ Use este modo para operar sin una sesión iniciada. Abra PowerShell como
 administrador:
 
 ```powershell
-cd C:\FileHarvester\FileHarvester
+cd C:\Recolecta\Recolecta
 Set-ExecutionPolicy -Scope Process Bypass
 .\install-service.ps1
 ```
 
-La tarea `FileHarvester-Service` inicia con Windows como `SYSTEM`, nivel
+La tarea `Recolecta-Service` inicia con Windows como `SYSTEM`, nivel
 máximo, `WakeToRun` y recuperación automática. El dashboard sigue disponible,
 pero no hay bandeja ni toast. Los secretos usan DPAPI de máquina y el archivo
 `data\.entropy` tiene ACL restringida.
@@ -101,7 +101,7 @@ catch-up recupera ventanas perdidas después de un apagado o suspensión.
 - `logs\runs\<fecha>_<conexion>_<id>.jsonl`: evidencia por corrida, con
   progreso cada 10 %.
 - `exports\`: CSV, HTML y bundles ZIP generados.
-- `data\harvester.db`: configuración, agenda e historial.
+- `data\recolecta.db`: configuración, agenda e historial.
 
 En **Ajustes → Descargar bundle** se genera un ZIP con logs, CSV, reporte HTML
 y configuración pública sin secretos. La retención predeterminada es de 180
@@ -113,9 +113,9 @@ Por defecto solo escucha en `127.0.0.1`. Para permitir acceso remoto defina
 antes de registrar la tarea:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("HARVESTER_BIND_LAN", "1", "User")
-[Environment]::SetEnvironmentVariable("HARVESTER_DASH_USER", "operador", "User")
-[Environment]::SetEnvironmentVariable("HARVESTER_DASH_PASS", "una-clave-larga", "User")
+[Environment]::SetEnvironmentVariable("RECOLECTA_BIND_LAN", "1", "User")
+[Environment]::SetEnvironmentVariable("RECOLECTA_DASH_USER", "operador", "User")
+[Environment]::SetEnvironmentVariable("RECOLECTA_DASH_PASS", "una-clave-larga", "User")
 ```
 
 Vuelva a instalar la tarea. Basic Auth protege dashboard y API; `/healthz`
@@ -140,7 +140,7 @@ respaldarlos y confirmar que ya no se necesitan.
    `Set-ExecutionPolicy -Scope Process Bypass` en esa ventana; no necesita
    cambiar la política del equipo.
 2. **`/healthz` no responde.** Revise `logs\app.log`, confirme que el puerto
-   8091 no está ocupado y ejecute `FileHarvester.exe --self-test`.
+   8091 no está ocupado y ejecute `Recolecta.exe --self-test`.
 3. **La tarea inicia y se detiene.** Compruebe el historial del Programador de
    tareas, permisos de escritura sobre la carpeta y que no haya otra instancia.
 4. **Autenticación rechazada.** Edite la conexión, vuelva a ingresar el

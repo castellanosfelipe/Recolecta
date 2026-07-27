@@ -191,7 +191,7 @@ def test_dry_run_only_lists_and_closes_transport() -> None:
 
 
 def test_dry_run_loads_successful_identities_from_database(tmp_path: Path) -> None:
-    database = Database(tmp_path / "harvester.db")
+    database = Database(tmp_path / "recolecta.db")
     database.initialize()
     repository = ConnectionRepository(
         database, FernetSecretStore(Fernet.generate_key())

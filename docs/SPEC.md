@@ -1,4 +1,4 @@
-# PROMPT — FileHarvester
+# PROMPT — Recolecta
 
 > Prompt de ingeniería listo para pegar en Claude Code (o en un chat largo).
 > Construye desde cero un descargador programado de archivos para servidores FTP/FTPS/SFTP/WebDAV/WebDAVS/SMB,
@@ -26,12 +26,12 @@ Reglas de trabajo para el agente:
 ## 1. Rol y contexto
 
 Actúa como **ingeniero de software senior especializado en aplicaciones Windows offline, transferencia de
-archivos y sistemas de ejecución desatendida**. Vas a construir `FileHarvester`, una aplicación local que
+archivos y sistemas de ejecución desatendida**. Vas a construir `Recolecta`, una aplicación local que
 descarga cada madrugada los archivos del último día desde uno o varios servidores de archivos corporativos,
 los deja ordenados en una carpeta local, y deja evidencia auditable de qué se descargó, cuándo y con qué resultado.
 
 El proyecto es el hermano operativo de un proyecto previo del mismo autor, **StabilityMonitor**, que
-monitorea la *disponibilidad* de esas mismas conexiones. FileHarvester reutiliza su patrón de despliegue,
+monitorea la *disponibilidad* de esas mismas conexiones. Recolecta reutiliza su patrón de despliegue,
 su modelo de configuración y su formato de exportación, pero cambia el propósito: de *observar* a *traer*.
 
 ---
@@ -83,7 +83,7 @@ Replica exactamente el patrón "Modo A" de StabilityMonitor, ya validado en prod
   `pip install --no-index --find-links .\wheelhouse`. `vendor/` con el instalador oficial de Python 3.12 para bootstrap.
 - `build.ps1` en PowerShell: crea `.venv-build` (`py -3.12` con fallback a `python`), instala desde wheelhouse,
   **corre `pytest` y aborta si falla**, ejecuta PyInstaller, corre el `--self-test` sobre el `.exe` congelado,
-  y copia `install*.ps1` / `uninstall.ps1` dentro de `dist\FileHarvester\`.
+  y copia `install*.ps1` / `uninstall.ps1` dentro de `dist\Recolecta\`.
 - CI en GitHub Actions sobre `windows-latest`, disparado por tags `v*.*.*` y `workflow_dispatch`:
   compila, empaqueta ZIP, verifica contenido, sube artifact y publica Release.
 
@@ -91,7 +91,7 @@ Replica exactamente el patrón "Modo A" de StabilityMonitor, ya validado en prod
 
 ```python
 def base_dir() -> Path:
-    env = os.environ.get("HARVESTER_DATA_DIR", "").strip()
+    env = os.environ.get("RECOLECTA_DATA_DIR", "").strip()
     if env:
         return Path(env)
     if getattr(sys, "frozen", False):        # bundle PyInstaller
@@ -103,7 +103,7 @@ De ahí cuelgan `data/` (SQLite + `known_hosts`), `logs/`, `exports/` y, si la r
 
 ### 4.3 Autoarranque
 
-Dos modos, ambos entregables. **Este es el punto donde FileHarvester debe superar a StabilityMonitor**,
+Dos modos, ambos entregables. **Este es el punto donde Recolecta debe superar a StabilityMonitor**,
 porque una descarga a las 02:00 no puede depender de que alguien tenga sesión abierta.
 
 **Modo A — usuario, sin administrador** (`install.ps1`, por defecto):
@@ -116,7 +116,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable -MultipleInstances IgnoreNew `
     -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
-Register-ScheduledTask -TaskName "FileHarvester" -Action $action -Trigger $trigger -Settings $settings -Force
+Register-ScheduledTask -TaskName "Recolecta" -Action $action -Trigger $trigger -Settings $settings -Force
 ```
 
 Tras registrar: `Start-ScheduledTask`, luego polling de `http://127.0.0.1:8091/healthz` hasta 20 s con mensaje
@@ -168,7 +168,7 @@ RunOrchestrator ── por conexión: Lister → Planner → DownloadPool
         │
 Throttle (lock por host · spacing · rate limit · concurrencia global · bandwidth cap)
         │
-SQLite WAL (data/harvester.db) ─ connections · runs · run_files · settings · alerts_log
+SQLite WAL (data/recolecta.db) ─ connections · runs · run_files · settings · alerts_log
         │
 logs/app.log (rotativo) + logs/runs/*.jsonl (estructurado, descargable)
 ```
@@ -269,7 +269,7 @@ CREATE UNIQUE INDEX idx_file_identity
   - Si el archivo trae `secret` en claro, lo cifra localmente al importar; si no, la conexión nace **en pausa**
     con estado `"falta credencial"`.
   - Reutiliza la clave de deduplicación `(protocol, host, port, name)`.
-- Exportación propia en el mismo formato (`"app": "FileHarvester"`), **sin secretos**.
+- Exportación propia en el mismo formato (`"app": "Recolecta"`), **sin secretos**.
 
 ### RF-2 · Descubrimiento y ventana temporal
 
@@ -331,7 +331,7 @@ Esta es la regla de negocio más delicada del sistema. Impleméntala con tests e
 - **Ejecución manual** desde el dashboard (por conexión o todas), con selector de fecha para re-descargar
   una ventana histórica.
 - **CLI** sobre el mismo ejecutable, útil para operación y diagnóstico:
-  `FileHarvester.exe --run-now [--connection ID] [--date YYYY-MM-DD] [--dry-run] [--self-test]`.
+  `Recolecta.exe --run-now [--connection ID] [--date YYYY-MM-DD] [--dry-run] [--self-test]`.
 - **Instancia única:** mutex nombrado de Windows para que el CLI y el proceso residente jamás corran la misma
   ventana dos veces; si ya hay una instancia, el CLI le delega vía HTTP local.
 
@@ -402,8 +402,8 @@ Requisito explícito del cliente: *"mantener los logs de todo lo que se descarga
 - SFTP: host keys con **TOFU** en `data/known_hosts`; un cambio posterior de clave falla el chequeo con causa `tls`.
 - FTPS: `prot_p()` para proteger también el canal de datos; verificación de certificado solo con `ssl_mode='required'`
   (los certificados autofirmados son la norma en LAN).
-- Dashboard en `127.0.0.1` por defecto; `HARVESTER_BIND_LAN=1` para exponerlo, con advertencia en log y
-  Basic Auth vía `HARVESTER_DASH_USER` / `HARVESTER_DASH_PASS`. `/healthz` siempre sin auth.
+- Dashboard en `127.0.0.1` por defecto; `RECOLECTA_BIND_LAN=1` para exponerlo, con advertencia en log y
+  Basic Auth vía `RECOLECTA_DASH_USER` / `RECOLECTA_DASH_PASS`. `/healthz` siempre sin auth.
 - Los secretos **nunca** viajan al frontend: la API devuelve `has_secret: true/false`, jamás el valor.
 
 ### RF-11 · Alertas
@@ -474,7 +474,7 @@ Accesibilidad mínima: contraste AA, foco visible, tabla navegable por teclado, 
 ### 11.1 Estructura de repositorio esperada
 
 ```
-FileHarvester/
+Recolecta/
 ├── app/                     # código de la aplicación
 ├── static/  templates/      # frontend sin build
 ├── tests/                   # pytest (unitarios + integración con servidores locales)
@@ -577,7 +577,7 @@ Escríbelos en `docs/ACCEPTANCE.md` como checklist verificable:
 ## 15. Entregables finales
 
 1. Repositorio con la estructura de §11.1 y commits limpios por fase.
-2. `dist\FileHarvester\` autocontenido + ZIP publicado como GitHub Release.
+2. `dist\Recolecta\` autocontenido + ZIP publicado como GitHub Release.
 3. `README.md` con capturas, arquitectura (diagrama Mermaid) e instalación rápida.
 4. `docs/USER_GUIDE.md`: instalación en ambos modos, configuración de una conexión paso a paso,
    interpretación de logs, resolución de los 10 problemas más comunes.
@@ -626,7 +626,7 @@ Escríbelos en `docs/ACCEPTANCE.md` como checklist verificable:
 }
 ```
 
-Campos que FileHarvester consume: `name`, `client`, `protocol`, `host`, `port`, `username`, `auth_type`,
+Campos que Recolecta consume: `name`, `client`, `protocol`, `host`, `port`, `username`, `auth_type`,
 `key_path`, `ssl_mode`, `targets_json` → `remote_paths_json`, `timeout_s`, `retries`, `notes`,
 y `secret` en claro si viene (solo en importación, se cifra al vuelo).
 Campos que ignora: `db_name`, `sql_instance`, `health_query`, `interval_s`, `degraded_ms`, `write_check`, `aliases_json`.
@@ -635,16 +635,16 @@ Campos que ignora: `db_name`, `sql_instance`, `health_query`, `interval_s`, `deg
 
 | Variable | Efecto |
 |---|---|
-| `HARVESTER_DATA_DIR` | Sobrescribe la carpeta base (datos, logs, exports). |
-| `HARVESTER_PORT` | Puerto del dashboard (default `8091`). |
-| `HARVESTER_BIND_LAN` | `1` para escuchar en toda la LAN (log de advertencia). |
-| `HARVESTER_DASH_USER` / `HARVESTER_DASH_PASS` | Activan Basic Auth si ambas están definidas. |
-| `HARVESTER_MODE` | Fuerza `windows` \| `service` \| `dev` (útil en CI). |
-| `HARVESTER_SECRET_KEY` | Clave Fernet en modo `dev`; ignorada en Windows. |
+| `RECOLECTA_DATA_DIR` | Sobrescribe la carpeta base (datos, logs, exports). |
+| `RECOLECTA_PORT` | Puerto del dashboard (default `8091`). |
+| `RECOLECTA_BIND_LAN` | `1` para escuchar en toda la LAN (log de advertencia). |
+| `RECOLECTA_DASH_USER` / `RECOLECTA_DASH_PASS` | Activan Basic Auth si ambas están definidas. |
+| `RECOLECTA_MODE` | Fuerza `windows` \| `service` \| `dev` (útil en CI). |
+| `RECOLECTA_SECRET_KEY` | Clave Fernet en modo `dev`; ignorada en Windows. |
 
 ### 16.3 Nombre del proyecto
 
-`FileHarvester` es el nombre de trabajo. Alternativas coherentes con el naming del autor:
+`Recolecta` es el nombre de trabajo. Alternativas coherentes con el naming del autor:
 `NightFetch`, `DailyDrop`, `FileHarvest`, o `Recolector` si se prefiere español.
 Si se cambia, ajusta el nombre de la tarea programada, el `.exe`, el prefijo de variables de entorno
 y los nombres de módulo de forma consistente en todo el repositorio.

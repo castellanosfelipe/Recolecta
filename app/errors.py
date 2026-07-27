@@ -30,7 +30,7 @@ class ErrorType(StrEnum):
     UNKNOWN = "unknown"
 
 
-class HarvesterError(Exception):
+class RecolectaError(Exception):
     """Actionable application error with a stable category."""
 
     def __init__(
@@ -47,7 +47,7 @@ class HarvesterError(Exception):
 
 def classify_exception(exc: BaseException) -> ErrorType:
     """Map common Python/network exceptions to the public taxonomy."""
-    if isinstance(exc, HarvesterError):
+    if isinstance(exc, RecolectaError):
         return exc.error_type
     optional = _classify_optional_dependency_exception(exc)
     if optional is not None:

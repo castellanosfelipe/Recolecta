@@ -40,7 +40,11 @@ nav a span { width: 18px; text-align: center; font-size: 1.05rem; }
 nav a:hover { color: var(--text); background: #121e30; }
 nav a.active { color: var(--text); background: #172538; border-color: #273a54; box-shadow: inset 3px 0 var(--accent); }
 .nav-count { margin-left: auto; min-width: 20px; padding: 2px 6px; border-radius: 10px; background: var(--accent); color: #04150f; text-align: center; font-size: .7rem; }
-.sidebar-foot { margin-top: auto; display: flex; align-items: center; gap: 9px; padding: 14px 10px 0; border-top: 1px solid var(--line); font-size: .78rem; }
+.social-links { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: auto; padding: 18px 3px 13px; }
+.social-link { min-width: 0; display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 0 8px; color: #b7c5d8; background: #121e30; border: 1px solid #2a3a51; border-radius: 8px; text-decoration: none; font-size: .72rem; font-weight: 700; transition: color .15s, background .15s, border-color .15s, transform .15s; }
+.social-link:hover { color: var(--text); background: #17273b; border-color: #48617f; transform: translateY(-1px); }
+.social-link svg { flex: 0 0 auto; width: 16px; height: 16px; fill: currentColor; }
+.sidebar-foot { display: flex; align-items: center; gap: 9px; padding: 14px 10px 0; border-top: 1px solid var(--line); font-size: .78rem; }
 .sidebar-foot strong, .sidebar-foot small { display: block; }
 .health-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 4px #f9c66b1f; }
 .health-dot.ok { background: var(--accent); box-shadow: 0 0 0 4px #61e6b51f; }
@@ -174,6 +178,8 @@ dialog form, #detail-dialog > div:not(.dialog-head) { padding: 0 25px 25px; }
   .brand { padding: 0 4px 13px; }
   nav { display: flex; overflow-x: auto; padding-bottom: 3px; }
   nav a { flex: 0 0 auto; min-height: 38px; }
+  .social-links { display: flex; margin: 11px 4px 0; padding: 0; }
+  .social-link { min-width: 104px; }
   .sidebar-foot { display: none; }
   main { padding: 0 17px 40px; }
   .topbar { min-height: 82px; margin-bottom: 20px; }

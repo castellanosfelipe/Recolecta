@@ -9,7 +9,7 @@ Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if (-not $ZipPath) {
-    $ZipPath = Join-Path $root "dist\FileHarvester-win64.zip"
+    $ZipPath = Join-Path $root "dist\Recolecta-win64.zip"
 }
 if (-not $ReportPath) {
     $ReportPath = Join-Path $root "dist\acceptance-smoke.json"
@@ -25,7 +25,7 @@ if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     throw "No existe el manifiesto $manifestPath."
 }
 $manifestLine = (Get-Content -LiteralPath $manifestPath | Select-Object -First 1)
-if ($manifestLine -notmatch '^([0-9a-fA-F]{64}) \*FileHarvester-win64\.zip$') {
+if ($manifestLine -notmatch '^([0-9a-fA-F]{64}) \*Recolecta-win64\.zip$') {
     throw "El manifiesto de release tiene un formato inválido."
 }
 $expectedHash = $Matches[1]
@@ -55,15 +55,15 @@ $listener.Start()
 $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
 $listener.Stop()
 
-$oldDataDir = $env:HARVESTER_DATA_DIR
-$oldPort = $env:HARVESTER_PORT
+$oldDataDir = $env:RECOLECTA_DATA_DIR
+$oldPort = $env:RECOLECTA_PORT
 $process = $null
 try {
     Expand-Archive -LiteralPath $ZipPath -DestinationPath $smokeRoot
-    $bundle = Join-Path $smokeRoot "FileHarvester"
-    $executable = Join-Path $bundle "FileHarvester.exe"
+    $bundle = Join-Path $smokeRoot "Recolecta"
+    $executable = Join-Path $bundle "Recolecta.exe"
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-        throw "El ZIP no contiene FileHarvester\FileHarvester.exe."
+        throw "El ZIP no contiene Recolecta\Recolecta.exe."
     }
     if (Get-ChildItem -LiteralPath $bundle -Filter "python.exe" -Recurse -File) {
         throw "El paquete no debe depender de un python.exe externo."
@@ -89,8 +89,8 @@ try {
     }
 
     $stateDir = Join-Path $smokeRoot "state"
-    $env:HARVESTER_DATA_DIR = $stateDir
-    $env:HARVESTER_PORT = [string]$port
+    $env:RECOLECTA_DATA_DIR = $stateDir
+    $env:RECOLECTA_PORT = [string]$port
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $process = Start-Process `
         -FilePath $executable `
@@ -118,7 +118,7 @@ try {
     if ($stopwatch.Elapsed.TotalSeconds -ge 5) {
         throw "El dashboard tardó $($stopwatch.Elapsed.TotalSeconds) s; excede 5 s."
     }
-    if ($health.status -ne "ok" -or $health.app -ne "FileHarvester") {
+    if ($health.status -ne "ok" -or $health.app -ne "Recolecta") {
         throw "La respuesta de healthz es inválida."
     }
     $dashboard = Invoke-WebRequest `
@@ -130,7 +130,7 @@ try {
         -UseBasicParsing `
         -TimeoutSec 2
     if ($dashboard.StatusCode -ne 200 -or
-        $dashboard.Content -notmatch "FileHarvester" -or
+        $dashboard.Content -notmatch "Recolecta" -or
         $javascript.StatusCode -ne 200) {
         throw "El dashboard o sus recursos estáticos no están disponibles."
     }
@@ -167,8 +167,8 @@ try {
         Stop-Process -Id $process.Id -Force
         $process.WaitForExit()
     }
-    $env:HARVESTER_DATA_DIR = $oldDataDir
-    $env:HARVESTER_PORT = $oldPort
+    $env:RECOLECTA_DATA_DIR = $oldDataDir
+    $env:RECOLECTA_PORT = $oldPort
     if (Test-Path -LiteralPath $smokeRoot) {
         Remove-Item -LiteralPath $smokeRoot -Recurse -Force
     }

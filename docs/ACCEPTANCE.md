@@ -19,10 +19,12 @@
 - [x] El `.exe` congelado pasa `--self-test` e incluye recursos web y scripts de instalación.
 - [x] El ZIP y el inventario offline tienen manifiestos SHA-256 verificables.
 - [x] `acceptance_smoke.ps1` extrae el ZIP, arranca solo el ejecutable congelado y exige `/healthz`, dashboard y JS en menos de 5 s.
+- [x] Código, interfaz, tareas, exportaciones y artefactos usan exclusivamente la marca `Recolecta`.
+- [x] El dashboard enlaza al repositorio de GitHub y al perfil de LinkedIn con iconos locales, etiquetas accesibles y apertura segura.
 
-Evidencia de la compilación local de Fase 7: CPython.org 3.12.10 x64,
-171 pruebas aprobadas, cobertura total 85,26 %, autodiagnóstico fuente y
-congelado aprobados y bundle `onedir` por debajo de 120 MB.
+Evidencia de la compilación local actual: CPython.org 3.12.10 x64, 172 pruebas
+aprobadas, cobertura total 85,26 %, autodiagnóstico fuente y congelado
+aprobados y bundle `onedir` por debajo de 120 MB.
 
 ## Pruebas de aceptación en equipo destino
 

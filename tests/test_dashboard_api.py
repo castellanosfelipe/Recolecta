@@ -19,7 +19,7 @@ class Coordinator:
 
 
 def api(tmp_path: Path) -> tuple[TestClient, ConnectionRepository, RunRepository]:
-    database = Database(tmp_path / "harvester.db")
+    database = Database(tmp_path / "recolecta.db")
     database.initialize()
     connections = ConnectionRepository(
         database, FernetSecretStore(Fernet.generate_key())

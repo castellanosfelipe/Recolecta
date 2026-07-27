@@ -23,12 +23,12 @@ class FernetSecretStore:
             self._fernet = Fernet(encoded)
         except (TypeError, UnicodeEncodeError, ValueError) as exc:
             raise SecretStoreError(
-                "HARVESTER_SECRET_KEY no contiene una clave Fernet válida."
+                "RECOLECTA_SECRET_KEY no contiene una clave Fernet válida."
             ) from exc
 
     @classmethod
     def from_environment(cls, data_dir: Path) -> "FernetSecretStore":
-        configured = os.environ.get("HARVESTER_SECRET_KEY", "").strip()
+        configured = os.environ.get("RECOLECTA_SECRET_KEY", "").strip()
         if configured:
             return cls(configured)
         return cls(_read_or_create_key(data_dir / ".secret.key"))

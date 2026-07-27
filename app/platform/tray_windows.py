@@ -42,7 +42,7 @@ class TrayController:
             return
         self._thread = threading.Thread(
             target=self._run,
-            name="harvester-tray",
+            name="recolecta-tray",
             daemon=True,
         )
         self._thread.start()
@@ -58,9 +58,9 @@ class TrayController:
         import pystray
 
         self._icon = pystray.Icon(
-            "FileHarvester",
+            "Recolecta",
             _icon_image(self.status_provider()),
-            "FileHarvester",
+            "Recolecta",
             menu=pystray.Menu(
                 pystray.MenuItem("Abrir dashboard", self._open),
                 pystray.MenuItem("Ejecutar todas", self._execute),
@@ -70,7 +70,7 @@ class TrayController:
         )
         threading.Thread(
             target=self._refresh,
-            name="harvester-tray-status",
+            name="recolecta-tray-status",
             daemon=True,
         ).start()
         self._icon.run()
@@ -82,7 +82,7 @@ class TrayController:
             if status != previous and self._icon is not None:
                 self._icon.icon = _icon_image(status)
                 self._icon.title = (
-                    f"FileHarvester · {_status_label(status)}"
+                    f"Recolecta · {_status_label(status)}"
                 )
                 previous = status
 

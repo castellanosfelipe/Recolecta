@@ -116,7 +116,7 @@ class ExportService:
 
     def safe_configuration(self) -> dict[str, Any]:
         return {
-            "app": "FileHarvester",
+            "app": "Recolecta",
             "version": __version__,
             "exported_at": self.now().astimezone(timezone.utc).isoformat(),
             "note": (
@@ -180,7 +180,7 @@ class ExportService:
         return f"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Reporte FileHarvester{title_suffix}</title>
+<title>Reporte Recolecta{title_suffix}</title>
 <style>
 body{{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f3f6fa;color:#152033}}
 main{{max-width:1100px;margin:auto;padding:32px}} header{{background:#10243a;color:white;padding:28px;border-radius:12px}}
@@ -191,7 +191,7 @@ table{{width:100%;border-collapse:collapse;font-size:13px}} th,td{{padding:10px;
 .state{{font-weight:700}} .ok{{color:#087c55}} .failed{{color:#b42336}} .partial{{color:#9a6500}}
 @media(max-width:760px){{.cards,.grid{{grid-template-columns:1fr}}}} @media print{{body{{background:white}}main{{padding:0}}}}
 </style></head><body><main>
-<header><small>REPORTE OPERATIVO</small><h1>FileHarvester{title_suffix}</h1>
+<header><small>REPORTE OPERATIVO</small><h1>Recolecta{title_suffix}</h1>
 <p>Últimos {days} días · generado {html.escape(generated)}</p></header>
 <div class="cards">
 <div class="card"><span>Corridas</span><strong>{total}</strong></div>
@@ -208,7 +208,7 @@ table{{width:100%;border-collapse:collapse;font-size:13px}} th,td{{padding:10px;
         self.paths.exports.mkdir(parents=True, exist_ok=True)
         stamp = self.now().astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         destination = self.paths.exports / (
-            f"fileharvester-support-{stamp}-{secrets.token_hex(3)}.zip"
+            f"recolecta-support-{stamp}-{secrets.token_hex(3)}.zip"
         )
         cutoff = self.now().astimezone(timezone.utc) - timedelta(days=days)
         with zipfile.ZipFile(

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app.errors import ErrorType, HarvesterError
+from app.errors import ErrorType, RecolectaError
 from app.models import ConflictMode, Connection, Protocol
 from app.naming import (
     MAX_WINDOWS_PATH,
@@ -80,7 +80,7 @@ def test_destination_template_expands_inside_root(tmp_path: Path) -> None:
 def test_malicious_remote_paths_are_rejected(
     tmp_path: Path, malicious: str
 ) -> None:
-    with pytest.raises(HarvesterError) as raised:
+    with pytest.raises(RecolectaError) as raised:
         build_destination(
             connection(),
             remote(malicious),
@@ -91,7 +91,7 @@ def test_malicious_remote_paths_are_rejected(
 
 
 def test_template_cannot_escape_destination(tmp_path: Path) -> None:
-    with pytest.raises(HarvesterError) as raised:
+    with pytest.raises(RecolectaError) as raised:
         build_destination(
             connection(dest_template=r"..\outside\{filename}"),
             remote("/entrada/a.csv"),

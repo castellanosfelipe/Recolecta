@@ -11,7 +11,7 @@ def show_notification(title: str, message: str) -> None:
             "winotify no está disponible para mostrar notificaciones."
         ) from exc
     notification = Notification(
-        app_id="FileHarvester",
+        app_id="Recolecta",
         title=title,
         msg=message,
     )

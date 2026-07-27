@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from typing import BinaryIO, Callable
 
-from app.errors import ErrorType, HarvesterError
+from app.errors import ErrorType, RecolectaError
 from app.models import VerifyMode
 
 
@@ -44,7 +44,7 @@ class StreamingVerifier:
         while remaining:
             chunk = file.read(min(block_size, remaining))
             if not chunk:
-                raise HarvesterError(
+                raise RecolectaError(
                     ErrorType.INTEGRITY,
                     "El archivo parcial terminó antes del offset registrado.",
                 )
@@ -63,7 +63,7 @@ class StreamingVerifier:
 
     def verify_size(self, *, actual: int, expected: int | None) -> None:
         if expected is not None and actual != expected:
-            raise HarvesterError(
+            raise RecolectaError(
                 ErrorType.INTEGRITY,
                 f"El tamaño final es {actual} bytes; se esperaban {expected}.",
             )
@@ -85,7 +85,7 @@ def ensure_disk_space(
     free = disk_usage(probe).free
     required = int(planned_bytes * (1.0 + reserve_ratio))
     if free < required:
-        raise HarvesterError(
+        raise RecolectaError(
             ErrorType.DISK_SPACE,
             f"Espacio insuficiente: libres {free} bytes, requeridos {required}.",
         )
@@ -96,7 +96,7 @@ def _nearest_existing_parent(path: Path) -> Path:
     while not candidate.exists():
         parent = candidate.parent
         if parent == candidate:
-            raise HarvesterError(
+            raise RecolectaError(
                 ErrorType.DISK_SPACE,
                 f"No fue posible localizar el volumen de destino para {path}.",
             )

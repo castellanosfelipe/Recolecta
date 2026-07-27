@@ -15,7 +15,7 @@ from app.downloader import (
     DownloadStatus,
     cleanup_orphaned_staging,
 )
-from app.errors import ErrorType, HarvesterError
+from app.errors import ErrorType, RecolectaError
 from app.models import ConflictMode, Connection, Protocol, VerifyMode
 from app.platform.secrets_fernet import FernetSecretStore
 from app.transports.base import (
@@ -230,7 +230,7 @@ def test_authentication_failure_is_not_retried(tmp_path: Path) -> None:
     class AuthFailureTransport(MemoryTransport):
         def download_to(self, *args, **kwargs):
             self.state["calls"] = self.state.get("calls", 0) + 1
-            raise HarvesterError(
+            raise RecolectaError(
                 ErrorType.AUTH,
                 "Credencial rechazada.",
                 retryable=False,
@@ -282,7 +282,7 @@ def test_disk_preflight_aborts_before_connecting(tmp_path: Path) -> None:
         transport_factory=factory(state),
         disk_usage=lambda path: Usage(100, 100, 0),
     )
-    with pytest.raises(HarvesterError) as raised:
+    with pytest.raises(RecolectaError) as raised:
         engine.download_files((remote(),), run_id=15)
     assert raised.value.error_type == ErrorType.DISK_SPACE
     assert state == {}
@@ -341,7 +341,7 @@ def test_cleanup_removes_only_unreferenced_partials(tmp_path: Path) -> None:
 
 
 def test_sha256_and_outcome_are_persisted_in_run_files(tmp_path: Path) -> None:
-    database = Database(tmp_path / "data" / "harvester.db")
+    database = Database(tmp_path / "data" / "recolecta.db")
     database.initialize()
     connections = ConnectionRepository(
         database, FernetSecretStore(Fernet.generate_key())

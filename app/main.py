@@ -141,7 +141,7 @@ def create_app(config: AppConfig, runtime: RuntimeComponents | None = None) -> F
         components.scheduler.start()
         catchup_thread = threading.Thread(
             target=components.scheduler.run_catchup,
-            name="harvester-catchup",
+            name="recolecta-catchup",
             daemon=True,
         )
         catchup_thread.start()
@@ -149,7 +149,7 @@ def create_app(config: AppConfig, runtime: RuntimeComponents | None = None) -> F
         components.scheduler.shutdown(wait=False)
 
     app = FastAPI(
-        title="FileHarvester",
+        title="Recolecta",
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -204,7 +204,7 @@ def create_app(config: AppConfig, runtime: RuntimeComponents | None = None) -> F
                 return JSONResponse(
                     {"detail": "Autenticación requerida."},
                     status_code=401,
-                    headers={"WWW-Authenticate": 'Basic realm="FileHarvester"'},
+                    headers={"WWW-Authenticate": 'Basic realm="Recolecta"'},
                 )
             return await call_next(request)
     return app
@@ -221,11 +221,11 @@ def run_resident(config: AppConfig | None = None) -> int:
         else:
             logger.warning(
                 "El dashboard está expuesto a la LAN sin autenticación. "
-                "Configure HARVESTER_DASH_USER y HARVESTER_DASH_PASS."
+                "Configure RECOLECTA_DASH_USER y RECOLECTA_DASH_PASS."
             )
     guard = SingleInstance(resolved.paths.data)
     if not guard.try_acquire():
-        logger.error("FileHarvester ya se está ejecutando.")
+        logger.error("Recolecta ya se está ejecutando.")
         return 2
     try:
         app = create_app(resolved)

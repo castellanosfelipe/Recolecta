@@ -17,7 +17,7 @@ def write_event(message: str, *, error: bool = True) -> None:
         else win32evtlog.EVENTLOG_INFORMATION_TYPE
     )
     win32evtlogutil.ReportEvent(
-        "FileHarvester",
+        "Recolecta",
         1,
         eventType=event_type,
         strings=[message],

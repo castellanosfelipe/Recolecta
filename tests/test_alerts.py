@@ -208,7 +208,7 @@ def test_builtin_channels_deliver_expected_payloads(
     SmtpChannel(
         host="smtp.test",
         port=587,
-        sender="harvester@test",
+        sender="recolecta@test",
         recipients=("ops@test",),
         username="operator",
         password="secret",
@@ -249,17 +249,17 @@ def test_configured_channels_follow_runtime_and_environment(
             "alerts.webhook.enabled": True,
             "alerts.smtp.enabled": True,
             "alerts.smtp.host": "smtp.test",
-            "alerts.smtp.from": "harvester@test",
+            "alerts.smtp.from": "recolecta@test",
             "alerts.smtp.to": "ops@test, audit@test",
             "alerts.smtp.port": 2525,
             "alerts.smtp.starttls": True,
         }
     )
     monkeypatch.setenv(
-        "HARVESTER_ALERT_WEBHOOK_URL", "https://alerts.test/hook"
+        "RECOLECTA_ALERT_WEBHOOK_URL", "https://alerts.test/hook"
     )
-    monkeypatch.setenv("HARVESTER_SMTP_USER", "operator")
-    monkeypatch.setenv("HARVESTER_SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("RECOLECTA_SMTP_USER", "operator")
+    monkeypatch.setenv("RECOLECTA_SMTP_PASSWORD", "secret")
     monkeypatch.setattr(
         alerts_module,
         "runtime_mode",
@@ -291,7 +291,7 @@ def test_configured_channels_follow_runtime_and_environment(
             "alerts.smtp.enabled": True,
         }
     )
-    monkeypatch.delenv("HARVESTER_ALERT_WEBHOOK_URL")
+    monkeypatch.delenv("RECOLECTA_ALERT_WEBHOOK_URL")
     monkeypatch.setattr(
         alerts_module,
         "runtime_mode",

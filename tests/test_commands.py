@@ -5,9 +5,9 @@ from app.config import AppConfig
 
 
 def config(monkeypatch, tmp_path: Path) -> AppConfig:
-    monkeypatch.setenv("HARVESTER_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("HARVESTER_MODE", "dev")
-    monkeypatch.delenv("HARVESTER_SECRET_KEY", raising=False)
+    monkeypatch.setenv("RECOLECTA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("RECOLECTA_MODE", "dev")
+    monkeypatch.delenv("RECOLECTA_SECRET_KEY", raising=False)
     return AppConfig.from_env()
 
 

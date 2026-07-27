@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$TaskName = "FileHarvester-Service",
+    [string]$TaskName = "Recolecta-Service",
     [int]$Port = 8091
 )
 
@@ -15,7 +15,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 $installDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$executable = Join-Path $installDir "FileHarvester.exe"
+$executable = Join-Path $installDir "Recolecta.exe"
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
     throw "No se encontró $executable. Ejecute este script desde el bundle extraído."
 }
@@ -67,5 +67,5 @@ if (-not $healthy) {
     throw "La tarea SYSTEM se registró, pero $healthUrl no respondió en 20 segundos. Revise logs\app.log."
 }
 
-Write-Host "FileHarvester quedó instalado como SYSTEM al arrancar."
+Write-Host "Recolecta quedó instalado como SYSTEM al arrancar."
 Write-Host "Dashboard: http://127.0.0.1:$Port"

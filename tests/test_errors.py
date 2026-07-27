@@ -7,7 +7,7 @@ import httpx
 import paramiko
 import pytest
 
-from app.errors import ErrorType, HarvesterError, classify_exception, is_retryable
+from app.errors import ErrorType, RecolectaError, classify_exception, is_retryable
 
 
 @pytest.mark.parametrize(
@@ -36,8 +36,8 @@ def test_classify_exception(exc: BaseException, expected: ErrorType) -> None:
     assert classify_exception(exc) == expected
 
 
-def test_harvester_error_keeps_category() -> None:
-    exc = HarvesterError(ErrorType.INTEGRITY, "El tamaño no coincide.")
+def test_recolecta_error_keeps_category() -> None:
+    exc = RecolectaError(ErrorType.INTEGRITY, "El tamaño no coincide.")
     assert classify_exception(exc) == ErrorType.INTEGRITY
 
 

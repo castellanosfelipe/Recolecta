@@ -22,7 +22,7 @@ from app.api.schemas import (
 )
 from app.alerts import AlertRepository
 from app.db import ConnectionRepository, RunRepository
-from app.errors import HarvesterError
+from app.errors import RecolectaError
 from app.models import Connection
 from app.exports import ExportService
 from app.logging_setup import redact_secrets
@@ -55,7 +55,7 @@ def create_router(
 
     @router.get("/healthz")
     def healthz() -> dict[str, str]:
-        return {"status": "ok", "app": "FileHarvester", "version": __version__}
+        return {"status": "ok", "app": "Recolecta", "version": __version__}
 
     @router.post("/api/commands/run-now", response_model=RunNowResponse)
     def run_now(command: RunNowRequest) -> RunNowResponse:
@@ -77,7 +77,7 @@ def create_router(
                 )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except HarvesterError as exc:
+        except RecolectaError as exc:
             raise HTTPException(
                 status_code=409, detail=redact_secrets(exc)
             ) from exc
@@ -238,7 +238,7 @@ def create_router(
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except (HarvesterError, ValueError) as exc:
+        except (RecolectaError, ValueError) as exc:
             raise HTTPException(
                 status_code=422, detail=redact_secrets(exc)
             ) from exc
@@ -362,7 +362,7 @@ def create_router(
             stream.getvalue(),
             media_type="text/csv; charset=utf-8",
             headers={
-                "Content-Disposition": 'attachment; filename="fileharvester-files.csv"'
+                "Content-Disposition": 'attachment; filename="recolecta-files.csv"'
             },
         )
 
@@ -389,7 +389,7 @@ def create_router(
                 media_type="text/csv; charset=utf-8",
                 headers={
                     "Content-Disposition": (
-                        'attachment; filename="fileharvester-files.csv"'
+                        'attachment; filename="recolecta-files.csv"'
                     )
                 },
             )
@@ -403,7 +403,7 @@ def create_router(
                 media_type="text/csv; charset=utf-8",
                 headers={
                     "Content-Disposition": (
-                        'attachment; filename="fileharvester-runs.csv"'
+                        'attachment; filename="recolecta-runs.csv"'
                     )
                 },
             )
@@ -417,7 +417,7 @@ def create_router(
                 export_service.html_report(days=days, client=client),
                 headers={
                     "Content-Disposition": (
-                        'attachment; filename="fileharvester-report.html"'
+                        'attachment; filename="recolecta-report.html"'
                     )
                 },
             )

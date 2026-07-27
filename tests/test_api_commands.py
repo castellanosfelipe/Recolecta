@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes import create_router
-from app.errors import ErrorType, HarvesterError
+from app.errors import ErrorType, RecolectaError
 
 
 class Execution:
@@ -76,7 +76,7 @@ def test_run_all_and_cancel_routes() -> None:
 def test_active_connection_conflict_returns_409() -> None:
     class Busy(Coordinator):
         def execute_connection(self, connection_id, **kwargs):
-            raise HarvesterError(
+            raise RecolectaError(
                 ErrorType.INTERRUPTED, "Ya hay una corrida activa."
             )
 

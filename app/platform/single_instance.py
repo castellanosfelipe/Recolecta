@@ -14,7 +14,7 @@ class SingleInstance:
         self,
         data_dir: Path,
         *,
-        mutex_name: str = r"Global\FileHarvester.Singleton",
+        mutex_name: str = r"Global\Recolecta.Singleton",
     ) -> None:
         self.data_dir = data_dir
         self.mutex_name = mutex_name
@@ -76,7 +76,7 @@ class SingleInstance:
 
     def __enter__(self) -> "SingleInstance":
         if not self.try_acquire():
-            raise RuntimeError("FileHarvester ya se está ejecutando.")
+            raise RuntimeError("Recolecta ya se está ejecutando.")
         return self
 
     def __exit__(

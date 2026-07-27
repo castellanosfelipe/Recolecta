@@ -32,15 +32,15 @@ jobs:
       - name: Verify release archive contents
         shell: powershell
         run: |
-          $verify = Join-Path $env:RUNNER_TEMP "fileharvester-verify"
-          Expand-Archive -LiteralPath .\dist\FileHarvester-win64.zip -DestinationPath $verify
+          $verify = Join-Path $env:RUNNER_TEMP "recolecta-verify"
+          Expand-Archive -LiteralPath .\dist\Recolecta-win64.zip -DestinationPath $verify
           $required = @(
-            "FileHarvester\FileHarvester.exe",
-            "FileHarvester\install.ps1",
-            "FileHarvester\install-service.ps1",
-            "FileHarvester\uninstall.ps1",
-            "FileHarvester\_internal\static\app.js",
-            "FileHarvester\_internal\templates\index.html"
+            "Recolecta\Recolecta.exe",
+            "Recolecta\install.ps1",
+            "Recolecta\install-service.ps1",
+            "Recolecta\uninstall.ps1",
+            "Recolecta\_internal\static\app.js",
+            "Recolecta\_internal\templates\index.html"
           )
           foreach ($relative in $required) {
             $path = Join-Path $verify $relative
@@ -52,9 +52,9 @@ jobs:
       - name: Upload portable package
         uses: actions/upload-artifact@v4
         with:
-          name: FileHarvester-win64
+          name: Recolecta-win64
           path: |
-            dist/FileHarvester-win64.zip
+            dist/Recolecta-win64.zip
             dist/SHA256SUMS.txt
             dist/acceptance-smoke.json
           if-no-files-found: error
@@ -64,7 +64,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/FileHarvester-win64.zip
+            dist/Recolecta-win64.zip
             dist/SHA256SUMS.txt
             dist/acceptance-smoke.json
           generate_release_notes: true

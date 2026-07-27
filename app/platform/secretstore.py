@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from app.errors import ErrorType, HarvesterError
+from app.errors import ErrorType, RecolectaError
 
 
-class SecretStoreError(HarvesterError):
+class SecretStoreError(RecolectaError):
     """Actionable failure to encrypt or decrypt local credentials."""
 
     def __init__(self, message: str) -> None:

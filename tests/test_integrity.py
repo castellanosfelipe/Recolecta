@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app.errors import ErrorType, HarvesterError
+from app.errors import ErrorType, RecolectaError
 from app.integrity import StreamingVerifier, ensure_disk_space
 from app.models import VerifyMode
 
@@ -35,7 +35,7 @@ def test_size_mode_does_not_read_existing_partial() -> None:
 
 def test_size_mismatch_is_integrity_error() -> None:
     verifier = StreamingVerifier(VerifyMode.SIZE)
-    with pytest.raises(HarvesterError) as raised:
+    with pytest.raises(RecolectaError) as raised:
         verifier.verify_size(actual=9, expected=10)
     assert raised.value.error_type == ErrorType.INTEGRITY
 
@@ -43,7 +43,7 @@ def test_size_mismatch_is_integrity_error() -> None:
 def test_disk_preflight_requires_ten_percent_reserve(tmp_path: Path) -> None:
     Usage = namedtuple("Usage", "total used free")
 
-    with pytest.raises(HarvesterError) as raised:
+    with pytest.raises(RecolectaError) as raised:
         ensure_disk_space(
             tmp_path / "not-created",
             1000,
