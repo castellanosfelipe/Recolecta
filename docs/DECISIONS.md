@@ -206,3 +206,16 @@ release mezcle artefactos con identidades anteriores.
 Los enlaces de GitHub y LinkedIn usan SVG embebido para conservar la operación
 offline. Se abren en una pestaña nueva con `noopener noreferrer`, incluyen
 etiquetas accesibles y no incorporan scripts, fuentes ni imágenes remotas.
+
+## D-044 · GitHub Releases publica un instalador offline autoextraíble
+
+`Recolecta-Setup.exe` se congela como `onefile` y contiene el bundle `onedir`
+ya verificado. La instalación predeterminada es por usuario en
+`%LOCALAPPDATA%\Recolecta`; al actualizar desregistra de forma segura la
+instancia de esa carpeta, copia la nueva aplicación, conserva el estado y
+registra nuevamente la tarea mediante `install.ps1`.
+
+El modo `--extract-only` permite que CI valide hash, contenido y
+autodiagnóstico sin alterar tareas programadas. El workflow adjunta el Setup,
+el ZIP portable, los dos reportes smoke y `SHA256SUMS.txt` a cada release
+creada desde una etiqueta `v*.*.*`.

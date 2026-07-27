@@ -8,8 +8,23 @@ sin internet y ofrece un dashboard local sin recursos externos.
 
 ## Instalación rápida
 
-El paquete `Recolecta-win64.zip` ya contiene Python y todas las
-dependencias. No instale Python en el equipo destino.
+Las releases publican dos opciones offline. La recomendada es
+`Recolecta-Setup.exe`: contiene la aplicación completa, no requiere Python y
+registra automáticamente el inicio de Recolecta para el usuario actual.
+
+1. Descargue `Recolecta-Setup.exe` y `SHA256SUMS.txt`.
+2. Verifique el hash y ejecute el instalador:
+
+```powershell
+Get-FileHash .\Recolecta-Setup.exe -Algorithm SHA256
+.\Recolecta-Setup.exe
+```
+
+El instalador usa `%LOCALAPPDATA%\Recolecta`, conserva datos al actualizar y
+abre el dashboard cuando termina.
+
+Como alternativa portable, `Recolecta-win64.zip` contiene Python y todas las
+dependencias:
 
 1. Extraiga el ZIP en una carpeta permanente y escribible, por ejemplo
    `C:\Recolecta` o `%LOCALAPPDATA%\Recolecta`.

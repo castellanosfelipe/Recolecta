@@ -3,25 +3,36 @@
 ## Requisitos y preparación
 
 Recolecta funciona en Windows 10/11 x64 sin internet y sin una instalación
-previa de Python. Elija una carpeta permanente donde la cuenta que ejecutará
-la aplicación pueda escribir. No use una carpeta temporal ni mueva archivos
-individuales fuera del bundle.
+previa de Python.
 
-1. Copie `Recolecta-win64.zip` al equipo.
-2. Compare su SHA-256 con `SHA256SUMS.txt`:
+### Instalador recomendado
+
+1. Copie `Recolecta-Setup.exe` y `SHA256SUMS.txt` al equipo.
+2. Compare su SHA-256 con el manifiesto:
 
 ```powershell
-Get-FileHash .\Recolecta-win64.zip -Algorithm SHA256
+Get-FileHash .\Recolecta-Setup.exe -Algorithm SHA256
 ```
 
-3. Extraiga el ZIP, por ejemplo en `C:\Recolecta`.
-4. Si Windows marcó los archivos como descargados de internet:
+3. Ejecute `Recolecta-Setup.exe` y confirme la instalación. El Setup instala
+   en `%LOCALAPPDATA%\Recolecta`, registra la tarea del usuario, inicia la
+   aplicación y abre el dashboard.
+
+En una actualización se conservan `data\`, logs, exports y archivos
+descargados. El modo `SYSTEM` continúa disponible mediante
+`install-service.ps1` desde el paquete portable y requiere administrador.
+
+### Paquete portable
+
+1. Copie `Recolecta-win64.zip` al equipo y verifique también su SHA-256.
+2. Extraiga el ZIP, por ejemplo en `C:\Recolecta`.
+3. Si Windows marcó los archivos como descargados de internet:
 
 ```powershell
 Get-ChildItem C:\Recolecta -Recurse | Unblock-File
 ```
 
-## Modo A: usuario actual, sin administrador
+## Modo A portable: usuario actual, sin administrador
 
 Este modo inicia Recolecta cuando el usuario abre sesión, muestra el icono
 de bandeja y permite notificaciones toast.
@@ -37,7 +48,7 @@ segundos por `http://127.0.0.1:8091/healthz`. La tarea se reinicia después de
 un fallo, no duplica instancias, puede iniciar con batería y no tiene límite de
 duración.
 
-## Modo B: SYSTEM al arrancar
+## Modo B portable: SYSTEM al arrancar
 
 Use este modo para operar sin una sesión iniciada. Abra PowerShell como
 administrador:

@@ -11,6 +11,7 @@ $vendorInstaller = Join-Path $root "vendor\python-3.12.10-amd64.exe"
 $distRoot = Join-Path $root "dist"
 $bundle = Join-Path $distRoot "Recolecta"
 $zipPath = Join-Path $distRoot "Recolecta-win64.zip"
+$installerPath = Join-Path $distRoot "Recolecta-Setup.exe"
 
 function Invoke-Checked {
     param(
@@ -219,16 +220,46 @@ $bundleBytes = (Get-ChildItem -LiteralPath $bundle -Recurse -File | Measure-Obje
 if ($bundleBytes -gt 120MB) {
     throw "El bundle mide $([math]::Round($bundleBytes / 1MB, 1)) MB; excede el límite de 120 MB."
 }
+
+$installerArgs = @(
+    "--name", "Recolecta-Setup",
+    "--onefile",
+    "--noconsole",
+    "--noconfirm",
+    "--clean",
+    "--distpath", $distRoot,
+    "--workpath", (Join-Path $root "build\installer"),
+    "--specpath", (Join-Path $root "build"),
+    "--add-data", "$bundle;payload\Recolecta",
+    (Join-Path $root "installer.py")
+)
+Invoke-Checked "Construir instalador offline Recolecta-Setup" {
+    & $buildPython -m PyInstaller @installerArgs
+}
+if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+    throw "PyInstaller no produjo $installerPath."
+}
+$installerBytes = (Get-Item -LiteralPath $installerPath).Length
+if ($installerBytes -gt 120MB) {
+    throw "El instalador mide $([math]::Round($installerBytes / 1MB, 1)) MB; excede el límite de 120 MB."
+}
+
 if (Test-Path -LiteralPath $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force
 }
 Compress-Archive -LiteralPath $bundle -DestinationPath $zipPath -CompressionLevel Optimal
 $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$installerHash = (
+    Get-FileHash -LiteralPath $installerPath -Algorithm SHA256
+).Hash.ToLowerInvariant()
 [System.IO.File]::WriteAllText(
     (Join-Path $distRoot "SHA256SUMS.txt"),
-    "$zipHash *Recolecta-win64.zip`r`n"
+    "$zipHash *Recolecta-win64.zip`r`n" +
+    "$installerHash *Recolecta-Setup.exe`r`n"
 )
 
 Write-Host "`nBundle listo: $bundle"
 Write-Host "ZIP listo: $zipPath"
+Write-Host "Instalador listo: $installerPath"
 Write-Host "Tamaño del bundle: $([math]::Round($bundleBytes / 1MB, 1)) MB"
+Write-Host "Tamaño del instalador: $([math]::Round($installerBytes / 1MB, 1)) MB"

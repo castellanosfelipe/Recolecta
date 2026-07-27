@@ -29,6 +29,10 @@ jobs:
         shell: powershell
         run: .\scripts\acceptance_smoke.ps1
 
+      - name: Smoke test offline installer
+        shell: powershell
+        run: .\scripts\installer_smoke.ps1
+
       - name: Verify release archive contents
         shell: powershell
         run: |
@@ -54,9 +58,11 @@ jobs:
         with:
           name: Recolecta-win64
           path: |
+            dist/Recolecta-Setup.exe
             dist/Recolecta-win64.zip
             dist/SHA256SUMS.txt
             dist/acceptance-smoke.json
+            dist/installer-smoke.json
           if-no-files-found: error
 
       - name: Publish tagged release
@@ -64,7 +70,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/Recolecta-Setup.exe
             dist/Recolecta-win64.zip
             dist/SHA256SUMS.txt
             dist/acceptance-smoke.json
+            dist/installer-smoke.json
           generate_release_notes: true

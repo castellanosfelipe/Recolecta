@@ -22,6 +22,7 @@ def test_powershell_scripts_parse() -> None:
         "scripts/update_hashes.ps1",
         "scripts/capture_dashboard.ps1",
         "scripts/acceptance_smoke.ps1",
+        "scripts/installer_smoke.ps1",
     )
     quoted = ",".join(f"'{ROOT / script}'" for script in scripts)
     command = (
@@ -68,6 +69,9 @@ def test_build_is_offline_gated_and_complete() -> None:
         '"apscheduler"',
         '"tzdata"',
         "compress-archive",
+        "recolecta-setup",
+        "--onefile",
+        "payload\\recolecta",
         "install-service.ps1",
         "uninstall.ps1",
     ):
@@ -154,8 +158,11 @@ def test_ci_packages_and_releases_tags() -> None:
         "actions/upload-artifact@v4",
         "softprops/action-gh-release@v2",
         "recolecta-win64.zip",
+        "recolecta-setup.exe",
         "sha256sums.txt",
         "acceptance-smoke.json",
+        "installer-smoke.json",
+        ".\\scripts\\installer_smoke.ps1",
     ):
         assert expected in workflow
 
@@ -176,6 +183,40 @@ def test_acceptance_smoke_uses_only_frozen_bundle() -> None:
         assert expected in script
     assert "-m pytest" not in script
     assert "python.exe -" not in script
+
+
+def test_installer_contract_is_offline_and_preserves_state() -> None:
+    source = _read("installer.py").lower()
+    for expected in (
+        "payload",
+        "recolecta.exe",
+        "localappdata",
+        "programdata",
+        "install.ps1",
+        "install-service.ps1",
+        "uninstall.ps1",
+        "dirs_exist_ok=true",
+        "--extract-only",
+        "install-report.json",
+        "shell32.isuseranadmin",
+    ):
+        assert expected in source
+    assert "shell=true" not in source
+
+
+def test_installer_smoke_does_not_change_scheduled_tasks() -> None:
+    script = _read("scripts/installer_smoke.ps1").lower()
+    for expected in (
+        "recolecta-setup.exe",
+        "--extract-only",
+        "get-filehash",
+        "recolecta.exe",
+        "--self-test",
+        "scheduled_task_changed = $false",
+        "remove-item",
+    ):
+        assert expected in script
+    assert "register-scheduledtask" not in script
 
 
 def test_legacy_product_name_is_absent_from_source() -> None:
