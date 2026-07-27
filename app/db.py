@@ -463,6 +463,83 @@ class RunRepository:
             if cursor.rowcount != 1:
                 raise KeyError(f"No existe la corrida {run_id}.")
 
+    def last_successful_end(self, connection_id: int) -> datetime | None:
+        with self.database.connect() as database:
+            row = database.execute(
+                """
+                SELECT window_end_utc
+                FROM runs
+                WHERE connection_id = ? AND status = 'ok'
+                ORDER BY window_end_utc DESC
+                LIMIT 1
+                """,
+                (connection_id,),
+            ).fetchone()
+        return _parse_datetime(row["window_end_utc"]) if row else None
+
+    def has_successful_window(
+        self,
+        connection_id: int,
+        *,
+        window_start_utc: datetime,
+        window_end_utc: datetime,
+    ) -> bool:
+        expected_start = window_start_utc.astimezone(timezone.utc)
+        expected_end = window_end_utc.astimezone(timezone.utc)
+        with self.database.connect() as database:
+            rows = database.execute(
+                """
+                SELECT window_start_utc, window_end_utc
+                FROM runs
+                WHERE connection_id = ? AND status = 'ok'
+                """,
+                (connection_id,),
+            ).fetchall()
+        return any(
+            _parse_datetime(row["window_start_utc"]) == expected_start
+            and _parse_datetime(row["window_end_utc"]) == expected_end
+            for row in rows
+        )
+
+    def recover_interrupted(self) -> tuple[int, int]:
+        """Fail orphaned running runs and return downloading files to pending."""
+        now = utc_now_iso()
+        with self.database.connect() as database:
+            files = database.execute(
+                """
+                UPDATE run_files
+                SET status = 'pending', error_type = 'interrupted',
+                    error_msg = 'La aplicación se reinició durante la descarga.'
+                WHERE status = 'downloading'
+                  AND run_id IN (SELECT id FROM runs WHERE status = 'running')
+                """
+            ).rowcount
+            runs = database.execute(
+                """
+                UPDATE runs
+                SET status = 'failed', finished_at = ?,
+                    error_type = 'interrupted',
+                    error_msg = 'La aplicación se reinició durante la corrida.'
+                WHERE status = 'running'
+                """,
+                (now,),
+            ).rowcount
+        return runs, files
+
+    def fail_unfinished(
+        self, run_id: int, *, error_type: str, error_msg: str
+    ) -> int:
+        with self.database.connect() as database:
+            return database.execute(
+                """
+                UPDATE run_files
+                SET status = 'failed', error_type = ?, error_msg = ?,
+                    finished_at = ?
+                WHERE run_id = ? AND status IN ('pending', 'downloading')
+                """,
+                (error_type, error_msg, utc_now_iso(), run_id),
+            ).rowcount
+
 
 def _connection_db_values(
     connection: Connection,
@@ -557,3 +634,10 @@ def _aware_iso(value: datetime) -> str:
     if value.tzinfo is None:
         raise ValueError("Los timestamps de corrida deben incluir zona horaria.")
     return value.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _parse_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("Timestamp persistido sin zona horaria.")
+    return parsed.astimezone(timezone.utc)

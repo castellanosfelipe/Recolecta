@@ -16,3 +16,19 @@ En modo `SYSTEM` no habrá bandeja ni notificaciones de escritorio. El dashboard
 - `fernet:` requiere la misma `HARVESTER_SECRET_KEY` o el mismo `data/.secret.key`.
 
 Un respaldo de configuración no exportará estos tokens. Después de mover la instalación a otro equipo, vuelva a ingresar las credenciales.
+
+## Ejecución desatendida y energía
+
+El modo usuario recupera tareas después del login; el modo `SYSTEM` puede ejecutarlas desde el arranque sin sesión. Configure el equipo de descarga para permanecer disponible en corriente alterna:
+
+```powershell
+powercfg /change standby-timeout-ac 0
+```
+
+Si la política operativa lo permite, un administrador también puede desactivar la hibernación:
+
+```powershell
+powercfg /hibernate off
+```
+
+APScheduler y el catch-up recuperan ventanas perdidas, pero no pueden descargar mientras Windows está apagado o suspendido.

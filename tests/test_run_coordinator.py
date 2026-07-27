@@ -1,0 +1,125 @@
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from cryptography.fernet import Fernet
+
+import app.orchestrator as orchestrator_module
+from app.config import AppPaths
+from app.db import ConnectionRepository, Database
+from app.models import Connection, Protocol, VerifyMode, WindowMode
+from app.orchestrator import PlanStatus, RunCoordinator
+from app.platform.secrets_fernet import FernetSecretStore
+from app.transports.base import (
+    ListingResult,
+    RemoteFile,
+    TransferResult,
+    Transport,
+)
+
+
+def test_coordinator_plans_downloads_persists_and_deduplicates(
+    monkeypatch, tmp_path: Path
+) -> None:
+    now = datetime(2026, 7, 27, 12, tzinfo=timezone.utc)
+    content = b"coordinator-content"
+    source = RemoteFile(
+        "/entrada/report.csv",
+        len(content),
+        now - timedelta(hours=2),
+    )
+    state = {"downloads": 0}
+
+    class MemoryTransport(Transport):
+        def connect(self):
+            return None
+
+        def close(self):
+            return None
+
+        def list_files(self, remote_paths, *, recursive, max_depth):
+            return ListingResult((source,))
+
+        def stat(self, remote_path):
+            return source
+
+        def download_to(
+            self,
+            remote_path,
+            target,
+            *,
+            offset,
+            block_size,
+            on_chunk,
+            on_restart,
+        ):
+            state["downloads"] += 1
+            chunk = content[offset:]
+            on_chunk(chunk)
+            target.write(chunk)
+            return TransferResult(len(chunk), offset, True)
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "create_transport",
+        lambda connection, secret, known_hosts: MemoryTransport(),
+    )
+    paths = AppPaths.from_root(tmp_path).ensure()
+    database = Database(paths.database)
+    database.initialize()
+    connections = ConnectionRepository(
+        database, FernetSecretStore(Fernet.generate_key())
+    )
+    saved = connections.create(
+        Connection(
+            name="Coordinada",
+            protocol=Protocol.SFTP,
+            host="example.test",
+            remote_paths=("/entrada",),
+            dest_root="downloads",
+            dest_template="{filename}",
+            window_mode=WindowMode.ROLLING_HOURS,
+            window_hours=24,
+            verify_mode=VerifyMode.SHA256,
+        )
+    )
+    coordinator = RunCoordinator(
+        database,
+        connections,
+        paths,
+        now=lambda: now,
+    )
+    execution = coordinator.execute_connection(
+        saved.id,
+        trigger="cli",
+    )
+    assert execution.status == "ok"
+    assert execution.run_id is not None
+    assert state["downloads"] == 1
+    assert (tmp_path / "downloads" / "report.csv").read_bytes() == content
+    with database.connect() as db:
+        run = db.execute(
+            "SELECT * FROM runs WHERE id = ?", (execution.run_id,)
+        ).fetchone()
+        run_file = db.execute(
+            "SELECT * FROM run_files WHERE run_id = ?", (execution.run_id,)
+        ).fetchone()
+    assert run["status"] == "ok"
+    assert run_file["status"] == "ok"
+    assert run_file["sha256"]
+
+    dry = coordinator.execute_connection(
+        saved.id,
+        trigger="cli",
+        dry_run_only=True,
+    )
+    assert dry.status == "dry_run"
+    assert dry.plan.items[0].status == PlanStatus.DUPLICATE
+    assert state["downloads"] == 1
+    scheduled_again = coordinator.execute_connection(
+        saved.id,
+        trigger="schedule",
+    )
+    assert scheduled_again.status == "already_completed"
+    assert scheduled_again.run_id is None
+    with database.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1

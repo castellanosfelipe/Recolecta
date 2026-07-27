@@ -1,13 +1,15 @@
 import sqlite3
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
 
-from app.db import MIGRATIONS, ConnectionRepository, Database
+from app.db import MIGRATIONS, ConnectionRepository, Database, RunRepository
 from app.models import Connection, Protocol
 from app.platform.secrets_fernet import FernetSecretStore
+from app.transports.base import RemoteFile
 
 
 @pytest.fixture
@@ -194,3 +196,41 @@ def test_repository_orders_by_name(repository: ConnectionRepository) -> None:
     repository.create(connection("Zulu"))
     repository.create(replace(connection("alpha"), host="10.0.0.11"))
     assert [item.name for item in repository.list()] == ["alpha", "Zulu"]
+
+
+def test_recovery_fails_running_runs_and_returns_downloads_to_pending(
+    database: Database, repository: ConnectionRepository
+) -> None:
+    saved = repository.create(connection())
+    runs = RunRepository(database)
+    run_id = runs.start_run(
+        connection_id=saved.id,
+        trigger="schedule",
+        window_start_utc=datetime(
+            2026, 7, 26, tzinfo=timezone.utc
+        ),
+        window_end_utc=datetime(
+            2026, 7, 27, tzinfo=timezone.utc
+        ),
+    )
+    run_file_id = runs.add_file(
+        run_id=run_id,
+        connection_id=saved.id,
+        remote_file=RemoteFile(
+            "/entrada/a.csv",
+            10,
+            datetime(2026, 7, 26, 12, tzinfo=timezone.utc),
+        ),
+    )
+    runs.mark_downloading(run_file_id, attempts=1, bytes_done=5)
+    assert runs.recover_interrupted() == (1, 1)
+    assert runs.recover_interrupted() == (0, 0)
+    with database.connect() as db:
+        run = db.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        file = db.execute(
+            "SELECT * FROM run_files WHERE id = ?", (run_file_id,)
+        ).fetchone()
+    assert run["status"] == "failed"
+    assert run["error_type"] == "interrupted"
+    assert file["status"] == "pending"
+    assert file["error_type"] == "interrupted"

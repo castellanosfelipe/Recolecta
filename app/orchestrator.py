@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import fnmatch
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from enum import StrEnum
@@ -10,8 +12,13 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from app.db import Database
+from app.config import AppPaths
+from app.db import ConnectionRepository, Database, RunRepository
+from app.downloader import DownloadEngine, DownloadOutcome, DownloadStatus
+from app.errors import ErrorType, HarvesterError, classify_exception
 from app.models import Connection, WindowMode
+from app.throttle import ThrottleManager
+from app.transports import create_transport
 from app.transports.base import ListingResult, RemoteFile, Transport
 
 if TYPE_CHECKING:
@@ -72,6 +79,256 @@ class DryRunPlan:
         for item in self.items:
             values[item.status.value] += 1
         return values
+
+
+@dataclass(frozen=True)
+class RunExecution:
+    connection_id: int
+    run_id: int | None
+    trigger: str
+    status: str
+    plan: DryRunPlan
+    outcomes: tuple[DownloadOutcome, ...] = field(default_factory=tuple)
+
+    def summary(self) -> dict[str, object]:
+        return {
+            "connection_id": self.connection_id,
+            "run_id": self.run_id,
+            "trigger": self.trigger,
+            "status": self.status,
+            "window_start_utc": self.plan.window.start_utc.isoformat(),
+            "window_end_utc": self.plan.window.end_utc.isoformat(),
+            "files_planned": len(self.plan.files_to_download),
+            "warnings": list(self.plan.warnings),
+            "outcomes": {
+                status.value: sum(
+                    outcome.status == status for outcome in self.outcomes
+                )
+                for status in DownloadStatus
+            },
+        }
+
+
+class RunCoordinator:
+    """Execute dry-runs or persisted downloads for scheduler, CLI, and API."""
+
+    def __init__(
+        self,
+        database: Database,
+        connections: ConnectionRepository,
+        paths: AppPaths,
+        *,
+        throttle: ThrottleManager | None = None,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.database = database
+        self.connections = connections
+        self.runs = RunRepository(database)
+        self.paths = paths
+        self.throttle = throttle or ThrottleManager(global_parallelism=4)
+        self.now = now or (lambda: datetime.now(timezone.utc))
+        self._state_lock = threading.Lock()
+        self._connection_locks: dict[int, threading.Lock] = {}
+        self._cancel_events: dict[int, threading.Event] = {}
+
+    def execute_connection(
+        self,
+        connection_id: int,
+        *,
+        trigger: str,
+        selected_date: date | None = None,
+        dry_run_only: bool = False,
+        started_at: datetime | None = None,
+        window_reference_at: datetime | None = None,
+    ) -> RunExecution:
+        connection = self.connections.get(connection_id)
+        if not connection.enabled:
+            raise HarvesterError(
+                ErrorType.INTERRUPTED,
+                f"La conexión {connection.name} está en pausa.",
+            )
+        lock = self._connection_lock(connection_id)
+        if not lock.acquire(blocking=False):
+            raise HarvesterError(
+                ErrorType.INTERRUPTED,
+                f"Ya hay una corrida activa para {connection.name}.",
+            )
+        try:
+            actual_started = started_at or self.now()
+            reference = window_reference_at or actual_started
+            if actual_started.tzinfo is None or reference.tzinfo is None:
+                raise ValueError("started_at debe incluir zona horaria.")
+            secret = self.connections.get_secret(connection_id)
+            last_end = self.runs.last_successful_end(connection_id)
+            listing_transport = create_transport(
+                connection,
+                secret=secret,
+                known_hosts=self.paths.known_hosts,
+            )
+            plan = dry_run(
+                connection,
+                listing_transport,
+                started_at=reference,
+                database=self.database,
+                last_successful_end_utc=last_end,
+                selected_date=selected_date,
+            )
+            if dry_run_only:
+                return RunExecution(
+                    connection_id,
+                    None,
+                    trigger,
+                    "dry_run",
+                    plan,
+                )
+            if trigger in {"schedule", "catchup"} and self.runs.has_successful_window(
+                connection_id,
+                window_start_utc=plan.window.start_utc,
+                window_end_utc=plan.window.end_utc,
+            ):
+                return RunExecution(
+                    connection_id,
+                    None,
+                    trigger,
+                    "already_completed",
+                    plan,
+                )
+            return self._execute_plan(
+                connection,
+                secret=secret,
+                trigger=trigger,
+                started_at=actual_started,
+                plan=plan,
+            )
+        finally:
+            lock.release()
+
+    def execute_all(
+        self,
+        *,
+        trigger: str,
+        selected_date: date | None = None,
+        dry_run_only: bool = False,
+    ) -> tuple[RunExecution, ...]:
+        results = []
+        for connection in self.connections.list(enabled_only=True):
+            if connection.id is None:
+                continue
+            results.append(
+                self.execute_connection(
+                    connection.id,
+                    trigger=trigger,
+                    selected_date=selected_date,
+                    dry_run_only=dry_run_only,
+                )
+            )
+        return tuple(results)
+
+    def cancel(self, run_id: int) -> bool:
+        with self._state_lock:
+            event = self._cancel_events.get(run_id)
+        if event is None:
+            return False
+        event.set()
+        return True
+
+    def _execute_plan(
+        self,
+        connection: Connection,
+        *,
+        secret: str | None,
+        trigger: str,
+        started_at: datetime,
+        plan: DryRunPlan,
+    ) -> RunExecution:
+        assert connection.id is not None
+        run_id = self.runs.start_run(
+            connection_id=connection.id,
+            trigger=trigger,
+            window_start_utc=plan.window.start_utc,
+            window_end_utc=plan.window.end_utc,
+            started_at=started_at,
+        )
+        file_ids: dict[
+            tuple[str, str | None, int | None], int
+        ] = {}
+        for item in plan.items:
+            if item.status == PlanStatus.PLANNED:
+                persisted_status = "pending"
+            elif item.status == PlanStatus.DUPLICATE:
+                persisted_status = "duplicate"
+            else:
+                persisted_status = "skipped"
+            file_id = self.runs.add_file(
+                run_id=run_id,
+                connection_id=connection.id,
+                remote_file=item.file,
+                status=persisted_status,
+            )
+            if item.status == PlanStatus.PLANNED:
+                file_ids[item.file.identity] = file_id
+                self.runs.mark_downloading(
+                    file_id, attempts=0, bytes_done=0
+                )
+
+        cancel = threading.Event()
+        with self._state_lock:
+            self._cancel_events[run_id] = cancel
+        try:
+            engine = DownloadEngine(
+                connection,
+                portable_root=self.paths.root,
+                transport_factory=lambda: create_transport(
+                    connection,
+                    secret=secret,
+                    known_hosts=self.paths.known_hosts,
+                ),
+                throttle=self.throttle,
+            )
+
+            def persist(outcome: DownloadOutcome) -> None:
+                file_id = file_ids[outcome.remote_file.identity]
+                self.runs.record_download_outcome(file_id, outcome)
+
+            outcomes = engine.download_files(
+                plan.files_to_download,
+                run_id=run_id,
+                cancel_event=cancel,
+                on_outcome=persist,
+            )
+            status = _run_status(outcomes, plan.warnings)
+            self.runs.finish_run(run_id, status=status)
+            return RunExecution(
+                connection.id,
+                run_id,
+                trigger,
+                status,
+                plan,
+                outcomes,
+            )
+        except Exception as exc:
+            error_type = classify_exception(exc)
+            self.runs.fail_unfinished(
+                run_id,
+                error_type=error_type.value,
+                error_msg=str(exc),
+            )
+            self.runs.finish_run(
+                run_id,
+                status="failed",
+                error_type=error_type.value,
+                error_msg=str(exc),
+            )
+            raise
+        finally:
+            with self._state_lock:
+                self._cancel_events.pop(run_id, None)
+
+    def _connection_lock(self, connection_id: int) -> threading.Lock:
+        with self._state_lock:
+            return self._connection_locks.setdefault(
+                connection_id, threading.Lock()
+            )
 
 
 def calculate_window(
@@ -306,3 +563,21 @@ def _canonical_timestamp(value: str | None) -> str | None:
         return None
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return _aware_utc(parsed, "mtime_utc").isoformat(timespec="seconds")
+
+
+def _run_status(
+    outcomes: tuple[DownloadOutcome, ...], warnings: tuple[str, ...]
+) -> str:
+    if any(outcome.status == DownloadStatus.CANCELLED for outcome in outcomes):
+        return "cancelled"
+    failures = sum(
+        outcome.status == DownloadStatus.FAILED for outcome in outcomes
+    )
+    successes = sum(
+        outcome.status == DownloadStatus.OK for outcome in outcomes
+    )
+    if failures and not successes:
+        return "failed"
+    if failures or warnings:
+        return "partial"
+    return "ok"

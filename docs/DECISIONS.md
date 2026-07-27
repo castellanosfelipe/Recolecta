@@ -83,3 +83,23 @@ Los componentes Windows se limpian de caracteres inválidos, nombres reservados 
 ## D-021 · Cortesía compartida entre trabajadores
 
 El motor usa un lock breve por host para espaciar aperturas, un semáforo global y un token bucket compartido por conexión. Los reintentos aplican backoff exponencial con jitter; autenticación, permisos e integridad no se reintentan.
+
+## D-022 · Un job cron por conexión y zona IANA
+
+APScheduler mantiene un `CronTrigger` por conexión con su propia zona IANA. Para obtener jitter simétrico, el trigger parte de `hora-N` y aplica un jitter nativo de `2N`, mientras la ventana se asocia a la hora nominal. Los jobs usan `misfire_grace_time=None`, `coalesce=True` y `max_instances=1`; una suspensión no descarta silenciosamente la ejecución y varias pérdidas contiguas no crean una estampida.
+
+## D-023 · Catch-up asociado por ventana, no por fecha de proceso
+
+Una ventana se considera atendida únicamente si existe una corrida `ok` con los mismos límites UTC. El catch-up examina hasta `catchup.max_days`, ordena candidatos del más antiguo al reciente y vuelve a comprobar dentro del coordinador para cerrar carreras con un misfire de APScheduler. La hora nominal calcula la ventana, mientras `runs.started_at` conserva la hora real de ejecución.
+
+## D-024 · Recuperación conservadora de estados interrumpidos
+
+Al arrancar, las corridas `running` pasan a `failed/interrupted` y sus archivos `downloading` vuelven a `pending`. El staging UUIDv5 permanece, por lo que la nueva corrida de catch-up puede reanudar los bytes sin presentar la corrida antigua como exitosa.
+
+## D-025 · Mutex global y delegación HTTP local
+
+Windows usa `Global\FileHarvester.Singleton`; desarrollo usa un lock de archivo. Un CLI que no obtiene el mutex no compite por SQLite ni por el servidor: envía la orden a `127.0.0.1` y la instancia propietaria aplica el lock por conexión.
+
+## D-026 · Salud rápida y catch-up diferido
+
+El API y el scheduler arrancan antes del `startup_delay_s`. El catch-up espera en un hilo daemon para que `/healthz` no dependa de red, credenciales ni descargas. Un detector periódico considera tanto saltos relativos como intervalos largos cuando el monotonic de Windows también avanza durante la suspensión.

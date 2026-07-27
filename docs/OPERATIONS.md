@@ -21,3 +21,17 @@ Indica que un FTP antiguo no soportó `MDTM` ni `MLSD` y fue necesario interpret
 Una cancelación o pérdida de red conserva archivos en `<dest_root>/.staging`. No los renombre ni los copie como archivos terminados. La siguiente corrida de la misma identidad los reanuda; la limpieza de huérfanos solo elimina nombres que no estén referenciados por trabajos pendientes recuperados.
 
 Si aparece `disk_space`, libere al menos el tamaño planificado más 10 % de reserva. El motor aborta antes de abrir conexiones o crear staging.
+
+## Recuperación al arrancar
+
+Una corrida que estaba `running` pasa a `failed` con causa `interrupted`. Sus archivos vuelven a `pending` y el catch-up intenta la ventana pendiente después de `startup_delay_s`. Si ya existe una corrida `ok` para esos mismos límites UTC, no se crea otra.
+
+Para diagnóstico manual:
+
+```powershell
+FileHarvester.exe --self-test
+FileHarvester.exe --run-now --connection 3 --dry-run
+FileHarvester.exe --run-now --connection 3
+```
+
+El código de salida es distinto de cero cuando la instancia residente no responde o la ejecución directa falla.
