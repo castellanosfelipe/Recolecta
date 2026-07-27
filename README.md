@@ -4,7 +4,7 @@ Descargador programado y auditable para FTP, FTPS, SFTP, WebDAV(S) y SMB, diseñ
 
 ## Estado
 
-Fases 0 y 1 completadas: estructura base, configuración portable, logging seguro, taxonomía de errores, SQLite WAL con migraciones, CRUD de conexiones y secretos cifrados con DPAPI/Fernet. Los transportes comienzan en la Fase 2.
+Fases 0 a 2 completadas: estructura base, configuración portable, logging seguro, SQLite WAL, CRUD de conexiones, secretos DPAPI/Fernet, ventanas temporales, filtros, deduplicación, dry-run y listados FTP/FTPS/SFTP/WebDAV(S)/SMB. El motor de descarga comienza en la Fase 3.
 
 ## Desarrollo
 
@@ -20,6 +20,8 @@ py -3.12 -m venv .venv
 La configuración portable se resuelve desde `HARVESTER_DATA_DIR`; en desarrollo, si no se define, usa la raíz del repositorio. El dashboard final escuchará en `http://127.0.0.1:8091`.
 
 En modo `dev`, la clave Fernet se toma de `HARVESTER_SECRET_KEY` o se genera en `data/.secret.key`. En modo `windows` se usa DPAPI de usuario y en modo `service`, DPAPI de máquina con entropía adicional.
+
+El dry-run usa exactamente el mismo cálculo de ventana y filtros que utilizará la descarga. Solo consulta metadatos remotos; nunca abre los archivos para lectura.
 
 ## Documentación
 

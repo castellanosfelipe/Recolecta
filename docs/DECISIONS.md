@@ -39,3 +39,23 @@ En modo `dev`, `HARVESTER_SECRET_KEY` tiene prioridad. Si no existe, se crea at�
 ## D-010 · DPAPI de máquina con entropía protegida
 
 El modo `service` usa `CRYPTPROTECT_LOCAL_MACHINE` y 32 bytes adicionales en `data/.entropy`. La ACL del archivo admite únicamente `SYSTEM` y `Administrators`; si no puede aplicarse, la configuración falla antes de almacenar credenciales con una protección incompleta.
+
+## D-011 · Ventanas semiabiertas calculadas en hora local y comparadas en UTC
+
+`calendar_day` construye los dos límites en la zona IANA de la conexión y solo después los convierte a UTC. Esto conserva días de 23 o 25 horas durante cambios DST. Todos los modos producen `[inicio, fin)`, evitando que un archivo exactamente en el límite aparezca en dos ventanas contiguas.
+
+## D-012 · Arranque de `since_last_run` sin historial
+
+Si aún no existe una corrida exitosa, `since_last_run` usa `window_hours` hacia atrás desde el inicio actual. Las corridas siguientes parten del último `window_end_utc` exitoso menos el solape configurado.
+
+## D-013 · Un único planner para dry-run y descarga
+
+Ventana, quiet period, globs, tamaños, symlinks y deduplicación se aplican en `orchestrator.plan_listing`. El dry-run solo cambia el consumidor del plan; así no puede prometer archivos distintos de los que procesará el motor.
+
+## D-014 · Jerarquía temporal FTP con degradación explícita
+
+FTP consulta `MDTM` por archivo, usa el dato `modify` de `MLSD` si `MDTM` no está disponible y cae a `LIST` únicamente cuando el servidor no implementa MLSD. Los resultados de `LIST` se conservan para operación, pero producen advertencias y un plan parcial por su precisión limitada.
+
+## D-015 · Adaptadores de metadatos sin lectura de contenido
+
+SFTP usa `listdir_attr` y TOFU en `data/known_hosts`; WebDAV usa `PROPFIND` con `getlastmodified`; SMB usa `stat` sobre UNC y puede establecer credenciales explícitas con `WNetAddConnection2`. Ningún adaptador de Fase 2 ejecuta comandos de descarga.

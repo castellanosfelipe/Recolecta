@@ -1,7 +1,10 @@
 import errno
+import ftplib
 import socket
 import ssl
 
+import httpx
+import paramiko
 import pytest
 
 from app.errors import ErrorType, HarvesterError, classify_exception, is_retryable
@@ -17,6 +20,15 @@ from app.errors import ErrorType, HarvesterError, classify_exception, is_retryab
         (FileNotFoundError(), ErrorType.TARGET_MISSING),
         (ConnectionRefusedError(), ErrorType.TCP_CONNECT),
         (OSError(errno.ENOSPC, "full"), ErrorType.DISK_SPACE),
+        (ftplib.error_perm("530 Login incorrect"), ErrorType.AUTH),
+        (ftplib.error_perm("550 Permission denied"), ErrorType.PERMISSION),
+        (paramiko.AuthenticationException("bad"), ErrorType.AUTH),
+        (
+            httpx.ConnectTimeout(
+                "late", request=httpx.Request("GET", "https://example.test")
+            ),
+            ErrorType.TCP_TIMEOUT,
+        ),
         (ValueError(), ErrorType.UNKNOWN),
     ],
 )
@@ -32,3 +44,20 @@ def test_harvester_error_keeps_category() -> None:
 def test_auth_is_not_retryable() -> None:
     assert not is_retryable(ErrorType.AUTH)
     assert is_retryable(ErrorType.TCP_TIMEOUT)
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (401, ErrorType.AUTH),
+        (403, ErrorType.PERMISSION),
+        (404, ErrorType.TARGET_MISSING),
+        (500, ErrorType.PROTOCOL),
+    ],
+)
+def test_http_status_classification(status: int, expected: ErrorType) -> None:
+    request = httpx.Request("GET", "https://example.test/file")
+    response = httpx.Response(status, request=request)
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        response.raise_for_status()
+    assert classify_exception(raised.value) == expected

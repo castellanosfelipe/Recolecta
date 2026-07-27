@@ -22,8 +22,14 @@ SELF_TEST_IMPORTS = (
     "app.models",
     "app.platform.secretstore",
     "app.platform.secrets_fernet",
+    "app.transports.ftp",
+    "app.transports.sftp",
+    "app.transports.webdav",
+    "app.transports.smb",
     "cryptography.hazmat.primitives",
-)
+    "httpx",
+    "paramiko",
+) + (("win32crypt",) if sys.platform == "win32" else ())
 
 
 def run_self_test() -> int:

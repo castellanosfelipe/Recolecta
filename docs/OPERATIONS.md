@@ -11,3 +11,7 @@ Este runbook se completará en las fases de scheduler, alertas y empaquetado.
 5. Validar credenciales desde la acción “Probar conexión”.
 
 Nunca copie una base de datos con secretos DPAPI a otra máquina esperando que puedan descifrarse. Restaure la configuración sin secretos y vuelva a ingresarlos en el equipo destino.
+
+## Advertencia `timestamp_unreliable`
+
+Indica que un FTP antiguo no soportó `MDTM` ni `MLSD` y fue necesario interpretar `LIST`. La corrida puede continuar como parcial, pero la zona y la precisión del timestamp no están garantizadas. Solicite habilitar RFC 3659 en el servidor o use `since_last_run` con solape suficiente.
