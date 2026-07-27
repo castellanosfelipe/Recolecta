@@ -1,6 +1,33 @@
 # Guía de usuario
 
-La guía completa se desarrollará junto con las funciones operativas de las fases 5 a 7.
+La guía se ampliará con instalación, alertas y respaldo en las fases 6 a 8.
+
+## Dashboard local
+
+Abra `http://127.0.0.1:8091` mientras FileHarvester está en ejecución. La interfaz no necesita internet:
+
+- **Inicio** resume el estado de cada conexión y permite iniciar una corrida.
+- **En vivo** muestra bytes, porcentaje, velocidad media, ETA y cada trabajador; el sondeo es de un segundo mientras hay actividad y de diez segundos en reposo.
+- **Historial** filtra corridas y abre el detalle de sus archivos.
+- **Archivos** busca por ruta o nombre y exporta el catálogo a CSV.
+- **Conexiones** crea, edita, prueba, duplica o elimina orígenes. Una copia nace en pausa y sin credencial.
+- **Ajustes** cambia hora, cortesía, concurrencia, retención y catch-up.
+
+El botón **Cancelar corrida** solicita una parada cooperativa. El archivo `.part` se conserva para reanudarlo posteriormente.
+
+Las respuestas del API nunca incluyen la credencial; solo muestran `has_secret`.
+
+## Acceso desde la LAN
+
+Por defecto el servidor solo escucha en `127.0.0.1`. Para permitir acceso desde otros equipos:
+
+```powershell
+$env:HARVESTER_BIND_LAN = "1"
+$env:HARVESTER_DASH_USER = "operador"
+$env:HARVESTER_DASH_PASS = "una-clave-larga"
+```
+
+Basic Auth protege dashboard, archivos estáticos y API. `/healthz` queda sin autenticación. FileHarvester escribe una advertencia si se expone a la LAN sin credenciales.
 
 ## Modos de instalación previstos
 

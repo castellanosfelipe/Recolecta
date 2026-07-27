@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1220">
+  <title>FileHarvester</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script defer src="/static/vendor/chart.umd.js"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Saltar al contenido</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Navegación principal">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
+          <path d="M8 11h12l4 5h16v21H8z"/>
+          <path d="M15 27h18M24 21v12"/>
+        </svg>
+        <div><strong>FileHarvester</strong><span>Control local</span></div>
+      </div>
+      <nav id="primary-nav">
+        <a href="#inicio" data-view="inicio" class="active"><span aria-hidden="true">⌂</span> Inicio</a>
+        <a href="#en-vivo" data-view="en-vivo"><span aria-hidden="true">◉</span> En vivo <b id="live-count" class="nav-count" hidden>0</b></a>
+        <a href="#historial" data-view="historial"><span aria-hidden="true">↺</span> Historial</a>
+        <a href="#archivos" data-view="archivos"><span aria-hidden="true">▤</span> Archivos</a>
+        <a href="#conexiones" data-view="conexiones"><span aria-hidden="true">⇄</span> Conexiones</a>
+        <a href="#ajustes" data-view="ajustes"><span aria-hidden="true">⚙</span> Ajustes</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="api-dot" class="health-dot" aria-hidden="true"></span>
+        <span><strong id="api-status">Comprobando…</strong><small>Servidor local</small></span>
+      </div>
+    </aside>
+
+    <main id="main" tabindex="-1">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">OPERACIÓN NOCTURNA</p>
+          <h1 id="page-title">Resumen</h1>
+        </div>
+        <div class="top-actions">
+          <span id="last-refresh" class="muted">—</span>
+          <button class="btn secondary" id="refresh-button" type="button">Actualizar</button>
+          <button class="btn primary" id="new-connection-button" type="button">+ Nueva conexión</button>
+        </div>
+      </header>
+
+      <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+      <section id="view-inicio" class="view active" aria-labelledby="home-heading">
+        <div class="hero">
+          <div>
+            <p class="eyebrow">ESTADO GENERAL</p>
+            <h2 id="home-heading">Tus archivos, bajo control.</h2>
+            <p>Supervisa cada origen, identifica fallos y ejecuta descargas sin salir de esta máquina.</p>
+          </div>
+          <div class="hero-metric">
+            <span id="hero-active">0</span>
+            <small>corridas activas</small>
+          </div>
+        </div>
+        <div id="summary-stats" class="stat-grid"></div>
+        <div class="section-heading">
+          <div><p class="eyebrow">ORÍGENES</p><h2>Conexiones</h2></div>
+          <button class="btn text" type="button" data-go="conexiones">Administrar →</button>
+        </div>
+        <div id="connection-cards" class="connection-grid"></div>
+        <div class="panel chart-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">ÚLTIMAS CORRIDAS</p><h2>Archivos descargados</h2></div>
+            <span class="legend"><i></i> Descargas correctas</span>
+          </div>
+          <div class="chart-wrap"><canvas id="runs-chart" aria-label="Archivos descargados por corrida"></canvas></div>
+        </div>
+      </section>
+
+      <section id="view-en-vivo" class="view" aria-labelledby="live-heading">
+        <div class="section-heading">
+          <div><p class="eyebrow">TELEMETRÍA</p><h2 id="live-heading">Corridas en vivo</h2></div>
+          <span class="polling-note">Actualización automática cada segundo</span>
+        </div>
+        <div id="live-runs"></div>
+      </section>
+
+      <section id="view-historial" class="view" aria-labelledby="history-heading">
+        <div class="section-heading"><div><p class="eyebrow">AUDITORÍA</p><h2 id="history-heading">Historial de corridas</h2></div></div>
+        <form id="history-filters" class="filter-bar">
+          <label>Conexión<select name="connection_id" data-connections><option value="">Todas</option></select></label>
+          <label>Estado<select name="status"><option value="">Todos</option><option value="ok">Correcta</option><option value="partial">Parcial</option><option value="failed">Fallida</option><option value="running">En curso</option></select></label>
+          <label>Desde<input name="date_from" type="date"></label>
+          <label>Hasta<input name="date_to" type="date"></label>
+          <button class="btn secondary" type="submit">Filtrar</button>
+        </form>
+        <div class="table-panel">
+          <table>
+            <thead><tr><th>Corrida</th><th>Conexión</th><th>Inicio</th><th>Estado</th><th>Descargados</th><th>Fallidos</th><th>Volumen</th><th></th></tr></thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="view-archivos" class="view" aria-labelledby="files-heading">
+        <div class="section-heading">
+          <div><p class="eyebrow">CATÁLOGO</p><h2 id="files-heading">Archivos procesados</h2></div>
+          <a class="btn secondary" href="/api/files/export.csv">Exportar CSV</a>
+        </div>
+        <form id="file-filters" class="filter-bar">
+          <label class="grow">Buscar<input name="search" type="search" placeholder="Nombre o ruta del archivo"></label>
+          <label>Estado<select name="status"><option value="">Todos</option><option value="ok">Correcto</option><option value="failed">Fallido</option><option value="skipped">Omitido</option><option value="duplicate">Duplicado</option></select></label>
+          <button class="btn secondary" type="submit">Buscar</button>
+        </form>
+        <div class="table-panel">
+          <table>
+            <thead><tr><th>Archivo remoto</th><th>Conexión</th><th>Fecha</th><th>Estado</th><th>Tamaño</th><th>Duración</th></tr></thead>
+            <tbody id="files-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="view-conexiones" class="view" aria-labelledby="connections-heading">
+        <div class="section-heading">
+          <div><p class="eyebrow">CONFIGURACIÓN</p><h2 id="connections-heading">Conexiones</h2></div>
+          <button class="btn primary" type="button" data-new-connection>+ Nueva conexión</button>
+        </div>
+        <div class="table-panel">
+          <table>
+            <thead><tr><th>Nombre</th><th>Protocolo</th><th>Servidor</th><th>Credencial</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <tbody id="connections-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="view-ajustes" class="view" aria-labelledby="settings-heading">
+        <div class="section-heading"><div><p class="eyebrow">SISTEMA</p><h2 id="settings-heading">Ajustes globales</h2></div></div>
+        <form id="settings-form" class="panel form-panel">
+          <div class="form-grid">
+            <label>Hora diaria<input name="schedule.daily_time" type="time" value="02:00"></label>
+            <label>Zona horaria<input name="schedule.timezone" value="America/Bogota"></label>
+            <label>Concurrencia global<input name="concurrency.global" type="number" min="1" max="32" value="4"></label>
+            <label>Jitter (segundos)<input name="schedule.jitter_s" type="number" min="0" value="300"></label>
+            <label>Retención (días)<input name="retention.days" type="number" min="1" value="90"></label>
+            <label>Catch-up máximo (días)<input name="catchup.max_days" type="number" min="1" value="3"></label>
+          </div>
+          <label class="check"><input name="catchup.enabled" type="checkbox" checked> Recuperar corridas perdidas al iniciar</label>
+          <div class="form-actions"><button class="btn primary" type="submit">Guardar ajustes</button></div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="connection-dialog" aria-labelledby="connection-dialog-title">
+    <form id="connection-form" method="dialog">
+      <div class="dialog-head">
+        <div><p class="eyebrow">ORIGEN REMOTO</p><h2 id="connection-dialog-title">Nueva conexión</h2></div>
+        <button class="icon-button" value="cancel" aria-label="Cerrar">×</button>
+      </div>
+      <input name="id" type="hidden">
+      <div class="form-grid">
+        <label>Nombre<input name="name" required placeholder="Reportes de ventas"></label>
+        <label>Cliente<input name="client" placeholder="Cliente o área"></label>
+        <label>Protocolo<select name="protocol"><option>SFTP</option><option>FTP</option><option>FTPS</option><option>WEBDAV</option><option>WEBDAVS</option><option>SMB</option></select></label>
+        <label>Servidor<input name="host" required placeholder="servidor.ejemplo.local"></label>
+        <label>Puerto<input name="port" type="number" min="1" max="65535" placeholder="Automático"></label>
+        <label>Usuario<input name="username" autocomplete="username"></label>
+        <label>Contraseña o frase secreta<input name="secret" type="password" autocomplete="new-password" placeholder="Sin cambios si se deja vacía"></label>
+        <label>Zona horaria<input name="timezone" value="America/Bogota" required></label>
+        <label class="span-2">Rutas remotas<textarea name="remote_paths" rows="2" placeholder="/entrada&#10;/reportes"></textarea><small>Una ruta por línea.</small></label>
+        <label class="span-2">Destino local<input name="dest_root" value="downloads" required></label>
+        <label>Ventana<select name="window_mode"><option value="calendar_day">Día calendario anterior</option><option value="rolling_hours">Últimas horas</option><option value="since_last_run">Desde última corrida</option></select></label>
+        <label>Horas de ventana<input name="window_hours" type="number" min="1" value="24"></label>
+        <label>Archivos paralelos<input name="max_parallel_files" type="number" min="1" value="2"></label>
+        <label>Reintentos<input name="retries" type="number" min="0" value="3"></label>
+      </div>
+      <label class="check"><input name="enabled" type="checkbox" checked> Conexión activa</label>
+      <div class="dialog-actions">
+        <button class="btn secondary" value="cancel">Cancelar</button>
+        <button class="btn primary" type="submit" value="default">Guardar conexión</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="detail-dialog" aria-labelledby="detail-title">
+    <div class="dialog-head"><h2 id="detail-title">Detalle de corrida</h2><button class="icon-button" data-close-detail aria-label="Cerrar">×</button></div>
+    <div id="detail-content"></div>
+  </dialog>
+</body>
+</html>

@@ -4,7 +4,7 @@ Descargador programado y auditable para FTP, FTPS, SFTP, WebDAV(S) y SMB, diseñ
 
 ## Estado
 
-Fases 0 a 4 completadas: configuración y persistencia, transportes, motor atómico reanudable, APScheduler diario, catch-up, recuperación tras reinicio, instancia única y CLI delegable. El dashboard completo y el progreso en vivo comienzan en la Fase 5.
+Fases 0 a 5 completadas: configuración y persistencia, transportes, motor atómico reanudable, APScheduler diario, catch-up, recuperación tras reinicio, instancia única, CLI delegable y dashboard local offline con progreso en vivo.
 
 ## Desarrollo
 
@@ -17,7 +17,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe launcher.py --self-test
 ```
 
-La configuración portable se resuelve desde `HARVESTER_DATA_DIR`; en desarrollo, si no se define, usa la raíz del repositorio. El dashboard final escuchará en `http://127.0.0.1:8091`.
+La configuración portable se resuelve desde `HARVESTER_DATA_DIR`; en desarrollo, si no se define, usa la raíz del repositorio. El dashboard escucha en `http://127.0.0.1:8091`. Incluye Inicio, corridas en vivo, historial, archivos, conexiones y ajustes; no carga recursos desde internet.
 
 En modo `dev`, la clave Fernet se toma de `HARVESTER_SECRET_KEY` o se genera en `data/.secret.key`. En modo `windows` se usa DPAPI de usuario y en modo `service`, DPAPI de máquina con entropía adicional.
 
@@ -32,6 +32,8 @@ FileHarvester.exe --run-now --connection 3 --date 2026-07-26
 ```
 
 Si la instancia residente está activa, el CLI delega la orden a su API local en vez de abrir una segunda corrida.
+
+Para exponer el dashboard a la LAN, defina `HARVESTER_BIND_LAN=1`. Se recomienda configurar a la vez `HARVESTER_DASH_USER` y `HARVESTER_DASH_PASS`; `/healthz` permanece público para monitoreo.
 
 ## Documentación
 

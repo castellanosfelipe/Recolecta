@@ -1,16 +1,45 @@
-"""Minimal health and command routes used before the dashboard phase."""
+"""Local API for commands, dashboard data, and configuration."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+import csv
+import io
+import logging
+import threading
+from datetime import date
+
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from app import __version__
-from app.api.schemas import CancelResponse, RunNowRequest, RunNowResponse
+from app.api.schemas import (
+    CancelResponse,
+    ConnectionCreate,
+    ConnectionPatch,
+    RunNowRequest,
+    RunNowResponse,
+    SettingsUpdate,
+)
+from app.db import ConnectionRepository, RunRepository
 from app.errors import HarvesterError
-from app.orchestrator import RunCoordinator
+from app.models import Connection
+from app.orchestrator import DryRunPlan, RunCoordinator
+from app.progress import ProgressRegistry
+from app.scheduler import SchedulerService, SchedulerSettings
+from app.settings_store import SettingsStore
 
 
-def create_router(coordinator: RunCoordinator) -> APIRouter:
+logger = logging.getLogger(__name__)
+
+
+def create_router(
+    coordinator: RunCoordinator,
+    *,
+    connections: ConnectionRepository | None = None,
+    runs: RunRepository | None = None,
+    settings: SettingsStore | None = None,
+    progress: ProgressRegistry | None = None,
+    scheduler: SchedulerService | None = None,
+) -> APIRouter:
     router = APIRouter()
 
     @router.get("/healthz")
@@ -52,4 +81,384 @@ def create_router(coordinator: RunCoordinator) -> APIRouter:
             cancelled=coordinator.cancel(run_id),
         )
 
+    if not all((connections, runs, settings, progress)):
+        return router
+
+    assert connections is not None
+    assert runs is not None
+    assert settings is not None
+    assert progress is not None
+
+    def reload_scheduler() -> None:
+        if scheduler is not None:
+            scheduler.configure(SchedulerSettings.load(settings))
+
+    @router.get("/api/dashboard")
+    def dashboard() -> dict[str, object]:
+        summaries = runs.dashboard_summary()
+        for item in summaries:
+            next_run = None
+            if scheduler is not None:
+                job = scheduler.scheduler.get_job(
+                    f"connection-{item['id']}"
+                )
+                next_run = getattr(job, "next_run_time", None) if job else None
+            item["next_run_at"] = next_run.isoformat() if next_run else None
+        return {
+            "connections": summaries,
+            "progress": progress.snapshot(),
+        }
+
+    @router.get("/api/progress")
+    @router.get("/api/runs/current")
+    def current_progress() -> dict[str, object]:
+        return progress.snapshot()
+
+    @router.get("/api/connections")
+    def list_connections() -> dict[str, object]:
+        return {
+            "items": [item.to_public_dict() for item in connections.list()]
+        }
+
+    @router.post(
+        "/api/connections",
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_connection(payload: ConnectionCreate) -> dict[str, object]:
+        values = payload.model_dump(exclude={"secret"})
+        try:
+            created = connections.create(
+                Connection(**values),
+                secret=payload.secret,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        reload_scheduler()
+        return created.to_public_dict()
+
+    @router.get("/api/connections/{connection_id}")
+    def get_connection(connection_id: int) -> dict[str, object]:
+        try:
+            return connections.get(connection_id).to_public_dict()
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.patch("/api/connections/{connection_id}")
+    def update_connection(
+        connection_id: int, payload: ConnectionPatch
+    ) -> dict[str, object]:
+        values = payload.model_dump(exclude_unset=True)
+        secret_marker = object()
+        secret = values.pop("secret", secret_marker)
+        nullable_fields = {
+            "port",
+            "key_path",
+            "min_size_bytes",
+            "max_size_bytes",
+            "bandwidth_limit_kbps",
+            "post_action_path",
+        }
+        values = {
+            key: value
+            for key, value in values.items()
+            if value is not None or key in nullable_fields
+        }
+        try:
+            if secret is secret_marker:
+                updated = connections.update(connection_id, values)
+            else:
+                updated = connections.update(
+                    connection_id, values, secret=secret
+                )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        reload_scheduler()
+        return updated.to_public_dict()
+
+    @router.delete(
+        "/api/connections/{connection_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    def delete_connection(connection_id: int) -> Response:
+        if not connections.delete(connection_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"No existe la conexión {connection_id}.",
+            )
+        reload_scheduler()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.post(
+        "/api/connections/{connection_id}/duplicate",
+        status_code=status.HTTP_201_CREATED,
+    )
+    def duplicate_connection(connection_id: int) -> dict[str, object]:
+        try:
+            source = connections.get(connection_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        values = source.to_public_dict()
+        for key in ("id", "has_secret", "created_at", "updated_at"):
+            values.pop(key, None)
+        values["name"] = f"{source.name} (copia)"
+        values["enabled"] = False
+        duplicate = connections.create(Connection(**values))
+        reload_scheduler()
+        return duplicate.to_public_dict()
+
+    @router.post("/api/connections/{connection_id}/test")
+    @router.post("/api/connections/{connection_id}/dry-run")
+    def test_connection(
+        connection_id: int,
+        selected_date: date | None = None,
+    ) -> dict[str, object]:
+        try:
+            execution = coordinator.execute_connection(
+                connection_id,
+                trigger="manual",
+                selected_date=selected_date,
+                dry_run_only=True,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (HarvesterError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _plan_response(execution.plan)
+
+    @router.post(
+        "/api/connections/{connection_id}/run",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def start_connection_run(
+        connection_id: int,
+        selected_date: date | None = None,
+    ) -> dict[str, object]:
+        try:
+            connection = connections.get(connection_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if not connection.enabled:
+            raise HTTPException(
+                status_code=409,
+                detail=f"La conexión {connection.name} está en pausa.",
+            )
+
+        def execute() -> None:
+            try:
+                coordinator.execute_connection(
+                    connection_id,
+                    trigger="manual",
+                    selected_date=selected_date,
+                )
+            except Exception:
+                logger.exception(
+                    "La corrida manual de la conexión %s falló.",
+                    connection_id,
+                )
+
+        threading.Thread(
+            target=execute,
+            name=f"manual-run-{connection_id}",
+            daemon=True,
+        ).start()
+        return {"accepted": True, "connection_id": connection_id}
+
+    @router.get("/api/runs")
+    def list_runs(
+        connection_id: int | None = None,
+        run_status: str | None = Query(default=None, alias="status"),
+        date_from: date | None = None,
+        date_to: date | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, object]:
+        return {
+            "items": runs.list_runs(
+                connection_id=connection_id,
+                status=run_status,
+                date_from=date_from.isoformat() if date_from else None,
+                date_to=date_to.isoformat() if date_to else None,
+                limit=limit,
+                offset=offset,
+            )
+        }
+
+    @router.get("/api/runs/{run_id}")
+    def get_run(run_id: int) -> dict[str, object]:
+        try:
+            run = runs.get_run(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        run["files"] = _all_files(runs, run_id=run_id)
+        return run
+
+    @router.get("/api/files")
+    def list_files(
+        run_id: int | None = None,
+        connection_id: int | None = None,
+        file_status: str | None = Query(default=None, alias="status"),
+        search: str | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, object]:
+        return {
+            "items": runs.list_files(
+                run_id=run_id,
+                connection_id=connection_id,
+                status=file_status,
+                search=search,
+                date_from=date_from.isoformat() if date_from else None,
+                date_to=date_to.isoformat() if date_to else None,
+                limit=limit,
+                offset=offset,
+            )
+        }
+
+    @router.get("/api/files/export.csv")
+    def export_files() -> Response:
+        rows = _all_files(runs)
+        stream = io.StringIO()
+        fields = [
+            "id",
+            "run_id",
+            "connection_name",
+            "remote_path",
+            "local_path",
+            "size_bytes",
+            "bytes_done",
+            "mtime_utc",
+            "sha256",
+            "status",
+            "attempts",
+            "error_type",
+            "error_msg",
+            "duration_s",
+        ]
+        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+        return Response(
+            stream.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": 'attachment; filename="fileharvester-files.csv"'
+            },
+        )
+
+    @router.get("/api/settings")
+    def get_settings() -> dict[str, object]:
+        return {"values": _settings_for_ui(settings.all())}
+
+    @router.put("/api/settings")
+    def update_settings(payload: SettingsUpdate) -> dict[str, object]:
+        values = dict(payload.values)
+        daily_time = values.get("schedule.daily_time")
+        if daily_time is not None:
+            try:
+                hour_text, minute_text = str(daily_time).split(":", 1)
+                values["schedule.hour"] = int(hour_text)
+                values["schedule.minute"] = int(minute_text)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="La hora diaria debe usar el formato HH:MM.",
+                ) from exc
+        if "schedule.jitter_s" in values:
+            try:
+                jitter_s = int(values["schedule.jitter_s"])
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="El jitter debe ser un número entero de segundos.",
+                ) from exc
+            if jitter_s < 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail="El jitter no puede ser negativo.",
+                )
+            values["schedule.jitter_minutes"] = round(jitter_s / 60)
+
+        projected = settings.all()
+        projected.update(values)
+        try:
+            schedule_settings = SchedulerSettings(
+                hour=int(projected.get("schedule.hour", 2)),
+                minute=int(projected.get("schedule.minute", 0)),
+                jitter_minutes=int(
+                    projected.get("schedule.jitter_minutes", 0)
+                ),
+                catchup_enabled=bool(
+                    projected.get("catchup.enabled", True)
+                ),
+                catchup_max_days=int(
+                    projected.get("catchup.max_days", 3)
+                ),
+                startup_delay_s=int(
+                    projected.get("catchup.startup_delay_s", 60)
+                ),
+            ).validated()
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        for key, value in values.items():
+            settings.set(key, value)
+        if scheduler is not None:
+            scheduler.configure(schedule_settings)
+        return {"values": _settings_for_ui(settings.all())}
+
     return router
+
+
+def _plan_response(plan: DryRunPlan) -> dict[str, object]:
+    return {
+        "connection_id": plan.connection_id,
+        "window_start_utc": plan.window.start_utc.isoformat(),
+        "window_end_utc": plan.window.end_utc.isoformat(),
+        "files_to_download": len(plan.files_to_download),
+        "is_partial": plan.is_partial,
+        "warnings": list(plan.warnings),
+        "counters": plan.counters,
+        "items": [
+            {
+                "remote_path": item.file.remote_path,
+                "size_bytes": item.file.size_bytes,
+                "mtime_utc": (
+                    item.file.mtime_utc.isoformat()
+                    if item.file.mtime_utc is not None
+                    else None
+                ),
+                "status": item.status.value,
+                "reason": item.reason,
+            }
+            for item in plan.items
+        ],
+    }
+
+
+def _settings_for_ui(values: dict[str, object]) -> dict[str, object]:
+    result = dict(values)
+    if "schedule.daily_time" not in result:
+        hour = int(result.get("schedule.hour", 2))
+        minute = int(result.get("schedule.minute", 0))
+        result["schedule.daily_time"] = f"{hour:02d}:{minute:02d}"
+    if "schedule.jitter_s" not in result:
+        result["schedule.jitter_s"] = (
+            int(result.get("schedule.jitter_minutes", 0)) * 60
+        )
+    return result
+
+
+def _all_files(
+    runs: RunRepository, *, run_id: int | None = None
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    offset = 0
+    while True:
+        page = runs.list_files(run_id=run_id, limit=1000, offset=offset)
+        rows.extend(page)
+        if len(page) < 1000:
+            return rows
+        offset += len(page)

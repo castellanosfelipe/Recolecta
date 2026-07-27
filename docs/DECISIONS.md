@@ -103,3 +103,15 @@ Windows usa `Global\FileHarvester.Singleton`; desarrollo usa un lock de archivo.
 ## D-026 · Salud rápida y catch-up diferido
 
 El API y el scheduler arrancan antes del `startup_delay_s`. El catch-up espera en un hilo daemon para que `/healthz` no dependa de red, credenciales ni descargas. Un detector periódico considera tanto saltos relativos como intervalos largos cuando el monotonic de Windows también avanza durante la suspensión.
+
+## D-027 · Progreso vivo en memoria y checkpoints a 1 Hz
+
+Los callbacks de bloque actualizan un registro protegido por lock con velocidad, porcentaje y ETA. SQLite recibe como máximo un checkpoint por segundo y archivo; el resultado terminal no se limita. Esto mantiene fluida la UI sin convertir la base en un cuello de botella.
+
+## D-028 · Dashboard sin build ni dependencias remotas
+
+FastAPI sirve HTML, CSS, JavaScript vanilla y Chart.js 4.4.7 vendorizado. El sondeo usa un segundo durante corridas activas y diez segundos en reposo. La misma distribución funciona desconectada y los recursos se resuelven tanto desde el árbol fuente como desde `_MEIPASS`.
+
+## D-029 · API pública de salud y Basic Auth perimetral
+
+Cuando existen las dos variables de credenciales, un middleware protege dashboard, estáticos, documentación y API con comparación constante. `/healthz` siempre queda exento. Exponer a la LAN sin Basic Auth produce una advertencia explícita.

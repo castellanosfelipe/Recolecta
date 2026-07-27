@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import logging
+import base64
+import secrets
+import sys
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import create_router
 from app.config import AppConfig
@@ -17,6 +23,7 @@ from app.logging_setup import configure_logging
 from app.orchestrator import RunCoordinator
 from app.platform.secretstore import create_secret_store
 from app.platform.single_instance import SingleInstance
+from app.progress import ProgressRegistry
 from app.scheduler import SchedulerService, SchedulerSettings
 from app.settings_store import SettingsStore
 from app.throttle import ThrottleManager
@@ -31,6 +38,7 @@ class RuntimeComponents:
     connections: ConnectionRepository
     runs: RunRepository
     settings: SettingsStore
+    progress: ProgressRegistry
     coordinator: RunCoordinator
     scheduler: SchedulerService
     recovered_runs: int
@@ -47,11 +55,13 @@ def build_runtime(config: AppConfig) -> RuntimeComponents:
     settings = SettingsStore(database)
     global_parallelism = int(settings.get("concurrency.global", 4))
     throttle = ThrottleManager(global_parallelism=global_parallelism)
+    progress = ProgressRegistry(persist_progress=runs.update_file_progress)
     coordinator = RunCoordinator(
         database,
         connections,
         config.paths,
         throttle=throttle,
+        progress=progress,
     )
     scheduler = SchedulerService(coordinator, connections, runs)
     scheduler.configure(SchedulerSettings.load(settings))
@@ -60,6 +70,7 @@ def build_runtime(config: AppConfig) -> RuntimeComponents:
         connections,
         runs,
         settings,
+        progress,
         coordinator,
         scheduler,
         recovered_runs,
@@ -94,13 +105,71 @@ def create_app(config: AppConfig, runtime: RuntimeComponents | None = None) -> F
         lifespan=lifespan,
     )
     app.state.runtime = components
-    app.include_router(create_router(components.coordinator))
+    app.include_router(
+        create_router(
+            components.coordinator,
+            connections=components.connections,
+            runs=components.runs,
+            settings=components.settings,
+            progress=components.progress,
+            scheduler=components.scheduler,
+        )
+    )
+    resources = _resource_root()
+    app.mount(
+        "/static",
+        StaticFiles(directory=resources / "static"),
+        name="static",
+    )
+
+    @app.get("/", include_in_schema=False)
+    def dashboard_index() -> FileResponse:
+        return FileResponse(resources / "templates" / "index.html")
+
+    if config.dashboard_user and config.dashboard_password:
+        expected_user = config.dashboard_user
+        expected_password = config.dashboard_password
+
+        @app.middleware("http")
+        async def basic_auth(request: Request, call_next):
+            if request.url.path == "/healthz":
+                return await call_next(request)
+            supplied = request.headers.get("Authorization", "")
+            valid = False
+            if supplied.startswith("Basic "):
+                try:
+                    decoded = base64.b64decode(
+                        supplied[6:], validate=True
+                    ).decode("utf-8")
+                    username, password = decoded.split(":", 1)
+                    valid = secrets.compare_digest(
+                        username, expected_user
+                    ) and secrets.compare_digest(password, expected_password)
+                except (ValueError, UnicodeDecodeError):
+                    valid = False
+            if not valid:
+                return JSONResponse(
+                    {"detail": "Autenticación requerida."},
+                    status_code=401,
+                    headers={"WWW-Authenticate": 'Basic realm="FileHarvester"'},
+                )
+            return await call_next(request)
     return app
 
 
 def run_resident(config: AppConfig | None = None) -> int:
     resolved = config or AppConfig.from_env()
     configure_logging(resolved.paths.logs)
+    if resolved.bind_lan:
+        if resolved.dashboard_user:
+            logger.warning(
+                "El dashboard está expuesto a la LAN con Basic Auth."
+            )
+        else:
+            logger.warning(
+                "El dashboard está expuesto a la LAN sin autenticación. "
+                "Configure HARVESTER_DASH_USER y HARVESTER_DASH_PASS."
+            )
     guard = SingleInstance(resolved.paths.data)
     if not guard.try_acquire():
         logger.error("FileHarvester ya se está ejecutando.")
@@ -117,3 +186,10 @@ def run_resident(config: AppConfig | None = None) -> int:
         return 0
     finally:
         guard.release()
+
+
+def _resource_root() -> Path:
+    """Resolve bundled web assets in source and PyInstaller modes."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent.parent

@@ -17,6 +17,7 @@ from app.db import ConnectionRepository, Database, RunRepository
 from app.downloader import DownloadEngine, DownloadOutcome, DownloadStatus
 from app.errors import ErrorType, HarvesterError, classify_exception
 from app.models import Connection, WindowMode
+from app.progress import ProgressRegistry
 from app.throttle import ThrottleManager
 from app.transports import create_transport
 from app.transports.base import ListingResult, RemoteFile, Transport
@@ -119,6 +120,7 @@ class RunCoordinator:
         paths: AppPaths,
         *,
         throttle: ThrottleManager | None = None,
+        progress: ProgressRegistry | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.database = database
@@ -126,6 +128,9 @@ class RunCoordinator:
         self.runs = RunRepository(database)
         self.paths = paths
         self.throttle = throttle or ThrottleManager(global_parallelism=4)
+        self.progress = progress or ProgressRegistry(
+            persist_progress=self.runs.update_file_progress
+        )
         self.now = now or (lambda: datetime.now(timezone.utc))
         self._state_lock = threading.Lock()
         self._connection_locks: dict[int, threading.Lock] = {}
@@ -142,7 +147,7 @@ class RunCoordinator:
         window_reference_at: datetime | None = None,
     ) -> RunExecution:
         connection = self.connections.get(connection_id)
-        if not connection.enabled:
+        if not connection.enabled and not dry_run_only:
             raise HarvesterError(
                 ErrorType.INTERRUPTED,
                 f"La conexión {connection.name} está en pausa.",
@@ -230,6 +235,7 @@ class RunCoordinator:
         if event is None:
             return False
         event.set()
+        self.progress.mark_cancel_requested(run_id)
         return True
 
     def _execute_plan(
@@ -271,6 +277,17 @@ class RunCoordinator:
                     file_id, attempts=0, bytes_done=0
                 )
 
+        self.progress.start_run(
+            run_id=run_id,
+            connection_id=connection.id,
+            connection_name=connection.name,
+            trigger=trigger,
+            files=(
+                (file_ids[item.file.identity], item.file)
+                for item in plan.items
+                if item.status == PlanStatus.PLANNED
+            ),
+        )
         cancel = threading.Event()
         with self._state_lock:
             self._cancel_events[run_id] = cancel
@@ -289,11 +306,26 @@ class RunCoordinator:
             def persist(outcome: DownloadOutcome) -> None:
                 file_id = file_ids[outcome.remote_file.identity]
                 self.runs.record_download_outcome(file_id, outcome)
+                self.progress.finish_file(run_id, file_id, outcome)
+
+            def report_progress(
+                remote_file: RemoteFile,
+                bytes_done: int,
+                size_bytes: int | None,
+            ) -> None:
+                self.progress.update_file(
+                    run_id,
+                    file_ids[remote_file.identity],
+                    bytes_done,
+                    size_bytes=size_bytes,
+                    worker=threading.current_thread().name,
+                )
 
             outcomes = engine.download_files(
                 plan.files_to_download,
                 run_id=run_id,
                 cancel_event=cancel,
+                on_progress=report_progress,
                 on_outcome=persist,
             )
             status = _run_status(outcomes, plan.warnings)
@@ -321,6 +353,7 @@ class RunCoordinator:
             )
             raise
         finally:
+            self.progress.finish_run(run_id)
             with self._state_lock:
                 self._cancel_events.pop(run_id, None)
 

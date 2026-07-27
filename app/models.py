@@ -170,6 +170,7 @@ class Connection:
             remote_paths=tuple(str(path).strip() for path in self.remote_paths if str(path).strip()),
             include_globs=tuple(str(value).strip() for value in self.include_globs if str(value).strip()),
             exclude_globs=tuple(str(value).strip() for value in self.exclude_globs if str(value).strip()),
+            window_mode=window_mode,
             timezone=self.timezone.strip(),
             dest_root=self.dest_root.strip(),
             dest_template=self.dest_template.strip(),

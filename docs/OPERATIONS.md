@@ -35,3 +35,14 @@ FileHarvester.exe --run-now --connection 3
 ```
 
 El código de salida es distinto de cero cuando la instancia residente no responde o la ejecución directa falla.
+
+## Progreso y cancelación
+
+`GET /api/progress` mantiene el detalle activo en memoria para no castigar SQLite. `bytes_done` se persiste como máximo una vez por segundo por archivo y el resultado terminal siempre se escribe completo. Si el dashboard deja de actualizar:
+
+1. comprobar `/healthz`;
+2. recargar la vista sin cerrar el proceso residente;
+3. revisar `logs/app.log`;
+4. confirmar en Historial si la corrida ya terminó.
+
+La cancelación es cooperativa: puede tardar hasta que el bloque de red actual regrese. No elimine el `.part`.

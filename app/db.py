@@ -381,6 +381,20 @@ class RunRepository:
                 (attempts, bytes_done, utc_now_iso(), run_file_id),
             )
 
+    def update_file_progress(self, run_file_id: int, bytes_done: int) -> None:
+        """Persist a sampled byte count without changing terminal state."""
+        with self.database.connect() as database:
+            cursor = database.execute(
+                """
+                UPDATE run_files
+                SET bytes_done = MAX(bytes_done, ?)
+                WHERE id = ? AND status = 'downloading'
+                """,
+                (max(0, bytes_done), run_file_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"No existe el archivo activo {run_file_id}.")
+
     def record_download_outcome(
         self, run_file_id: int, outcome: "DownloadOutcome"
     ) -> None:
@@ -539,6 +553,139 @@ class RunRepository:
                 """,
                 (error_type, error_msg, utc_now_iso(), run_id),
             ).rowcount
+
+    def list_runs(
+        self,
+        *,
+        connection_id: int | None = None,
+        status: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if connection_id is not None:
+            clauses.append("r.connection_id = ?")
+            parameters.append(connection_id)
+        if status:
+            clauses.append("r.status = ?")
+            parameters.append(status)
+        if date_from:
+            clauses.append("date(r.started_at) >= date(?)")
+            parameters.append(date_from)
+        if date_to:
+            clauses.append("date(r.started_at) <= date(?)")
+            parameters.append(date_to)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.extend((max(1, min(limit, 500)), max(0, offset)))
+        with self.database.connect() as database:
+            rows = database.execute(
+                f"""
+                SELECT r.*, c.name AS connection_name
+                FROM runs r
+                JOIN connections c ON c.id = r.connection_id
+                {where}
+                ORDER BY r.started_at DESC, r.id DESC
+                LIMIT ? OFFSET ?
+                """,
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_run(self, run_id: int) -> dict[str, Any]:
+        with self.database.connect() as database:
+            row = database.execute(
+                """
+                SELECT r.*, c.name AS connection_name
+                FROM runs r
+                JOIN connections c ON c.id = r.connection_id
+                WHERE r.id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"No existe la corrida {run_id}.")
+        return dict(row)
+
+    def list_files(
+        self,
+        *,
+        run_id: int | None = None,
+        connection_id: int | None = None,
+        status: str | None = None,
+        search: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if run_id is not None:
+            clauses.append("f.run_id = ?")
+            parameters.append(run_id)
+        if connection_id is not None:
+            clauses.append("f.connection_id = ?")
+            parameters.append(connection_id)
+        if status:
+            clauses.append("f.status = ?")
+            parameters.append(status)
+        if search:
+            clauses.append(
+                "(f.remote_path LIKE ? ESCAPE '\\' OR f.local_path LIKE ? ESCAPE '\\')"
+            )
+            escaped = (
+                search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            parameters.extend((f"%{escaped}%", f"%{escaped}%"))
+        if date_from:
+            clauses.append("date(r.started_at) >= date(?)")
+            parameters.append(date_from)
+        if date_to:
+            clauses.append("date(r.started_at) <= date(?)")
+            parameters.append(date_to)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.extend((max(1, min(limit, 1000)), max(0, offset)))
+        with self.database.connect() as database:
+            rows = database.execute(
+                f"""
+                SELECT f.*, r.started_at AS run_started_at,
+                       c.name AS connection_name
+                FROM run_files f
+                JOIN runs r ON r.id = f.run_id
+                JOIN connections c ON c.id = f.connection_id
+                {where}
+                ORDER BY r.started_at DESC, f.id DESC
+                LIMIT ? OFFSET ?
+                """,
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def dashboard_summary(self) -> list[dict[str, Any]]:
+        with self.database.connect() as database:
+            rows = database.execute(
+                """
+                SELECT c.id, c.name, c.client, c.protocol, c.enabled,
+                       r.id AS last_run_id, r.started_at AS last_started_at,
+                       r.status AS last_status,
+                       r.files_downloaded AS last_files_downloaded,
+                       r.files_failed AS last_files_failed,
+                       r.bytes_downloaded AS last_bytes_downloaded
+                FROM connections c
+                LEFT JOIN runs r ON r.id = (
+                    SELECT r2.id
+                    FROM runs r2
+                    WHERE r2.connection_id = c.id
+                    ORDER BY r2.started_at DESC, r2.id DESC
+                    LIMIT 1
+                )
+                ORDER BY c.name COLLATE NOCASE, c.id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
 
 def _connection_db_values(
