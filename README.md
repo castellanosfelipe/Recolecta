@@ -1,119 +1,269 @@
-# Recolecta
+<div align="center">
+  <h1>Recolecta</h1>
+  <p><strong>Automatiza la recepción de archivos remotos, verifica cada entrega y conserva una trazabilidad completa desde Windows.</strong></p>
 
-Recolecta descarga de forma programada y auditable archivos desde FTP,
-FTPS, SFTP, WebDAV(S) y SMB. Está diseñado para Windows 10/11 x64, funciona
-sin internet y ofrece un dashboard local sin recursos externos.
+  <img src="docs/images/dashboard.png" alt="Dashboard principal de Recolecta con el estado de conexiones, ejecuciones y archivos descargados" width="800"/>
 
-![Dashboard de Recolecta](docs/images/dashboard.png)
+  <p>
+    <img src="https://img.shields.io/badge/version-0.1.0-blue" alt="Versión 0.1.0"/>
+    <img src="https://img.shields.io/badge/status-active-2ea44f" alt="Estado activo"/>
+    <img src="https://img.shields.io/badge/license-MIT-orange" alt="Licencia MIT"/>
+    <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4" alt="Compatible con Windows 10 y Windows 11"/>
+    <img src="https://img.shields.io/badge/tests-178%20passing-2ea44f" alt="178 pruebas aprobadas"/>
+    <img src="https://img.shields.io/badge/coverage-85.26%25-2ea44f" alt="Cobertura de pruebas 85.26 por ciento"/>
+  </p>
 
-## Instalación rápida
+  <p>
+    <a href="https://github.com/castellanosfelipe/Recolecta/releases/latest"><strong>Descargar la última versión</strong></a>
+    ·
+    <a href="docs/USER_GUIDE.md">Guía de usuario</a>
+    ·
+    <a href="docs/OPERATIONS.md">Guía de operaciones</a>
+  </p>
+</div>
 
-Las releases publican dos opciones offline. La recomendada es
-`Recolecta-Setup.exe`: contiene la aplicación completa, no requiere Python y
-registra automáticamente el inicio de Recolecta para el usuario actual.
+## 📋 Tabla de Contenidos
 
-1. Descargue `Recolecta-Setup.exe` y `SHA256SUMS.txt`.
-2. Verifique el hash y ejecute el instalador:
+- [¿Qué es Recolecta?](#-qué-es-recolecta)
+- [Demo en vivo](#-demo-en-vivo)
+- [Características principales](#-características-principales)
+- [Capturas de pantalla](#-capturas-de-pantalla)
+- [Instalación rápida](#-instalación-rápida)
+- [Cómo usar](#-cómo-usar)
+- [Arquitectura](#️-arquitectura)
+- [Roadmap](#️-roadmap)
+- [Contribuir](#-contribuir)
+- [Licencia](#-licencia)
+
+## 🎯 ¿Qué es Recolecta?
+
+Recolecta es una aplicación local para Windows que reúne automáticamente
+archivos provenientes de FTP, FTPS, SFTP, WebDAV(S) y SMB. Sustituye tareas
+manuales y scripts dispersos por un proceso programado, verificable y visible
+desde un dashboard, incluso en equipos sin acceso a internet.
+
+### El problema que resuelve
+
+Los equipos operativos suelen depender de descargas repetitivas, credenciales
+distribuidas y revisiones manuales para saber si un archivo llegó completo.
+Cuando algo falla, reconstruir qué ocurrió consume tiempo y retrasa procesos
+posteriores.
+
+### La solución
+
+Recolecta programa cada origen, reanuda transferencias interrumpidas, valida
+la integridad antes de publicar un archivo y registra cada resultado. Así, el
+equipo puede detectar excepciones y actuar sobre ellas sin supervisar
+constantemente cada servidor.
+
+### ¿Para quién es?
+
+| Audiencia | Beneficio clave |
+|-----------|-----------------|
+| **Operaciones y back office** | Recibe archivos recurrentes sin ejecutar descargas manuales y ve rápidamente qué requiere atención. |
+| **Equipos de datos e IT** | Centraliza conexiones heterogéneas con integridad, reintentos, límites de carga y trazabilidad técnica. |
+| **Responsables de producto y soporte** | Obtiene evidencia operativa, reportes exportables y señales claras para medir confiabilidad y resolver incidentes. |
+
+## 🎬 Demo en vivo
+
+<!-- TODO: agregar demo.gif del flujo principal: crear una conexión, ejecutar una prueba y observar la descarga en vivo -->
+
+El repositorio todavía no incluye un video o GIF verificable. La
+[captura del dashboard](#-capturas-de-pantalla) muestra la experiencia actual,
+y la aplicación completa puede probarse desde la
+[release v0.1.0](https://github.com/castellanosfelipe/Recolecta/releases/tag/v0.1.0).
+
+## ✨ Características principales
+
+| Feature | Descripción |
+|---------|-------------|
+| 🔌 **Conexiones multiprotocolo** | Reúne archivos desde FTP, FTPS, SFTP, WebDAV, WebDAVS y SMB sin cambiar de herramienta. |
+| 🗓️ **Automatización con recuperación** | Ejecuta agendas por zona horaria y recupera ventanas perdidas mediante catch-up sin duplicar entregas correctas. |
+| ✅ **Transferencias confiables** | Usa staging, reanudación, reintentos y validación por tamaño o SHA-256 antes de publicar cada archivo. |
+| 🔐 **Credenciales protegidas** | Almacena secretos mediante DPAPI de usuario o de máquina y evita exponerlos en API, logs y exportaciones. |
+| 📊 **Control y trazabilidad local** | Presenta progreso, velocidad, ETA, historial, alertas y archivos procesados desde un dashboard sin recursos externos. |
+| 📦 **Operación realmente offline** | Ofrece instalador autoextraíble, paquete portable y build reproducible con dependencias verificadas por SHA-256. |
+
+## 📸 Capturas de pantalla
+
+### Dashboard operativo
+
+<div align="center">
+  <img src="docs/images/dashboard.png" alt="Vista de resumen de Recolecta con navegación, métricas operativas, conexiones y accesos al proyecto" width="750"/>
+  <p><em>El resumen concentra estado, actividad reciente y excepciones para que el usuario sepa dónde actuar sin revisar logs manualmente.</em></p>
+</div>
+
+## 🚀 Instalación rápida
+
+### Prerrequisitos
+
+- Windows 10 u 11 de 64 bits.
+- Puerto local `8091` disponible.
+- No se requiere Python ni conexión a internet en el equipo destino.
+
+### Pasos
+
+1. Descarga `Recolecta-Setup.exe` y `SHA256SUMS.txt` desde la
+   [última release](https://github.com/castellanosfelipe/Recolecta/releases/latest).
+2. Verifica el instalador:
 
 ```powershell
 Get-FileHash .\Recolecta-Setup.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS.txt
+```
+
+3. Ejecuta el Setup:
+
+```powershell
 .\Recolecta-Setup.exe
 ```
 
-El instalador usa `%LOCALAPPDATA%\Recolecta`, conserva datos al actualizar y
-abre el dashboard cuando termina.
+El instalador copia la aplicación en `%LOCALAPPDATA%\Recolecta`, registra su
+inicio para el usuario actual, conserva los datos durante actualizaciones y
+abre `http://127.0.0.1:8091`.
 
-Como alternativa portable, `Recolecta-win64.zip` contiene Python y todas las
-dependencias:
+✅ Si todo está correcto, verás la confirmación **“Recolecta quedó instalada”**
+y el dashboard se abrirá en el navegador.
 
-1. Extraiga el ZIP en una carpeta permanente y escribible, por ejemplo
-   `C:\Recolecta` o `%LOCALAPPDATA%\Recolecta`.
-2. Abra PowerShell dentro de `Recolecta`.
-3. Instale para el usuario actual:
+<details>
+<summary><strong>Alternativa portable</strong></summary>
+
+Descarga `Recolecta-win64.zip`, verifica su hash, extráelo en una carpeta
+permanente y ejecuta:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\install.ps1
 ```
 
-4. Abra `http://127.0.0.1:8091`.
+</details>
 
-Para ejecución sin sesión, abra PowerShell **como administrador** y use
-`.\install-service.ps1`. Este modo ejecuta como `SYSTEM`, no muestra bandeja
-ni toasts y protege secretos con DPAPI de máquina. `.\uninstall.ps1` elimina
-las tareas y detiene el proceso, pero conserva configuración, logs, exports y
-archivos descargados.
+## 💡 Cómo usar
 
-Consulte [la guía de usuario](docs/USER_GUIDE.md) para el recorrido completo.
+### Caso de uso básico
 
-## Arquitectura
+1. Abre `http://127.0.0.1:8091`.
+2. Selecciona **Conexiones → Nueva conexión**.
+3. Define protocolo, servidor, credencial, rutas remotas y destino local.
+4. Pulsa **Probar** para validar el acceso y previsualizar archivos.
+5. Guarda la conexión y usa **Ejecutar ahora** o deja que la agenda trabaje.
+
+El dashboard mostrará progreso, resultado e historial de cada archivo.
+
+### Casos de uso avanzados
+
+#### Validar una conexión sin descargar
+
+```powershell
+& "$env:LOCALAPPDATA\Recolecta\Recolecta.exe" `
+  --run-now `
+  --connection 3 `
+  --dry-run
+```
+
+#### Recuperar una fecha específica
+
+```powershell
+& "$env:LOCALAPPDATA\Recolecta\Recolecta.exe" `
+  --run-now `
+  --connection 3 `
+  --date 2026-07-26
+```
+
+#### Operar sin una sesión iniciada
+
+Desde el paquete portable, abre PowerShell como administrador y ejecuta:
+
+```powershell
+.\install-service.ps1
+```
+
+Este modo registra `Recolecta-Service` como `SYSTEM`, utiliza DPAPI de máquina
+y mantiene el dashboard local sin mostrar bandeja ni notificaciones de
+escritorio.
+
+## 🏗️ Arquitectura
 
 ```mermaid
 flowchart LR
-    Sources["FTP / FTPS / SFTP<br/>WebDAV(S) / SMB"] --> Engine["Planificador y motor<br/>reanudar · staging · integridad"]
-    Scheduler["APScheduler<br/>zona IANA · catch-up"] --> Engine
+    Sources["FTP · FTPS · SFTP<br/>WebDAV(S) · SMB"] --> Engine["Planificación y descarga<br/>staging · reanudación · integridad"]
+    Scheduler["Agenda y catch-up<br/>zona horaria IANA"] --> Engine
     Engine --> Files["Destino local<br/>publicación atómica"]
-    Engine --> Audit["SQLite + JSONL<br/>historial y alertas"]
-    Audit --> API["FastAPI local<br/>127.0.0.1:8091"]
-    API --> UI["Dashboard<br/>HTML/CSS/JS local"]
-    Audit --> Exports["CSV / HTML / ZIP<br/>bundle de soporte"]
+    Engine --> Audit["SQLite WAL + JSONL<br/>historial y alertas"]
+    Audit --> API["API local<br/>127.0.0.1:8091"]
+    API --> UI["Dashboard<br/>HTML · CSS · JavaScript"]
+    Audit --> Exports["CSV · HTML · ZIP<br/>evidencia de soporte"]
 ```
 
-Cada transferencia escribe en `<destino>\.staging\<uuid>.part`, valida
-tamaño o SHA-256 y publica con `os.replace`. Las credenciales nunca se
-guardan en texto claro: DPAPI de usuario en modo interactivo y DPAPI de
-máquina en modo `SYSTEM`.
+### Stack tecnológico
 
-## Construcción reproducible
+| Capa | Tecnología | Propósito |
+|------|------------|-----------|
+| **Experiencia local** | HTML, CSS, JavaScript y Chart.js | Dashboard responsivo, progreso en vivo y visualización sin CDN. |
+| **API y proceso residente** | Python 3.12, FastAPI y Uvicorn | Orquesta la aplicación y expone operaciones únicamente en la máquina local por defecto. |
+| **Agenda** | APScheduler, tzlocal y tzdata | Ejecuta ventanas por zona horaria, catch-up y tareas de retención. |
+| **Transferencias** | Paramiko, HTTPX y adaptadores FTP/FTPS/SMB | Unifica conexión, listado, reanudación y descarga para cada protocolo. |
+| **Persistencia y auditoría** | SQLite WAL y logs JSONL | Conserva configuración, corridas, archivos, alertas y evidencia operativa. |
+| **Seguridad Windows** | DPAPI, pywin32 y Basic Auth opcional | Protege credenciales y permite operación interactiva o como `SYSTEM`. |
+| **Distribución** | PyInstaller, PowerShell y GitHub Actions | Produce Setup y ZIP offline con hashes y smoke tests reproducibles. |
 
-El repositorio incluye:
+## 🗺️ Roadmap
 
-- `vendor\python-3.12.10-amd64.exe`, bootstrap oficial de CPython;
-- `wheelhouse\`, inventario versionado de wheels para CPython 3.12 x64;
-- manifiestos `SHA256SUMS.txt`;
-- `build.ps1`, que valida hashes, crea `.venv-build`, instala con
-  `pip --no-index`, exige cobertura de `app/` ≥85 %, ejecuta las pruebas,
-  congela con PyInstaller y prueba el ejecutable antes de crear el ZIP.
-- `scripts\acceptance_smoke.ps1`, que extrae el ZIP, verifica su hash, arranca
-  únicamente el `.exe` y exige dashboard operativo en menos de cinco segundos.
+### ✅ Completado
+
+- [x] Descarga y validación mediante FTP, FTPS, SFTP, WebDAV(S) y SMB.
+- [x] Agenda por zona horaria, catch-up, reintentos y control de duplicados.
+- [x] Dashboard local, alertas, exportaciones y bundle de soporte.
+- [x] Instalador offline y paquete portable publicados en GitHub Releases.
+- [x] Suite de 178 pruebas con compuerta de cobertura mínima del 85 %.
+
+### 🔄 En progreso
+
+- [ ] Validación de instalación, reinicio y recuperación en una VM Windows limpia sin internet ni Python.
+- [ ] Evidencia separada de los modos usuario y `SYSTEM` después de reiniciar Windows.
+
+### 🔮 Próximamente
+
+- [ ] Firma de código para el instalador y los ejecutables de release.
+- [ ] Pruebas de integración ampliadas contra servidores reales SFTP, SMB y WebDAV.
+- [ ] Demo GIF del recorrido crear conexión → probar → descargar → auditar.
+
+## 🤝 Contribuir
+
+Las contribuciones son bienvenidas, especialmente cuando incluyen un caso de
+uso reproducible y pruebas. Antes de abrir un pull request:
+
+1. Crea un issue en
+   [GitHub Issues](https://github.com/castellanosfelipe/Recolecta/issues)
+   para describir el problema o resultado esperado.
+2. Trabaja en una rama enfocada y evita mezclar cambios no relacionados.
+3. Ejecuta la validación offline:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\build.ps1
 ```
 
-Salida:
+4. Confirma que las pruebas, la cobertura, el autodiagnóstico congelado y
+   ambos smoke tests estén en verde.
 
-- `dist\Recolecta\`
-- `dist\Recolecta-win64.zip`
-- `dist\SHA256SUMS.txt`
+La especificación, decisiones y criterios verificables están en
+[`docs/`](docs/).
 
-El pipeline de GitHub Actions repite el mismo build en Windows. Los tags con
-forma `v*.*.*` publican el ZIP y su hash en una Release.
+## 📄 Licencia
 
-## Desarrollo
+**MIT License** — consulta [`LICENSE`](./LICENSE) para más detalles.
 
-Requiere CPython.org 3.12 x64.
+---
 
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\python.exe launcher.py --self-test
-```
-
-El CLI también permite corridas manuales:
-
-```powershell
-Recolecta.exe --run-now
-Recolecta.exe --run-now --connection 3 --dry-run
-Recolecta.exe --run-now --connection 3 --date 2026-07-26
-```
-
-## Documentación
-
-- `docs/SPEC.md`: especificación completa.
-- `docs/DECISIONS.md`: decisiones de arquitectura.
-- `docs/ACCEPTANCE.md`: criterios de aceptación.
-- `docs/USER_GUIDE.md`: instalación, configuración y solución de problemas.
-- `docs/OPERATIONS.md`: runbook de soporte y recuperación.
+<div align="center">
+  <p>
+    Hecho con ❤️ por
+    <a href="https://github.com/castellanosfelipe">castellanosfelipe</a>
+  </p>
+  <p>
+    <a href="https://github.com/castellanosfelipe/Recolecta">GitHub</a>
+    ·
+    <a href="https://www.linkedin.com/in/bairon-felipe-peña-castellanos-ab18411b5">LinkedIn</a>
+  </p>
+</div>
