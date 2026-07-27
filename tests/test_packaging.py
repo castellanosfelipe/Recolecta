@@ -76,6 +76,10 @@ def test_build_is_offline_gated_and_complete() -> None:
         "uninstall.ps1",
     ):
         assert expected in lowered
+    assert lowered.index('".python-build"') < lowered.index(
+        "get-command py"
+    )
+    assert "& py -3.12 -c $probe 2>$null" in lowered
 
 
 def test_user_install_task_has_resilience_settings() -> None:
@@ -89,6 +93,9 @@ def test_user_install_task_has_resilience_settings() -> None:
         "allowstartifonbatteries",
         "dontstopifgoingonbatteries",
         "workingdirectory",
+        '--port $port',
+        "logontype interactive",
+        "runlevel limited",
         "start-scheduledtask",
         "/healthz",
     ):
@@ -103,7 +110,7 @@ def test_service_task_uses_system_and_machine_mode() -> None:
         "serviceaccount",
         "highest",
         "waketorun",
-        "--service",
+        "--service --port $port",
         "startwhenavailable",
         "workingdirectory",
     ):

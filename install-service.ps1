@@ -22,7 +22,7 @@ if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
 
 $action = New-ScheduledTaskAction `
     -Execute $executable `
-    -Argument "--service" `
+    -Argument "--service --port $Port" `
     -WorkingDirectory $installDir
 $trigger = New-ScheduledTaskTrigger -AtStartup
 # Contract: RestartCount 999; MultipleInstances IgnoreNew;

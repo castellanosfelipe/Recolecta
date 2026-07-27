@@ -116,6 +116,7 @@ def install(
         "app": PRODUCT_NAME,
         "install_dir": str(resolved),
         "mode": "service" if service else "user",
+        "port": port,
         "extract_only": extract_only,
         "result": "extracted" if extract_only else "installed",
     }

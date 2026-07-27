@@ -107,6 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date", dest="selected_date", metavar="YYYY-MM-DD")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--service", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--port", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version", version=__version__)
     return parser
 
@@ -118,6 +119,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_self_test(args.self_test_report)
     if args.self_test_report:
         build_parser().error("--self-test-report requiere --self-test")
+    if args.port is not None and not 1 <= args.port <= 65535:
+        build_parser().error("--port debe estar entre 1 y 65535")
 
     if args.service and (
         args.run_now
@@ -141,6 +144,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = AppConfig.from_env()
     if args.service:
         config = replace(config, mode="service")
+    if args.port is not None:
+        config = replace(config, port=args.port)
     configure_logging(config.paths.logs)
     if args.run_now:
         from app.commands import execute_run_now

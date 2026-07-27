@@ -52,14 +52,22 @@ function Test-HashManifest {
 
 function Find-Python312 {
     $probe = "import platform,struct,sys;prefix=(sys.base_prefix+' '+sys.prefix+' '+sys.version).lower();valid=sys.version_info[:2]==(3,12) and struct.calcsize('P')==8 and platform.python_implementation()=='CPython' and 'conda' not in prefix and 'anaconda' not in prefix;raise SystemExit(0 if valid else 1)"
+    $privatePython = Join-Path $root ".python-build"
+    $privateExe = Join-Path $privatePython "python.exe"
+    if (Test-Path -LiteralPath $privateExe -PathType Leaf) {
+        & $privateExe -c $probe 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            return @{ Command = $privateExe; Arguments = @() }
+        }
+    }
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        & py -3.12 -c $probe
+        & py -3.12 -c $probe 2>$null
         if ($LASTEXITCODE -eq 0) {
             return @{ Command = "py"; Arguments = @("-3.12") }
         }
     }
     if (Get-Command python -ErrorAction SilentlyContinue) {
-        & python -c $probe
+        & python -c $probe 2>$null
         if ($LASTEXITCODE -eq 0) {
             return @{ Command = "python"; Arguments = @() }
         }
@@ -67,14 +75,6 @@ function Find-Python312 {
 
     if (-not (Test-Path -LiteralPath $vendorInstaller -PathType Leaf)) {
         throw "No se encontró CPython 3.12 x64 ni el instalador offline $vendorInstaller."
-    }
-    $privatePython = Join-Path $root ".python-build"
-    $privateExe = Join-Path $privatePython "python.exe"
-    if (Test-Path -LiteralPath $privateExe -PathType Leaf) {
-        & $privateExe -c $probe
-        if ($LASTEXITCODE -eq 0) {
-            return @{ Command = $privateExe; Arguments = @() }
-        }
     }
     Write-Host "Instalando CPython 3.12.10 privado desde vendor/..."
     $installerArgs = @(

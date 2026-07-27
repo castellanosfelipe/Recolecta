@@ -44,3 +44,26 @@ def test_cli_rejects_invalid_date() -> None:
     with pytest.raises(SystemExit) as raised:
         main(["--run-now", "--date", "26-07-2026"])
     assert raised.value.code == 2
+
+
+def test_resident_cli_applies_custom_port(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured = {}
+    monkeypatch.setenv("RECOLECTA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("RECOLECTA_MODE", "dev")
+
+    def run_resident(config) -> int:
+        captured["port"] = config.port
+        return 0
+
+    monkeypatch.setattr("app.main.run_resident", run_resident)
+
+    assert main(["--port", "8123"]) == 0
+    assert captured["port"] == 8123
+
+
+def test_cli_rejects_invalid_port() -> None:
+    with pytest.raises(SystemExit) as raised:
+        main(["--port", "70000"])
+    assert raised.value.code == 2

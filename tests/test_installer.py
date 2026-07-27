@@ -109,3 +109,4 @@ def test_user_install_preserves_state_and_registers_task(
         (destination / "install-report.json").read_text(encoding="utf-8")
     )
     assert report["result"] == "installed"
+    assert report["port"] == 8123

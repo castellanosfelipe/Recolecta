@@ -14,8 +14,15 @@ if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
 }
 
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$action = New-ScheduledTaskAction -Execute $executable -WorkingDirectory $installDir
+$action = New-ScheduledTaskAction `
+    -Execute $executable `
+    -Argument "--port $Port" `
+    -WorkingDirectory $installDir
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
+$principal = New-ScheduledTaskPrincipal `
+    -UserId $identity `
+    -LogonType Interactive `
+    -RunLevel Limited
 # Contract: RestartCount 999; MultipleInstances IgnoreNew;
 # ExecutionTimeLimit 0; StartWhenAvailable; battery execution allowed.
 $settings = New-ScheduledTaskSettingsSet `
@@ -26,7 +33,11 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries
-$task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings
+$task = New-ScheduledTask `
+    -Action $action `
+    -Trigger $trigger `
+    -Settings $settings `
+    -Principal $principal
 
 Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
