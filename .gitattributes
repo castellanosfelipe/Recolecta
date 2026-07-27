@@ -1,0 +1,7 @@
+* text=auto
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.sh text eol=lf
+.githooks/* text eol=lf
+*.md text eol=lf
+*.py text eol=lf

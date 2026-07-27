@@ -1,0 +1,28 @@
+name: Windows validation
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install test dependencies
+        run: python -m pip install pytest==8.3.4
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Run self-test
+        run: python launcher.py --self-test

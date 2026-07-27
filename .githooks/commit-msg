@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+message_file="$1"
+
+if grep -Eiq '^[[:space:]]*Co-authored-by:' "$message_file"; then
+    echo "Error: los trailers Co-authored-by están prohibidos en este repositorio." >&2
+    exit 1
+fi
