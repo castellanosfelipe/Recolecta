@@ -171,3 +171,27 @@ Python 3.12 publicada con instaladores binarios de Windows. Versiones de
 seguridad posteriores de la línea 3.12 se publican solo como código fuente. El
 instalador sirve únicamente para la estación de build; el equipo destino
 recibe el runtime ya congelado.
+
+## D-040 · Cobertura como compuerta offline, no como reporte opcional
+
+`coverage` y `pytest-cov` son las únicas dependencias de desarrollo añadidas
+fuera de la lista inicial, justificadas por la meta explícita de cobertura.
+También se fijan, se vendoriza su wheel y se incluyen en SHA256SUMS. `pytest`
+falla por debajo de 85 % de `app/`, por lo que `build.ps1` no puede empaquetar
+una revisión que incumpla el umbral.
+
+## D-041 · Aceptación portable sobre el ZIP real
+
+El smoke test no ejecuta código fuente ni Python: valida el hash de release,
+extrae el ZIP en una carpeta nueva, ejecuta el autodiagnóstico congelado,
+arranca `FileHarvester.exe` en un puerto libre y exige `/healthz`, dashboard y
+JavaScript local en menos de cinco segundos. Siempre detiene el PID exacto y
+elimina únicamente su directorio temporal verificado. CI publica el JSON de
+evidencia junto al ZIP.
+
+## D-042 · La sesión de Windows se consulta mediante `win32ts`
+
+`ProcessIdToSessionId` pertenece a `win32ts`, no a `win32process`. La detección
+de modo interactivo usa ese módulo y está probada para sesión 0, sesión de
+usuario, cuenta SYSTEM, plataforma no Windows y error conservador. Esto evita
+que el modo usuario falle antes de crear la bandeja.

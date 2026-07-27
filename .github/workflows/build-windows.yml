@@ -25,6 +25,10 @@ jobs:
         shell: powershell
         run: .\build.ps1
 
+      - name: Smoke test extracted portable package
+        shell: powershell
+        run: .\scripts\acceptance_smoke.ps1
+
       - name: Verify release archive contents
         shell: powershell
         run: |
@@ -52,6 +56,7 @@ jobs:
           path: |
             dist/FileHarvester-win64.zip
             dist/SHA256SUMS.txt
+            dist/acceptance-smoke.json
           if-no-files-found: error
 
       - name: Publish tagged release
@@ -61,4 +66,5 @@ jobs:
           files: |
             dist/FileHarvester-win64.zip
             dist/SHA256SUMS.txt
+            dist/acceptance-smoke.json
           generate_release_notes: true

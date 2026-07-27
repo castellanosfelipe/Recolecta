@@ -21,6 +21,7 @@ def test_powershell_scripts_parse() -> None:
         "uninstall.ps1",
         "scripts/update_hashes.ps1",
         "scripts/capture_dashboard.ps1",
+        "scripts/acceptance_smoke.ps1",
     )
     quoted = ",".join(f"'{ROOT / script}'" for script in scripts)
     command = (
@@ -154,5 +155,24 @@ def test_ci_packages_and_releases_tags() -> None:
         "softprops/action-gh-release@v2",
         "fileharvester-win64.zip",
         "sha256sums.txt",
+        "acceptance-smoke.json",
     ):
         assert expected in workflow
+
+
+def test_acceptance_smoke_uses_only_frozen_bundle() -> None:
+    script = _read("scripts/acceptance_smoke.ps1").lower()
+    for expected in (
+        "expand-archive",
+        "fileharvester.exe",
+        "--self-test",
+        "/healthz",
+        "/static/app.js",
+        "totalseconds -ge 5",
+        "external_python_required = $false",
+        "get-filehash",
+        "stop-process",
+    ):
+        assert expected in script
+    assert "-m pytest" not in script
+    assert "python.exe -" not in script

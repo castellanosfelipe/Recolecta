@@ -57,8 +57,10 @@ El repositorio incluye:
 - `wheelhouse\`, inventario versionado de wheels para CPython 3.12 x64;
 - manifiestos `SHA256SUMS.txt`;
 - `build.ps1`, que valida hashes, crea `.venv-build`, instala con
-  `pip --no-index`, ejecuta las pruebas, congela con PyInstaller y prueba el
-  ejecutable antes de crear el ZIP.
+  `pip --no-index`, exige cobertura de `app/` ≥85 %, ejecuta las pruebas,
+  congela con PyInstaller y prueba el ejecutable antes de crear el ZIP.
+- `scripts\acceptance_smoke.ps1`, que extrae el ZIP, verifica su hash, arranca
+  únicamente el `.exe` y exige dashboard operativo en menos de cinco segundos.
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass

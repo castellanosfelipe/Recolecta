@@ -118,3 +118,68 @@ def test_history_files_dashboard_settings_and_csv(tmp_path: Path) -> None:
     assert exported.text.startswith("id,run_id,connection_name")
     assert rejected_secret.status_code == 422
     assert "no-guardar" not in rejected_secret.text
+
+
+def test_connection_error_paths_progress_and_delete(tmp_path: Path) -> None:
+    client, _, _ = api(tmp_path)
+    payload = {
+        "name": "Temporal",
+        "host": "sftp.example.test",
+        "protocol": "SFTP",
+        "remote_paths": ["/entrada"],
+    }
+    with client:
+        created = client.post("/api/connections", json=payload)
+        connection_id = created.json()["id"]
+        progress = client.get("/api/progress")
+        current = client.get("/api/runs/current")
+        missing_get = client.get("/api/connections/9999")
+        missing_patch = client.patch(
+            "/api/connections/9999", json={"notes": "x"}
+        )
+        missing_duplicate = client.post("/api/connections/9999/duplicate")
+        updated = client.patch(
+            f"/api/connections/{connection_id}",
+            json={"notes": "sin cambiar secreto"},
+        )
+        deleted = client.delete(f"/api/connections/{connection_id}")
+        missing_delete = client.delete(f"/api/connections/{connection_id}")
+
+    assert progress.status_code == 200
+    assert progress.json() == current.json()
+    assert updated.json()["notes"] == "sin cambiar secreto"
+    assert deleted.status_code == 204
+    for response in (
+        missing_get,
+        missing_patch,
+        missing_duplicate,
+        missing_delete,
+    ):
+        assert response.status_code == 404
+
+
+def test_settings_validation_reports_actionable_errors(tmp_path: Path) -> None:
+    client, _, _ = api(tmp_path)
+    payloads = (
+        ({"schedule.daily_time": "not-a-time"}, "formato HH:MM"),
+        ({"schedule.jitter_s": "later"}, "número entero"),
+        ({"schedule.jitter_s": -1}, "no puede ser negativo"),
+        ({"concurrency.global": 0}, "al menos uno"),
+        ({"bandwidth.global_kbps": -1}, "no puede ser negativo"),
+        ({"disk.reserve_percent": 101}, "entre 0 y 100"),
+        ({"courtesy.minimum_spacing_s": -1}, "no puede ser negativo"),
+        ({"alerts.partial_threshold": 0}, "al menos uno"),
+        ({"alerts.smtp.port": 70000}, "entre 1 y 65535"),
+    )
+    with client:
+        responses = [
+            (
+                client.put("/api/settings", json={"values": values}),
+                expected,
+            )
+            for values, expected in payloads
+        ]
+
+    for response, expected in responses:
+        assert response.status_code == 422
+        assert expected in response.json()["detail"]

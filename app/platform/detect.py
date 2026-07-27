@@ -25,9 +25,9 @@ def runtime_mode(configured_mode: str) -> RuntimeMode:
         return RuntimeMode.HEADLESS
     try:
         import win32api
-        import win32process
+        import win32ts
 
-        session_id = win32process.ProcessIdToSessionId(
+        session_id = win32ts.ProcessIdToSessionId(
             win32api.GetCurrentProcessId()
         )
         if session_id == 0:
