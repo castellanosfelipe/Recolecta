@@ -1,14 +1,82 @@
 # FileHarvester
 
-Descargador programado y auditable para FTP, FTPS, SFTP, WebDAV(S) y SMB, diseñado para Windows 10/11 x64 sin acceso a internet.
+FileHarvester descarga de forma programada y auditable archivos desde FTP,
+FTPS, SFTP, WebDAV(S) y SMB. Está diseñado para Windows 10/11 x64, funciona
+sin internet y ofrece un dashboard local sin recursos externos.
 
-## Estado
+![Dashboard de FileHarvester](docs/images/dashboard.png)
 
-Fases 0 a 6 completadas: configuración y persistencia, transportes, motor atómico reanudable, agenda y catch-up, dashboard local, logs JSONL, exports CSV/HTML/ZIP, retención, alertas y bandeja interactiva.
+## Instalación rápida
+
+El paquete `FileHarvester-win64.zip` ya contiene Python y todas las
+dependencias. No instale Python en el equipo destino.
+
+1. Extraiga el ZIP en una carpeta permanente y escribible, por ejemplo
+   `C:\FileHarvester` o `%LOCALAPPDATA%\FileHarvester`.
+2. Abra PowerShell dentro de `FileHarvester`.
+3. Instale para el usuario actual:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\install.ps1
+```
+
+4. Abra `http://127.0.0.1:8091`.
+
+Para ejecución sin sesión, abra PowerShell **como administrador** y use
+`.\install-service.ps1`. Este modo ejecuta como `SYSTEM`, no muestra bandeja
+ni toasts y protege secretos con DPAPI de máquina. `.\uninstall.ps1` elimina
+las tareas y detiene el proceso, pero conserva configuración, logs, exports y
+archivos descargados.
+
+Consulte [la guía de usuario](docs/USER_GUIDE.md) para el recorrido completo.
+
+## Arquitectura
+
+```mermaid
+flowchart LR
+    Sources["FTP / FTPS / SFTP<br/>WebDAV(S) / SMB"] --> Engine["Planificador y motor<br/>reanudar · staging · integridad"]
+    Scheduler["APScheduler<br/>zona IANA · catch-up"] --> Engine
+    Engine --> Files["Destino local<br/>publicación atómica"]
+    Engine --> Audit["SQLite + JSONL<br/>historial y alertas"]
+    Audit --> API["FastAPI local<br/>127.0.0.1:8091"]
+    API --> UI["Dashboard<br/>HTML/CSS/JS local"]
+    Audit --> Exports["CSV / HTML / ZIP<br/>bundle de soporte"]
+```
+
+Cada transferencia escribe en `<destino>\.staging\<uuid>.part`, valida
+tamaño o SHA-256 y publica con `os.replace`. Las credenciales nunca se
+guardan en texto claro: DPAPI de usuario en modo interactivo y DPAPI de
+máquina en modo `SYSTEM`.
+
+## Construcción reproducible
+
+El repositorio incluye:
+
+- `vendor\python-3.12.10-amd64.exe`, bootstrap oficial de CPython;
+- `wheelhouse\`, inventario versionado de wheels para CPython 3.12 x64;
+- manifiestos `SHA256SUMS.txt`;
+- `build.ps1`, que valida hashes, crea `.venv-build`, instala con
+  `pip --no-index`, ejecuta las pruebas, congela con PyInstaller y prueba el
+  ejecutable antes de crear el ZIP.
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\build.ps1
+```
+
+Salida:
+
+- `dist\FileHarvester\`
+- `dist\FileHarvester-win64.zip`
+- `dist\SHA256SUMS.txt`
+
+El pipeline de GitHub Actions repite el mismo build en Windows. Los tags con
+forma `v*.*.*` publican el ZIP y su hash en una Release.
 
 ## Desarrollo
 
-Requiere Python 3.12.
+Requiere CPython.org 3.12 x64.
 
 ```powershell
 py -3.12 -m venv .venv
@@ -17,13 +85,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe launcher.py --self-test
 ```
 
-La configuración portable se resuelve desde `HARVESTER_DATA_DIR`; en desarrollo, si no se define, usa la raíz del repositorio. El dashboard escucha en `http://127.0.0.1:8091`. Incluye Inicio, corridas en vivo, historial, archivos, conexiones y ajustes; no carga recursos desde internet.
-
-En modo `dev`, la clave Fernet se toma de `HARVESTER_SECRET_KEY` o se genera en `data/.secret.key`. En modo `windows` se usa DPAPI de usuario y en modo `service`, DPAPI de máquina con entropía adicional.
-
-El dry-run usa exactamente el mismo cálculo de ventana y filtros que utilizará la descarga. Solo consulta metadatos remotos; nunca abre los archivos para lectura.
-
-Cada transferencia escribe primero en `<dest_root>/.staging/<uuid>.part`. Solo después de validar el tamaño y el hash se publica mediante `os.replace`; una cancelación conserva el parcial para la siguiente ejecución.
+El CLI también permite corridas manuales:
 
 ```powershell
 FileHarvester.exe --run-now
@@ -31,16 +93,10 @@ FileHarvester.exe --run-now --connection 3 --dry-run
 FileHarvester.exe --run-now --connection 3 --date 2026-07-26
 ```
 
-Si la instancia residente está activa, el CLI delega la orden a su API local en vez de abrir una segunda corrida.
-
-Para exponer el dashboard a la LAN, defina `HARVESTER_BIND_LAN=1`. Se recomienda configurar a la vez `HARVESTER_DASH_USER` y `HARVESTER_DASH_PASS`; `/healthz` permanece público para monitoreo.
-
-Desde Ajustes se puede descargar un bundle de soporte con `app.log`, logs JSONL, CSV, reporte HTML y configuración sin secretos. La retención predeterminada es de 180 días y nunca elimina los archivos descargados.
-
 ## Documentación
 
-- `docs/SPEC.md`: especificación completa y plan de fases.
+- `docs/SPEC.md`: especificación completa.
 - `docs/DECISIONS.md`: decisiones de arquitectura.
-- `docs/ACCEPTANCE.md`: criterios de aceptación verificables.
-- `docs/USER_GUIDE.md`: guía operativa para usuarios.
-- `docs/OPERATIONS.md`: runbook para soporte.
+- `docs/ACCEPTANCE.md`: criterios de aceptación.
+- `docs/USER_GUIDE.md`: instalación, configuración y solución de problemas.
+- `docs/OPERATIONS.md`: runbook de soporte y recuperación.

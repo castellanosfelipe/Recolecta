@@ -1,3 +1,5 @@
 -r requirements.txt
 pytest==8.3.4
-pyftpdlib
+pyftpdlib==2.2.0
+pyOpenSSL==25.1.0
+pyinstaller==6.21.0

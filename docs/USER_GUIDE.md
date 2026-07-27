@@ -1,93 +1,161 @@
 # Guía de usuario
 
-La guía se ampliará con instalación y empaquetado offline en la Fase 7.
+## Requisitos y preparación
 
-## Dashboard local
+FileHarvester funciona en Windows 10/11 x64 sin internet y sin una instalación
+previa de Python. Elija una carpeta permanente donde la cuenta que ejecutará
+la aplicación pueda escribir. No use una carpeta temporal ni mueva archivos
+individuales fuera del bundle.
 
-Abra `http://127.0.0.1:8091` mientras FileHarvester está en ejecución. La interfaz no necesita internet:
-
-- **Inicio** resume el estado de cada conexión y permite iniciar una corrida.
-- **En vivo** muestra bytes, porcentaje, velocidad media, ETA y cada trabajador; el sondeo es de un segundo mientras hay actividad y de diez segundos en reposo.
-- **Historial** filtra corridas y abre el detalle de sus archivos.
-- **Archivos** busca por ruta o nombre y exporta el catálogo a CSV.
-- **Conexiones** crea, edita, prueba, duplica o elimina orígenes. Una copia nace en pausa y sin credencial.
-- **Ajustes** cambia hora, cortesía, concurrencia, retención y catch-up.
-
-El botón **Cancelar corrida** solicita una parada cooperativa. El archivo `.part` se conserva para reanudarlo posteriormente.
-
-Las respuestas del API nunca incluyen la credencial; solo muestran `has_secret`.
-
-## Logs y bundle de soporte
-
-Cada corrida produce `logs/runs/<fecha>_<conexion>_<id>.jsonl`. Registra planificación, inicio de archivo, avance cada 10 %, resultado y cierre. Desde el detalle de Historial puede descargar ese JSONL.
-
-En **Ajustes → Descargar bundle** se genera un ZIP de los últimos siete días con:
-
-- `app.log` y sus rotaciones;
-- logs JSONL recientes;
-- `runs.csv` y `files.csv`;
-- configuración pública sin secretos;
-- reporte HTML autocontenido.
-
-El reporte HTML y los CSV también se descargan por separado. Los valores CSV que podrían interpretarse como fórmulas se neutralizan automáticamente.
-
-La retención predeterminada es 180 días. Purga historial, alertas, JSONL y exports antiguos, pero **jamás borra los archivos descargados**.
-
-## Alertas y bandeja
-
-En Windows con sesión interactiva aparece la bandeja de FileHarvester. Su color resume el estado: verde correcto, amarillo parcial/en curso, rojo fallo y gris pausa. Permite abrir el dashboard, ejecutar todas las conexiones o cerrar el residente.
-
-Los disparadores son corrida fallida, parcial por encima del umbral, credencial rechazada, espacio insuficiente y silencio sospechoso. Cada causa se envía una sola vez por corrida y canal.
-
-El canal de log está siempre activo. En **Ajustes** puede activar toast, SMTP y webhook. Las credenciales no se guardan en SQLite:
+1. Copie `FileHarvester-win64.zip` al equipo.
+2. Compare su SHA-256 con `SHA256SUMS.txt`:
 
 ```powershell
-$env:HARVESTER_SMTP_USER = "fileharvester"
-$env:HARVESTER_SMTP_PASSWORD = "clave-smtp"
-$env:HARVESTER_ALERT_WEBHOOK_URL = "https://hooks.interno.local/fileharvester"
+Get-FileHash .\FileHarvester-win64.zip -Algorithm SHA256
 ```
 
-En modo `SYSTEM` se omiten bandeja y toast; se usa Windows Event Log además de los canales remotos habilitados.
+3. Extraiga el ZIP, por ejemplo en `C:\FileHarvester`.
+4. Si Windows marcó los archivos como descargados de internet:
+
+```powershell
+Get-ChildItem C:\FileHarvester -Recurse | Unblock-File
+```
+
+## Modo A: usuario actual, sin administrador
+
+Este modo inicia FileHarvester cuando el usuario abre sesión, muestra el icono
+de bandeja y permite notificaciones toast.
+
+```powershell
+cd C:\FileHarvester\FileHarvester
+Set-ExecutionPolicy -Scope Process Bypass
+.\install.ps1
+```
+
+El script registra la tarea `FileHarvester`, la inicia y espera hasta 20
+segundos por `http://127.0.0.1:8091/healthz`. La tarea se reinicia después de
+un fallo, no duplica instancias, puede iniciar con batería y no tiene límite de
+duración.
+
+## Modo B: SYSTEM al arrancar
+
+Use este modo para operar sin una sesión iniciada. Abra PowerShell como
+administrador:
+
+```powershell
+cd C:\FileHarvester\FileHarvester
+Set-ExecutionPolicy -Scope Process Bypass
+.\install-service.ps1
+```
+
+La tarea `FileHarvester-Service` inicia con Windows como `SYSTEM`, nivel
+máximo, `WakeToRun` y recuperación automática. El dashboard sigue disponible,
+pero no hay bandeja ni toast. Los secretos usan DPAPI de máquina y el archivo
+`data\.entropy` tiene ACL restringida.
+
+No instale ambos modos a la vez sobre la misma carpeta. Si cambia de modo,
+ejecute primero `.\uninstall.ps1` y luego el instalador elegido.
+
+## Primera conexión, paso a paso
+
+1. Abra `http://127.0.0.1:8091`.
+2. Entre en **Conexiones → Nueva conexión**.
+3. Asigne un nombre y, opcionalmente, el cliente o área propietaria.
+4. Elija FTP, FTPS, SFTP, WebDAV, WebDAVS o SMB.
+5. Escriba servidor, puerto, usuario y secreto. Si omite el puerto se usa el
+   estándar del protocolo.
+6. Indique una ruta remota por línea. Active recursividad solo si necesita
+   subcarpetas y fije una profundidad razonable.
+7. Elija la zona IANA, por ejemplo `America/Bogota`, y una ventana:
+   día calendario anterior, últimas N horas o desde la última corrida correcta.
+8. Seleccione un destino local. En producción prefiera una ruta absoluta en
+   un volumen con espacio suficiente.
+9. Configure filtros, conflicto (`skip`, `overwrite` o `keep_both`),
+   verificación por tamaño o SHA-256, paralelismo y límites de ancho de banda.
+10. Guarde, pulse **Probar** y revise cuántos archivos entrarían en el plan.
+11. Ejecute primero un **dry-run**; después active la conexión y lance una
+    corrida real.
+
+El dry-run lista metadatos, usa la misma ventana y filtros de la descarga, y no
+abre archivos para lectura. Una corrida real escribe primero en
+`<destino>\.staging`; solo publica el archivo final después de validar
+integridad.
+
+## Dashboard, agenda y cancelación
+
+- **Inicio** resume conexiones, fallos y volumen reciente.
+- **En vivo** muestra porcentaje, bytes, velocidad y ETA.
+- **Historial** filtra corridas y abre el detalle.
+- **Archivos** busca por nombre o ruta y exporta CSV.
+- **Conexiones** crea, prueba, duplica, pausa o elimina orígenes.
+- **Ajustes** controla hora diaria, zona, jitter, catch-up, concurrencia,
+  cortesía, reserva de disco, retención y alertas.
+
+**Cancelar corrida** solicita una parada cooperativa. El `.part` queda
+disponible para reanudar. APScheduler conserva un job por conexión y el
+catch-up recupera ventanas perdidas después de un apagado o suspensión.
+
+## Logs, exports y soporte
+
+- `logs\app.log`: ciclo de vida, scheduler y errores generales.
+- `logs\runs\<fecha>_<conexion>_<id>.jsonl`: evidencia por corrida, con
+  progreso cada 10 %.
+- `exports\`: CSV, HTML y bundles ZIP generados.
+- `data\harvester.db`: configuración, agenda e historial.
+
+En **Ajustes → Descargar bundle** se genera un ZIP con logs, CSV, reporte HTML
+y configuración pública sin secretos. La retención predeterminada es de 180
+días y jamás borra los archivos descargados.
 
 ## Acceso desde la LAN
 
-Por defecto el servidor solo escucha en `127.0.0.1`. Para permitir acceso desde otros equipos:
+Por defecto solo escucha en `127.0.0.1`. Para permitir acceso remoto defina
+antes de registrar la tarea:
 
 ```powershell
-$env:HARVESTER_BIND_LAN = "1"
-$env:HARVESTER_DASH_USER = "operador"
-$env:HARVESTER_DASH_PASS = "una-clave-larga"
+[Environment]::SetEnvironmentVariable("HARVESTER_BIND_LAN", "1", "User")
+[Environment]::SetEnvironmentVariable("HARVESTER_DASH_USER", "operador", "User")
+[Environment]::SetEnvironmentVariable("HARVESTER_DASH_PASS", "una-clave-larga", "User")
 ```
 
-Basic Auth protege dashboard, archivos estáticos y API. `/healthz` queda sin autenticación. FileHarvester escribe una advertencia si se expone a la LAN sin credenciales.
+Vuelva a instalar la tarea. Basic Auth protege dashboard y API; `/healthz`
+queda público. En modo `SYSTEM`, use variables de entorno de máquina y aplique
+la política de firewall de su organización.
 
-## Modos de instalación previstos
-
-- Modo A: tarea programada por usuario, sin privilegios de administrador, activa después de iniciar sesión.
-- Modo B: tarea programada como `SYSTEM`, requiere administrador y permanece activa sin sesión interactiva.
-
-En modo `SYSTEM` no habrá bandeja ni notificaciones de escritorio. El dashboard local seguirá disponible y los secretos deberán cifrarse con DPAPI de máquina.
-
-## Portabilidad de credenciales
-
-- `dpapi:` solo puede descifrarse con la misma cuenta de Windows en el mismo equipo.
-- `dpapi-machine:` solo puede descifrarse en el mismo equipo y requiere conservar `data/.entropy`.
-- `fernet:` requiere la misma `HARVESTER_SECRET_KEY` o el mismo `data/.secret.key`.
-
-Un respaldo de configuración no exportará estos tokens. Después de mover la instalación a otro equipo, vuelva a ingresar las credenciales.
-
-## Ejecución desatendida y energía
-
-El modo usuario recupera tareas después del login; el modo `SYSTEM` puede ejecutarlas desde el arranque sin sesión. Configure el equipo de descarga para permanecer disponible en corriente alterna:
+## Desinstalación
 
 ```powershell
-powercfg /change standby-timeout-ac 0
+Set-ExecutionPolicy -Scope Process Bypass
+.\uninstall.ps1
 ```
 
-Si la política operativa lo permite, un administrador también puede desactivar la hibernación:
+El script desregistra las tareas y detiene únicamente el proceso cuyo
+ejecutable pertenece a esa carpeta. Conserva el bundle, `data\`, `logs\`,
+`exports\` y los destinos descargados. Elimínelos manualmente solo después de
+respaldarlos y confirmar que ya no se necesitan.
 
-```powershell
-powercfg /hibernate off
-```
+## Diez problemas comunes
 
-APScheduler y el catch-up recuperan ventanas perdidas, pero no pueden descargar mientras Windows está apagado o suspendido.
+1. **PowerShell bloquea el script.** Ejecute
+   `Set-ExecutionPolicy -Scope Process Bypass` en esa ventana; no necesita
+   cambiar la política del equipo.
+2. **`/healthz` no responde.** Revise `logs\app.log`, confirme que el puerto
+   8091 no está ocupado y ejecute `FileHarvester.exe --self-test`.
+3. **La tarea inicia y se detiene.** Compruebe el historial del Programador de
+   tareas, permisos de escritura sobre la carpeta y que no haya otra instancia.
+4. **Autenticación rechazada.** Edite la conexión, vuelva a ingresar el
+   secreto y pulse **Probar**; el bundle de soporte no contiene credenciales.
+5. **FTPS falla por certificado.** Verifique cadena, nombre DNS y reloj del
+   equipo. No desactive validación TLS como solución permanente.
+6. **SFTP informa host desconocido o cambiado.** Confirme la huella con el
+   administrador y actualice `data\known_hosts`; nunca acepte el cambio a
+   ciegas.
+7. **No aparecen archivos.** Revise zona horaria, ventana, quiet period,
+   filtros glob, tamaño mínimo/máximo, ruta remota y el resultado del dry-run.
+8. **`disk_space`.** Libere el tamaño planificado más la reserva configurada o
+   cambie el destino. El motor no crea staging si el pre-flight falla.
+9. **Queda un `.part`.** Es normal tras cancelación o caída de red. No lo
+   renombre; la siguiente corrida de la misma identidad intentará reanudarlo.
+10. **La conexión se movió a otro equipo y el secreto ya no abre.** DPAPI está
+    ligado al equipo y, en modo usuario, también a la cuenta. Reingrese todas
+    las credenciales en el nuevo host.

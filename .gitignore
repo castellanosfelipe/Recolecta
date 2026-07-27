@@ -5,6 +5,7 @@ __pycache__/
 htmlcov/
 .venv/
 .venv-build/
+.python-build/
 build/
 dist/
 data/

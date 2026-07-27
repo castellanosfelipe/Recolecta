@@ -156,6 +156,23 @@ def test_cut_mid_download_retries_and_resumes_without_corruption(
     assert int(final.stat().st_mtime) == int(MODIFIED.timestamp())
 
 
+def test_instant_download_keeps_positive_duration(tmp_path: Path) -> None:
+    state: dict = {}
+    engine = DownloadEngine(
+        connection(),
+        portable_root=tmp_path,
+        transport_factory=factory(state),
+        block_size=1024,
+        monotonic=lambda: 100.0,
+    )
+
+    outcome = engine.download_files((remote(),), run_id=11)[0]
+
+    assert outcome.status == DownloadStatus.OK
+    assert outcome.bytes_done == len(CONTENT)
+    assert outcome.duration_s > 0
+
+
 def test_process_restart_keeps_partial_and_restarts_if_server_has_no_resume(
     tmp_path: Path,
 ) -> None:

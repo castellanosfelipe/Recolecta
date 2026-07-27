@@ -1,8 +1,8 @@
 fastapi==0.115.8
 uvicorn==0.34.0
 APScheduler==3.11.0
-tzlocal
-tzdata
+tzlocal==5.4.4
+tzdata==2026.3
 paramiko==3.5.1
 httpx==0.28.1
 cryptography==44.0.2

@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from pyftpdlib.authorizers import DummyAuthorizer
-from pyftpdlib.handlers import FTPHandler, TLS_FTPHandler
+from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.log import config_logging
 from pyftpdlib.servers import FTPServer
 
@@ -54,6 +54,8 @@ def ftp_server_factory(tmp_path: Path):
         )
         if tls:
             pytest.importorskip("OpenSSL")
+            from pyftpdlib.handlers import TLS_FTPHandler
+
             certificate = _create_certificate(tmp_path / "server.pem")
 
             class Handler(TLS_FTPHandler):

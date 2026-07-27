@@ -249,7 +249,7 @@ class DownloadEngine:
                     result.sha256,
                     resumed_from=last_resumed_from,
                     resume_supported=resume_supported,
-                    duration_s=max(0.0, self.monotonic() - started),
+                    duration_s=self._elapsed(started),
                     path_was_truncated=item.destination.was_truncated,
                 )
             except DownloadCancelled:
@@ -267,7 +267,7 @@ class DownloadEngine:
                         error_msg=str(exc),
                         resumed_from=last_resumed_from,
                         resume_supported=resume_supported,
-                        duration_s=max(0.0, self.monotonic() - started),
+                        duration_s=self._elapsed(started),
                         path_was_truncated=item.destination.was_truncated,
                     )
                 self.sleeper(self._backoff_delay(attempts))
@@ -369,13 +369,17 @@ class DownloadEngine:
             _safe_size(item.part_path),
             error_type=ErrorType.INTERRUPTED,
             error_msg="La corrida fue cancelada; el parcial se conserva.",
-            duration_s=max(0.0, self.monotonic() - started),
+            duration_s=self._elapsed(started),
             path_was_truncated=item.destination.was_truncated,
         )
 
     def _backoff_delay(self, attempts: int) -> float:
         exponential = min(60.0, 2.0 ** max(0, attempts - 1))
         return exponential + self.random_value()
+
+    def _elapsed(self, started: float) -> float:
+        """Return a positive measurable interval for persisted rate metrics."""
+        return max(1e-9, self.monotonic() - started)
 
 
 def cleanup_orphaned_staging(

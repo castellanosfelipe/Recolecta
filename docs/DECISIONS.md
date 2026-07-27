@@ -139,3 +139,35 @@ Antes de enviar, cada canal inserta `(run_id, cause, channel)` en `alerts_log`. 
 ## D-035 · Los fallos de listado también son corridas auditables
 
 La ventana se calcula antes de autenticar o listar. Si ese pre-flight falla durante una ejecución real, se crea una corrida `failed`, un JSONL terminal y las alertas correspondientes. El dry-run continúa sin efectos laterales.
+
+## D-036 · Distribución portable `onedir` y compilación offline verificable
+
+El paquete oficial es PyInstaller `onedir` sin consola. `build.ps1` valida
+SHA-256, acepta únicamente CPython.org 3.12 x64 —o instala el bootstrap oficial
+vendorizado— y obliga a `pip --no-index --find-links wheelhouse`. Las pruebas
+se ejecutan antes de congelar y un autodiagnóstico del ejecutable importa
+explícitamente DPAPI, bandeja, toast, Pillow, APScheduler, cryptography y
+tzdata. Un fallo impide crear el ZIP.
+
+## D-037 · Dos tareas programadas, un modo criptográfico explícito
+
+El modo usuario usa una tarea al logon y DPAPI de usuario. El modo headless usa
+una tarea al startup como `SYSTEM`, privilegio máximo y el argumento interno
+`--service`, que fuerza DPAPI de máquina aunque el entorno heredado no defina
+`HARVESTER_MODE`. Ambos usan `IgnoreNew`, reinicio continuo, inicio tardío,
+batería permitida y duración ilimitada; el modo `SYSTEM` añade `WakeToRun`.
+
+## D-038 · La desinstalación separa ejecución de datos
+
+`uninstall.ps1` desregistra ambos nombres de tarea y solo detiene procesos
+`FileHarvester.exe` cuya carpeta coincide con el bundle desde el que se
+ejecuta. No elimina aplicación, base, logs, exports, staging ni descargas. La
+eliminación de evidencia y contenido queda como decisión manual posterior.
+
+## D-039 · CPython 3.12.10 es el bootstrap binario de la línea 3.12
+
+Se vendoriza el instalador oficial x64 3.12.10 porque es la última versión de
+Python 3.12 publicada con instaladores binarios de Windows. Versiones de
+seguridad posteriores de la línea 3.12 se publican solo como código fuente. El
+instalador sirve únicamente para la estación de build; el equipo destino
+recibe el runtime ya congelado.

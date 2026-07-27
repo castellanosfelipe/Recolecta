@@ -1,5 +1,5 @@
 # Vendor
 
-La Fase 7 incorporará aquí el instalador oficial de Python 3.12 requerido para el bootstrap offline.
+Contiene el instalador oficial x64 de CPython 3.12.10, última versión de la serie 3.12 con instalador binario para Windows. Se conserva para preparar una estación de build sin Python; el ZIP final usa el runtime congelado y no instala Python en el equipo operador.
 
-El binario no se incluye durante el andamiaje de la Fase 0.
+Verifique el archivo con `SHA256SUMS.txt` antes de usarlo.

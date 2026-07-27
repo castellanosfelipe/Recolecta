@@ -7,7 +7,9 @@ import importlib
 import multiprocessing
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import date
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from app import __version__
@@ -43,14 +45,27 @@ SELF_TEST_IMPORTS = (
     "app.throttle",
     "apscheduler",
     "cryptography.hazmat.primitives",
+    "cryptography.hazmat.primitives.ciphers",
+    "cryptography.hazmat.primitives.kdf.pbkdf2",
     "fastapi",
     "httpx",
     "paramiko",
     "uvicorn",
-) + (("win32crypt",) if sys.platform == "win32" else ())
+) + (("win32crypt",) if sys.platform == "win32" else ()) + (
+    (
+        "PIL.Image",
+        "PIL.ImageDraw",
+        "pystray",
+        "pystray._win32",
+        "winotify",
+        "winsound",
+    )
+    if sys.platform == "win32" and getattr(sys, "frozen", False)
+    else ()
+)
 
 
-def run_self_test() -> int:
+def run_self_test(report_path: str | None = None) -> int:
     """Import foundational modules and validate runtime configuration."""
     failures: list[str] = []
     for module_name in SELF_TEST_IMPORTS:
@@ -68,19 +83,30 @@ def run_self_test() -> int:
         failures.append(f"configuración: {exc}")
 
     if failures:
-        print("Autodiagnóstico fallido:\n- " + "\n- ".join(failures), file=sys.stderr)
-        return 1
-    print(f"FileHarvester {__version__}: autodiagnóstico correcto.")
-    return 0
+        message = "Autodiagnóstico fallido:\n- " + "\n- ".join(failures)
+        exit_code = 1
+    else:
+        message = f"FileHarvester {__version__}: autodiagnóstico correcto."
+        exit_code = 0
+    if report_path:
+        Path(report_path).write_text(message + "\n", encoding="utf-8")
+    stream = sys.stderr if exit_code else sys.stdout
+    if stream is not None:
+        print(message, file=stream)
+    return exit_code
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="FileHarvester")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--self-test-report", metavar="PATH", help=argparse.SUPPRESS
+    )
     parser.add_argument("--run-now", action="store_true")
     parser.add_argument("--connection", type=int, metavar="ID")
     parser.add_argument("--date", dest="selected_date", metavar="YYYY-MM-DD")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--service", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version", version=__version__)
     return parser
 
@@ -89,8 +115,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     multiprocessing.freeze_support()
     args = build_parser().parse_args(argv)
     if args.self_test:
-        return run_self_test()
+        return run_self_test(args.self_test_report)
+    if args.self_test_report:
+        build_parser().error("--self-test-report requiere --self-test")
 
+    if args.service and (
+        args.run_now
+        or args.connection is not None
+        or args.selected_date
+        or args.dry_run
+    ):
+        build_parser().error("--service solo puede iniciar el proceso residente")
     if args.connection is not None and args.connection < 1:
         build_parser().error("--connection debe ser mayor que cero")
     if (args.connection is not None or args.selected_date or args.dry_run) and not args.run_now:
@@ -104,6 +139,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         except ValueError:
             build_parser().error("--date debe usar el formato YYYY-MM-DD")
     config = AppConfig.from_env()
+    if args.service:
+        config = replace(config, mode="service")
     configure_logging(config.paths.logs)
     if args.run_now:
         from app.commands import execute_run_now
