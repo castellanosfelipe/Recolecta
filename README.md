@@ -5,12 +5,12 @@
   <img src="docs/images/dashboard.png" alt="Dashboard principal de Recolecta con el estado de conexiones, ejecuciones y archivos descargados" width="800"/>
 
   <p>
-    <img src="https://img.shields.io/badge/version-0.1.0-blue" alt="Versión 0.1.0"/>
+    <img src="https://img.shields.io/badge/version-0.1.1-blue" alt="Versión 0.1.1"/>
     <img src="https://img.shields.io/badge/status-active-2ea44f" alt="Estado activo"/>
     <img src="https://img.shields.io/badge/license-MIT-orange" alt="Licencia MIT"/>
     <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4" alt="Compatible con Windows 10 y Windows 11"/>
-    <img src="https://img.shields.io/badge/tests-178%20passing-2ea44f" alt="178 pruebas aprobadas"/>
-    <img src="https://img.shields.io/badge/coverage-85.26%25-2ea44f" alt="Cobertura de pruebas 85.26 por ciento"/>
+    <img src="https://img.shields.io/badge/tests-190%20passing-2ea44f" alt="190 pruebas aprobadas"/>
+    <img src="https://img.shields.io/badge/coverage-85.25%25-2ea44f" alt="Cobertura de pruebas 85.25 por ciento"/>
   </p>
 
   <p>
@@ -71,7 +71,7 @@ constantemente cada servidor.
 El repositorio todavía no incluye un video o GIF verificable. La
 [captura del dashboard](#-capturas-de-pantalla) muestra la experiencia actual,
 y la aplicación completa puede probarse desde la
-[release v0.1.0](https://github.com/castellanosfelipe/Recolecta-Automatizaci-n-confiable-de-archivos/releases/tag/v0.1.0).
+[release v0.1.1](https://github.com/castellanosfelipe/Recolecta-Automatizaci-n-confiable-de-archivos/releases/tag/v0.1.1).
 
 ## ✨ Características principales
 

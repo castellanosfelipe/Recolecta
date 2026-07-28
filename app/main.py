@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import __version__
 from app.alerts import AlertManager, AlertRepository
 from app.api.routes import create_router
 from app.config import AppConfig
@@ -150,7 +151,7 @@ def create_app(config: AppConfig, runtime: RuntimeComponents | None = None) -> F
 
     app = FastAPI(
         title="Recolecta",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
     app.state.runtime = components
