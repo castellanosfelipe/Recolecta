@@ -155,7 +155,7 @@ tbody tr:hover { background: #131d2d; }
 .form-actions { display: flex; justify-content: flex-end; margin-top: 22px; }
 dialog { width: min(760px, calc(100vw - 28px)); max-height: calc(100vh - 40px); overflow: auto; padding: 0; color: var(--text); background: var(--surface); border: 1px solid #40516a; border-radius: 15px; box-shadow: 0 24px 90px #000b; }
 dialog::backdrop { background: #02060db8; backdrop-filter: blur(3px); }
-dialog form, #detail-dialog > div:not(.dialog-head) { padding: 0 25px 25px; }
+dialog form, #detail-dialog > div:not(.dialog-head), #import-result-dialog > div:not(.dialog-head) { padding: 0 25px 25px; }
 .dialog-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 22px 25px 17px; background: var(--surface); border-bottom: 1px solid var(--line); margin-bottom: 20px; }
 .dialog-head h2 { margin: 4px 0 0; font-size: 1.2rem; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }

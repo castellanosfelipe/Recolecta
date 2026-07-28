@@ -69,6 +69,36 @@ def test_optional_basic_auth_keeps_health_public(tmp_path: Path) -> None:
     assert api_allowed.status_code == 200
 
 
+def test_connection_import_schedule_and_dialog_close_controls_are_exposed(
+    tmp_path: Path,
+) -> None:
+    app = create_app(config(tmp_path))
+    with TestClient(app) as client:
+        page = client.get("/").text
+        script = client.get("/static/app.js").text
+
+    assert 'id="connection-import-button"' in page
+    assert 'id="connection-import-file"' in page
+    assert 'name="schedule_time" type="time"' in page
+    for dialog_id in (
+        "connection-dialog",
+        "detail-dialog",
+        "import-result-dialog",
+    ):
+        assert f'data-close-dialog="{dialog_id}"' in page
+    assert (
+        'type="button" data-close-dialog="connection-dialog"'
+        in page
+    )
+    assert 'target.dataset.closeDialog' in script
+    assert (
+        "document.getElementById(target.dataset.closeDialog)?.close()"
+        in script
+    )
+    assert '"/api/import/connections"' in script
+    assert "La importación se completó, pero no se pudo actualizar la vista" in script
+
+
 def test_support_exports_and_alert_api(tmp_path: Path) -> None:
     app = create_app(config(tmp_path))
     with TestClient(app) as client:

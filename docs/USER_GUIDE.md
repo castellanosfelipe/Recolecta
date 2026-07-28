@@ -79,6 +79,8 @@ ejecute primero `.\uninstall.ps1` y luego el instalador elegido.
    subcarpetas y fije una profundidad razonable.
 7. Elija la zona IANA, por ejemplo `America/Bogota`, y una ventana:
    día calendario anterior, últimas N horas o desde la última corrida correcta.
+   Si esa conexión debe ejecutarse a una hora distinta, complete **Hora
+   diaria**; si queda vacía, usa la hora global de **Ajustes**.
 8. Seleccione un destino local. En producción prefiera una ruta absoluta en
    un volumen con espacio suficiente.
 9. Configure filtros, conflicto (`skip`, `overwrite` o `keep_both`),
@@ -92,19 +94,33 @@ abre archivos para lectura. Una corrida real escribe primero en
 `<destino>\.staging`; solo publica el archivo final después de validar
 integridad.
 
+## Importar conexiones desde StabilityMonitor
+
+1. Entre en **Conexiones** y pulse **Importar JSON**.
+2. Seleccione `monitor-backup.json` y confirme la cantidad detectada.
+3. Revise el resumen de conexiones importadas, omitidas y con error.
+4. Edite cada conexión marcada **Sin secreto**, ingrese la credencial, pulse
+   **Probar** y actívela solamente cuando la validación sea correcta.
+
+La operación es idempotente para la misma combinación de nombre, protocolo,
+host y puerto. Recolecta consume FTP, FTPS, SFTP, WebDAV, WebDAVS y SMB. Las
+entradas SQL Server u Oracle se omiten con un motivo visible porque no son
+fuentes de archivos soportadas. Un error en una entrada no cancela las demás.
+
 ## Dashboard, agenda y cancelación
 
 - **Inicio** resume conexiones, fallos y volumen reciente.
 - **En vivo** muestra porcentaje, bytes, velocidad y ETA.
 - **Historial** filtra corridas y abre el detalle.
 - **Archivos** busca por nombre o ruta y exporta CSV.
-- **Conexiones** crea, prueba, duplica, pausa o elimina orígenes.
+- **Conexiones** crea, importa, prueba, duplica, pausa o elimina orígenes.
 - **Ajustes** controla hora diaria, zona, jitter, catch-up, concurrencia,
   cortesía, reserva de disco, retención y alertas.
 
 **Cancelar corrida** solicita una parada cooperativa. El `.part` queda
-disponible para reanudar. APScheduler conserva un job por conexión y el
-catch-up recupera ventanas perdidas después de un apagado o suspensión.
+disponible para reanudar. APScheduler conserva un job y una hora por conexión;
+el catch-up usa esa misma hora y recupera ventanas perdidas después de un
+apagado o suspensión.
 
 ## Logs, exports y soporte
 

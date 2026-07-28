@@ -155,6 +155,8 @@ $pyinstallerArgs = @(
     "--hidden-import", "pystray._win32",
     "--hidden-import", "PIL.Image",
     "--hidden-import", "PIL.ImageDraw",
+    # platform.py cae de forma segura a sys.getwindowsversion() sin _wmi.
+    "--exclude-module", "_wmi",
     "--hidden-import", "cryptography.hazmat.primitives",
     "--hidden-import", "cryptography.hazmat.primitives.ciphers",
     "--hidden-import", "cryptography.hazmat.primitives.kdf.pbkdf2",

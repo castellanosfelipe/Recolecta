@@ -146,6 +146,9 @@ MIGRATIONS: Final[dict[int, tuple[str, ...]]] = {
     2: (
         "ALTER TABLE run_files ADD COLUMN average_bps REAL",
     ),
+    3: (
+        "ALTER TABLE connections ADD COLUMN schedule_time TEXT",
+    ),
 }
 
 
@@ -732,6 +735,7 @@ def _connection_db_values(
         "window_overlap_min": connection.window_overlap_min,
         "quiet_period_s": connection.quiet_period_s,
         "timezone": connection.timezone,
+        "schedule_time": connection.schedule_time,
         "dest_root": connection.dest_root,
         "dest_template": connection.dest_template,
         "on_conflict": connection.on_conflict.value,
@@ -773,6 +777,7 @@ def _connection_from_row(row: sqlite3.Row) -> Connection:
         window_overlap_min=int(row["window_overlap_min"]),
         quiet_period_s=int(row["quiet_period_s"]),
         timezone=row["timezone"],
+        schedule_time=row["schedule_time"],
         dest_root=row["dest_root"],
         dest_template=row["dest_template"],
         on_conflict=ConflictMode(row["on_conflict"]),

@@ -74,6 +74,8 @@ def test_build_is_offline_gated_and_complete() -> None:
         "payload\\recolecta",
         "install-service.ps1",
         "uninstall.ps1",
+        "--exclude-module",
+        '"_wmi"',
     ):
         assert expected in lowered
     assert lowered.index('".python-build"') < lowered.index(

@@ -150,11 +150,15 @@
       <section id="view-conexiones" class="view" aria-labelledby="connections-heading">
         <div class="section-heading">
           <div><p class="eyebrow">CONFIGURACIÓN</p><h2 id="connections-heading">Conexiones</h2></div>
-          <button class="btn primary" type="button" data-new-connection>+ Nueva conexión</button>
+          <div class="actions">
+            <input id="connection-import-file" type="file" accept=".json,application/json" hidden>
+            <button class="btn secondary" type="button" id="connection-import-button">Importar JSON</button>
+            <button class="btn primary" type="button" data-new-connection>+ Nueva conexión</button>
+          </div>
         </div>
         <div class="table-panel">
           <table>
-            <thead><tr><th>Nombre</th><th>Protocolo</th><th>Servidor</th><th>Credencial</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Protocolo</th><th>Servidor</th><th>Hora</th><th>Credencial</th><th>Estado</th><th>Acciones</th></tr></thead>
             <tbody id="connections-body"></tbody>
           </table>
         </div>
@@ -223,7 +227,7 @@
     <form id="connection-form" method="dialog">
       <div class="dialog-head">
         <div><p class="eyebrow">ORIGEN REMOTO</p><h2 id="connection-dialog-title">Nueva conexión</h2></div>
-        <button class="icon-button" value="cancel" aria-label="Cerrar">×</button>
+        <button class="icon-button" type="button" data-close-dialog="connection-dialog" aria-label="Cerrar">×</button>
       </div>
       <input name="id" type="hidden">
       <div class="form-grid">
@@ -235,6 +239,7 @@
         <label>Usuario<input name="username" autocomplete="username"></label>
         <label>Contraseña o frase secreta<input name="secret" type="password" autocomplete="new-password" placeholder="Sin cambios si se deja vacía"></label>
         <label>Zona horaria<input name="timezone" value="America/Bogota" required></label>
+        <label>Hora diaria<input name="schedule_time" type="time"><small>Vacío: usa la hora global.</small></label>
         <label class="span-2">Rutas remotas<textarea name="remote_paths" rows="2" placeholder="/entrada&#10;/reportes"></textarea><small>Una ruta por línea.</small></label>
         <label class="span-2">Destino local<input name="dest_root" value="downloads" required></label>
         <label>Ventana<select name="window_mode"><option value="calendar_day">Día calendario anterior</option><option value="rolling_hours">Últimas horas</option><option value="since_last_run">Desde última corrida</option></select></label>
@@ -244,15 +249,20 @@
       </div>
       <label class="check"><input name="enabled" type="checkbox" checked> Conexión activa</label>
       <div class="dialog-actions">
-        <button class="btn secondary" value="cancel">Cancelar</button>
+        <button class="btn secondary" type="button" data-close-dialog="connection-dialog">Cancelar</button>
         <button class="btn primary" type="submit" value="default">Guardar conexión</button>
       </div>
     </form>
   </dialog>
 
   <dialog id="detail-dialog" aria-labelledby="detail-title">
-    <div class="dialog-head"><h2 id="detail-title">Detalle de corrida</h2><button class="icon-button" data-close-detail aria-label="Cerrar">×</button></div>
+    <div class="dialog-head"><h2 id="detail-title">Detalle de corrida</h2><button class="icon-button" type="button" data-close-dialog="detail-dialog" aria-label="Cerrar">×</button></div>
     <div id="detail-content"></div>
+  </dialog>
+
+  <dialog id="import-result-dialog" aria-labelledby="import-result-title">
+    <div class="dialog-head"><h2 id="import-result-title">Resultado de importación</h2><button class="icon-button" type="button" data-close-dialog="import-result-dialog" aria-label="Cerrar">×</button></div>
+    <div id="import-result-content"></div>
   </dialog>
 </body>
 </html>

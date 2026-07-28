@@ -58,6 +58,7 @@ class ConnectionCreate(BaseModel):
     window_overlap_min: int = Field(default=15, ge=0)
     quiet_period_s: int = Field(default=120, ge=0)
     timezone: str = "America/Bogota"
+    schedule_time: str | None = None
     dest_root: str = "downloads"
     dest_template: str = (
         r"{client}\{connection}\{yyyy}\{MM}\{dd}\{filename}"
@@ -99,6 +100,7 @@ class ConnectionPatch(BaseModel):
     window_overlap_min: int | None = Field(default=None, ge=0)
     quiet_period_s: int | None = Field(default=None, ge=0)
     timezone: str | None = None
+    schedule_time: str | None = None
     dest_root: str | None = None
     dest_template: str | None = None
     on_conflict: ConflictMode | None = None

@@ -7,6 +7,7 @@ import io
 import logging
 import threading
 from datetime import date
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse, HTMLResponse
@@ -21,6 +22,7 @@ from app.api.schemas import (
     SettingsUpdate,
 )
 from app.alerts import AlertRepository
+from app.connection_import import import_connections
 from app.db import ConnectionRepository, RunRepository
 from app.errors import RecolectaError
 from app.models import Connection
@@ -136,6 +138,20 @@ def create_router(
         }
 
     @router.post(
+        "/api/import/connections",
+        status_code=status.HTTP_201_CREATED,
+    )
+    def import_connection_backup(
+        backup: dict[str, Any],
+    ) -> dict[str, object]:
+        try:
+            result = import_connections(backup, connections)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        reload_scheduler()
+        return result.to_dict()
+
+    @router.post(
         "/api/connections",
         status_code=status.HTTP_201_CREATED,
     )
@@ -172,6 +188,7 @@ def create_router(
             "max_size_bytes",
             "bandwidth_limit_kbps",
             "post_action_path",
+            "schedule_time",
         }
         values = {
             key: value

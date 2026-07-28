@@ -88,6 +88,7 @@ class Connection:
             "window_overlap_min",
             "quiet_period_s",
             "timezone",
+            "schedule_time",
             "dest_root",
             "dest_template",
             "on_conflict",
@@ -125,6 +126,7 @@ class Connection:
     window_overlap_min: int = 15
     quiet_period_s: int = 120
     timezone: str = "America/Bogota"
+    schedule_time: str | None = None
     dest_root: str = "downloads"
     dest_template: str = (
         r"{client}\{connection}\{yyyy}\{MM}\{dd}\{filename}"
@@ -172,6 +174,7 @@ class Connection:
             exclude_globs=tuple(str(value).strip() for value in self.exclude_globs if str(value).strip()),
             window_mode=window_mode,
             timezone=self.timezone.strip(),
+            schedule_time=_normalize_schedule_time(self.schedule_time),
             dest_root=self.dest_root.strip(),
             dest_template=self.dest_template.strip(),
             on_conflict=on_conflict,
@@ -253,3 +256,18 @@ class Connection:
     @property
     def destination_path(self) -> Path:
         return Path(self.dest_root)
+
+
+def _normalize_schedule_time(value: str | None) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    text = str(value).strip()
+    parts = text.split(":")
+    if len(parts) != 2 or not all(part.isdigit() for part in parts):
+        raise ValueError("La hora de la conexión debe usar el formato HH:MM.")
+    hour, minute = (int(part) for part in parts)
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ValueError(
+            "La hora de la conexión debe estar entre 00:00 y 23:59."
+        )
+    return f"{hour:02d}:{minute:02d}"

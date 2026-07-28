@@ -271,6 +271,7 @@
         <td><strong>${escapeHtml(item.name)}</strong><br><span class="muted">${escapeHtml(item.client || "Sin cliente")}</span></td>
         <td>${escapeHtml(item.protocol)}</td>
         <td class="mono">${escapeHtml(item.host)}:${item.port}</td>
+        <td>${escapeHtml(item.schedule_time || "Global")}</td>
         <td>${item.has_secret ? "Configurada" : "Sin secreto"}</td>
         <td>${statusBadge(item.enabled ? "enabled" : "disabled")}</td>
         <td><div class="actions">
@@ -279,7 +280,7 @@
           <button class="btn secondary small" data-duplicate="${item.id}">Duplicar</button>
           <button class="btn danger small" data-delete="${item.id}">Eliminar</button>
         </div></td>
-      </tr>`).join("") : `<tr><td colspan="6">No hay conexiones configuradas.</td></tr>`;
+      </tr>`).join("") : `<tr><td colspan="7">No hay conexiones configuradas.</td></tr>`;
   }
 
   function renderAlerts() {
@@ -364,6 +365,7 @@
     for (const [key, value] of data.entries()) {
       if (key === "id") continue;
       if (numeric.includes(key)) payload[key] = value === "" ? null : Number(value);
+      else if (key === "schedule_time") payload[key] = value || null;
       else if (key === "remote_paths") payload[key] = value.split(/\r?\n/).map((part) => part.trim()).filter(Boolean);
       else payload[key] = value;
     }
@@ -387,6 +389,52 @@
     } catch (error) {
       toast(error.message, true);
     }
+  }
+
+  async function importConnectionBackup(event) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const backup = JSON.parse(await file.text());
+      const total = Array.isArray(backup.connections) ? backup.connections.length : 0;
+      if (!window.confirm(`Se revisarán ${total} conexión(es). Los protocolos no compatibles se omitirán y las conexiones sin credencial quedarán en pausa. ¿Continuar?`)) return;
+      const result = await api("/api/import/connections", {
+        method: "POST",
+        body: backup,
+      });
+      const summary = `${result.created_count} importada(s), ${result.skipped_count} omitida(s) y ${result.error_count} con error.`;
+      showImportResult(result);
+      toast(summary, result.error_count > 0);
+      try {
+        await Promise.all([loadConnections(), loadDashboard()]);
+      } catch (refreshError) {
+        toast(`La importación se completó, pero no se pudo actualizar la vista: ${refreshError.message}`, true);
+      }
+    } catch (error) {
+      toast(`No se pudo importar el JSON: ${error.message}`, true);
+    } finally {
+      input.value = "";
+    }
+  }
+
+  function showImportResult(result) {
+    const issueSection = (title, items) => items.length ? `
+      <h3>${escapeHtml(title)}</h3>
+      <ul>${items.map((item) => `<li><strong>${escapeHtml(item.name)}</strong> · ${escapeHtml(item.protocol)}: ${escapeHtml(item.reason)}</li>`).join("")}</ul>
+    ` : "";
+    $("#import-result-content").innerHTML = `
+      <div class="detail-grid">
+        <div><span>Revisadas</span><strong>${result.total}</strong></div>
+        <div><span>Importadas</span><strong>${result.created_count}</strong></div>
+        <div><span>Omitidas</span><strong>${result.skipped_count}</strong></div>
+        <div><span>Con error</span><strong>${result.error_count}</strong></div>
+      </div>
+      <p>Las conexiones sin credencial se guardaron en pausa.</p>
+      ${issueSection("Entradas omitidas", result.skipped)}
+      ${issueSection("Entradas con error", result.errors)}
+    `;
+    $("#import-result-dialog").showModal();
   }
 
   async function startRun(id) {
@@ -446,6 +494,10 @@
   async function handleAction(event) {
     const target = event.target.closest("button, [data-go]");
     if (!target) return;
+    if (target.dataset.closeDialog) {
+      document.getElementById(target.dataset.closeDialog)?.close();
+      return;
+    }
     if (target.dataset.go) setView(target.dataset.go);
     if (target.dataset.newConnection !== undefined) openConnection();
     if (target.dataset.edit) openConnection(target.dataset.edit);
@@ -541,11 +593,15 @@
     $("#new-connection-button").addEventListener("click", () => openConnection());
     $("#refresh-button").addEventListener("click", refreshAll);
     $("#connection-form").addEventListener("submit", submitConnection);
+    $("#connection-import-button").addEventListener("click", () => {
+      $("#connection-import-file").value = "";
+      $("#connection-import-file").click();
+    });
+    $("#connection-import-file").addEventListener("change", importConnectionBackup);
     $("#history-filters").addEventListener("submit", (event) => submitFilters(event, "runs"));
     $("#file-filters").addEventListener("submit", (event) => submitFilters(event, "files"));
     $("#settings-form").addEventListener("submit", saveSettings);
     $("#retention-button").addEventListener("click", runRetention);
-    $("[data-close-detail]").addEventListener("click", () => $("#detail-dialog").close());
   }
 
   async function init() {

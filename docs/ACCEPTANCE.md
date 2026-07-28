@@ -10,6 +10,9 @@
 - [x] El progreso expone bytes, porcentaje, velocidad y ETA con polling activo de un segundo.
 - [x] El bundle de soporte contiene logs, CSV y configuración sin credenciales.
 - [x] La importación de StabilityMonitor crea conexiones de archivos e informa fuentes omitidas.
+- [x] Reimportar el mismo backup no crea duplicados y las conexiones sin secreto nacen en pausa.
+- [x] Cada conexión puede tener una hora diaria distinta o heredar la hora global; scheduler y catch-up respetan la elección.
+- [x] Todas las vistas son navegables y los diálogos de conexión y detalle cierran mediante sus controles visibles.
 - [x] El pre-flight aborta con `disk_space` antes de escribir.
 - [x] Una ruta remota maliciosa produce `path_invalid` y no escapa de `dest_root`.
 - [x] Las credenciales no aparecen en logs, exports ni respuestas de API.
@@ -24,8 +27,8 @@
 - [x] Código, interfaz, tareas, exportaciones y artefactos usan exclusivamente la marca `Recolecta`.
 - [x] El dashboard enlaza al repositorio de GitHub y al perfil de LinkedIn con iconos locales, etiquetas accesibles y apertura segura.
 
-Evidencia de la compilación local actual: CPython.org 3.12.10 x64, 178 pruebas
-aprobadas, cobertura total 85,26 %, autodiagnóstico fuente y congelado
+Evidencia de la compilación local actual: CPython.org 3.12.10 x64, 190 pruebas
+aprobadas, cobertura total 85,25 %, autodiagnóstico fuente y congelado
 aprobados y bundle `onedir` por debajo de 120 MB.
 
 ## Pruebas de aceptación en equipo destino

@@ -98,6 +98,61 @@ def test_scheduler_adds_retention_job(scheduler_data) -> None:
     assert service.scheduler.get_job("audit-retention") is not None
 
 
+def test_each_connection_can_use_a_distinct_daily_time(
+    scheduler_data,
+) -> None:
+    _, connections, runs, saved = scheduler_data
+    connections.update(saved.id, {"schedule_time": "05:25"})
+    fallback = connections.create(
+        Connection(
+            name="Hora global",
+            protocol=Protocol.FTP,
+            host="ftp.example.test",
+            dest_root="downloads",
+            timezone="America/Bogota",
+        )
+    )
+    service = SchedulerService(
+        type("Coordinator", (), {})(),
+        connections,
+        runs,
+        scheduler=BackgroundScheduler(timezone=timezone.utc),
+    )
+
+    service.configure(SchedulerSettings(hour=2, minute=7))
+
+    custom_trigger = str(
+        service.scheduler.get_job(f"connection-{saved.id}").trigger
+    )
+    fallback_trigger = str(
+        service.scheduler.get_job(f"connection-{fallback.id}").trigger
+    )
+    assert "hour='5'" in custom_trigger
+    assert "minute='25'" in custom_trigger
+    assert "hour='2'" in fallback_trigger
+    assert "minute='7'" in fallback_trigger
+
+
+def test_catchup_uses_connection_specific_time(scheduler_data) -> None:
+    _, connections, runs, saved = scheduler_data
+    connections.update(saved.id, {"schedule_time": "04:30"})
+
+    candidates = CatchUpPlanner(runs).candidates(
+        connections.list(enabled_only=True),
+        now=datetime(2026, 7, 27, 10, tzinfo=timezone.utc),
+        settings=SchedulerSettings(
+            hour=2,
+            minute=0,
+            catchup_max_days=1,
+            startup_delay_s=0,
+        ),
+    )
+
+    assert [candidate.scheduled_for_utc for candidate in candidates] == [
+        datetime(2026, 7, 27, 9, 30, tzinfo=timezone.utc)
+    ]
+
+
 def test_catchup_finds_only_windows_without_success(
     scheduler_data,
 ) -> None:
@@ -221,4 +276,30 @@ def test_scheduled_job_uses_nominal_time_despite_symmetric_jitter(
     service._run_scheduled(saved.id)
     assert calls[0]["window_reference_at"] == datetime(
         2026, 7, 27, 7, tzinfo=timezone.utc
+    )
+
+
+def test_scheduled_job_maps_pre_midnight_jitter_to_next_day(
+    scheduler_data,
+) -> None:
+    _, connections, runs, saved = scheduler_data
+    connections.update(saved.id, {"schedule_time": "00:05"})
+    calls = []
+
+    class Coordinator:
+        def execute_connection(self, connection_id, **kwargs):
+            calls.append(kwargs)
+
+    service = SchedulerService(
+        Coordinator(),
+        connections,
+        runs,
+        now=lambda: datetime(2026, 7, 28, 4, 52, tzinfo=timezone.utc),
+    )
+    service.settings = SchedulerSettings(jitter_minutes=15)
+
+    service._run_scheduled(saved.id)
+
+    assert calls[0]["window_reference_at"] == datetime(
+        2026, 7, 28, 5, 5, tzinfo=timezone.utc
     )

@@ -84,12 +84,14 @@ def test_create_read_list_update_and_delete_connection(
             "name": "SFTP Renombrado",
             "protocol": "FTP",
             "port": None,
+            "schedule_time": "18:40",
             "enabled": False,
         },
     )
     assert updated.name == "SFTP Renombrado"
     assert updated.protocol == Protocol.FTP
     assert updated.port == 21
+    assert updated.schedule_time == "18:40"
     assert repository.get_secret(created.id) == "clave-super-secreta"
     assert repository.list(enabled_only=True) == []
 

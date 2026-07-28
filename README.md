@@ -14,7 +14,7 @@
   </p>
 
   <p>
-    <a href="https://github.com/castellanosfelipe/Recolecta/releases/latest"><strong>Descargar la última versión</strong></a>
+    <a href="https://github.com/castellanosfelipe/Recolecta-Automatizaci-n-confiable-de-archivos/releases/latest"><strong>Descargar la última versión</strong></a>
     ·
     <a href="docs/USER_GUIDE.md">Guía de usuario</a>
     ·
@@ -71,14 +71,15 @@ constantemente cada servidor.
 El repositorio todavía no incluye un video o GIF verificable. La
 [captura del dashboard](#-capturas-de-pantalla) muestra la experiencia actual,
 y la aplicación completa puede probarse desde la
-[release v0.1.0](https://github.com/castellanosfelipe/Recolecta/releases/tag/v0.1.0).
+[release v0.1.0](https://github.com/castellanosfelipe/Recolecta-Automatizaci-n-confiable-de-archivos/releases/tag/v0.1.0).
 
 ## ✨ Características principales
 
 | Feature | Descripción |
 |---------|-------------|
 | 🔌 **Conexiones multiprotocolo** | Reúne archivos desde FTP, FTPS, SFTP, WebDAV, WebDAVS y SMB sin cambiar de herramienta. |
-| 🗓️ **Automatización con recuperación** | Ejecuta agendas por zona horaria y recupera ventanas perdidas mediante catch-up sin duplicar entregas correctas. |
+| 🗓️ **Automatización con recuperación** | Permite una hora distinta por conexión —o la hora global— y recupera ventanas perdidas mediante catch-up sin duplicar entregas correctas. |
+| 🔄 **Migración controlada** | Importa backups JSON de StabilityMonitor, deja en pausa lo que no trae credencial e informa protocolos SQL/Oracle omitidos sin abortar el resto. |
 | ✅ **Transferencias confiables** | Usa staging, reanudación, reintentos y validación por tamaño o SHA-256 antes de publicar cada archivo. |
 | 🔐 **Credenciales protegidas** | Almacena secretos mediante DPAPI de usuario o de máquina y evita exponerlos en API, logs y exportaciones. |
 | 📊 **Control y trazabilidad local** | Presenta progreso, velocidad, ETA, historial, alertas y archivos procesados desde un dashboard sin recursos externos. |
@@ -104,7 +105,7 @@ y la aplicación completa puede probarse desde la
 ### Pasos
 
 1. Descarga `Recolecta-Setup.exe` y `SHA256SUMS.txt` desde la
-   [última release](https://github.com/castellanosfelipe/Recolecta/releases/latest).
+   [última release](https://github.com/castellanosfelipe/Recolecta-Automatizaci-n-confiable-de-archivos/releases/latest).
 2. Verifica el instalador:
 
 ```powershell
@@ -144,11 +145,17 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 1. Abre `http://127.0.0.1:8091`.
 2. Selecciona **Conexiones → Nueva conexión**.
-3. Define protocolo, servidor, credencial, rutas remotas y destino local.
+3. Define protocolo, servidor, credencial, rutas remotas, destino local y,
+   si lo necesitas, una hora diaria propia para esa conexión.
 4. Pulsa **Probar** para validar el acceso y previsualizar archivos.
 5. Guarda la conexión y usa **Ejecutar ahora** o deja que la agenda trabaje.
 
 El dashboard mostrará progreso, resultado e historial de cada archivo.
+
+También puedes usar **Conexiones → Importar JSON** con un
+`monitor-backup.json` de StabilityMonitor. Recolecta importa FTP, FTPS, SFTP,
+WebDAV(S) y SMB; las fuentes SQL/Oracle se informan como omitidas y las
+conexiones sin secreto quedan en pausa hasta que ingreses su credencial.
 
 ### Casos de uso avanzados
 
@@ -212,10 +219,11 @@ flowchart LR
 ### ✅ Completado
 
 - [x] Descarga y validación mediante FTP, FTPS, SFTP, WebDAV(S) y SMB.
-- [x] Agenda por zona horaria, catch-up, reintentos y control de duplicados.
+- [x] Agenda independiente por conexión y zona horaria, catch-up, reintentos y control de duplicados.
+- [x] Importación idempotente de conexiones desde StabilityMonitor con reporte de omisiones.
 - [x] Dashboard local, alertas, exportaciones y bundle de soporte.
 - [x] Instalador offline y paquete portable publicados en GitHub Releases.
-- [x] Suite de 178 pruebas con compuerta de cobertura mínima del 85 %.
+- [x] Suite de 190 pruebas con compuerta de cobertura mínima del 85 %.
 
 ### 🔄 En progreso
 
@@ -234,7 +242,7 @@ Las contribuciones son bienvenidas, especialmente cuando incluyen un caso de
 uso reproducible y pruebas. Antes de abrir un pull request:
 
 1. Crea un issue en
-   [GitHub Issues](https://github.com/castellanosfelipe/Recolecta/issues)
+   [GitHub Issues](https://github.com/castellanosfelipe/Recolecta-Automatizaci-n-confiable-de-archivos/issues)
    para describir el problema o resultado esperado.
 2. Trabaja en una rama enfocada y evita mezclar cambios no relacionados.
 3. Ejecuta la validación offline:
@@ -262,7 +270,7 @@ La especificación, decisiones y criterios verificables están en
     <a href="https://github.com/castellanosfelipe">castellanosfelipe</a>
   </p>
   <p>
-    <a href="https://github.com/castellanosfelipe/Recolecta">GitHub</a>
+    <a href="https://github.com/castellanosfelipe/Recolecta-Automatizaci-n-confiable-de-archivos">GitHub</a>
     ·
     <a href="https://www.linkedin.com/in/bairon-felipe-peña-castellanos-ab18411b5">LinkedIn</a>
   </p>

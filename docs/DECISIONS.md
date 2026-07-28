@@ -219,3 +219,32 @@ El modo `--extract-only` permite que CI valide hash, contenido y
 autodiagnóstico sin alterar tareas programadas. El workflow adjunta el Setup,
 el ZIP portable, los dos reportes smoke y `SHA256SUMS.txt` a cada release
 creada desde una etiqueta `v*.*.*`.
+
+## D-045 · La importación es parcial, segura e idempotente
+
+El endpoint de importación acepta backups de StabilityMonitor y exportaciones
+seguras de Recolecta. Cada entrada se procesa por separado: FTP, FTPS, SFTP,
+WebDAV(S) y SMB se normalizan con el modelo vigente; SQL Server, Oracle y
+otros protocolos se omiten con motivo explícito. Una entrada inválida no
+revierte las válidas. La huella nombre–protocolo–host–puerto evita duplicados
+al repetir el archivo. Toda conexión que no trae `secret` se guarda en pausa,
+incluida la autenticación por llave; si lo trae, se cifra inmediatamente
+mediante el `SecretStore` y nunca aparece en la respuesta.
+
+## D-046 · La hora global es un valor heredable por conexión
+
+`connections.schedule_time` es nullable y usa `HH:MM`. Un valor presente
+define el `CronTrigger` y el catch-up de esa conexión en su propia zona IANA;
+un valor nulo hereda `schedule.hour` y `schedule.minute`. Así se mantiene la
+compatibilidad con bases existentes y se pueden distribuir cargas a lo largo
+del día sin duplicar el mecanismo de agenda.
+
+## D-047 · El ejecutable congelado no consulta WMI para identificar Windows
+
+CPython 3.12 intenta consultar WMI desde `platform.py` antes de arrancar
+Uvicorn. En equipos administrados, un proveedor de seguridad inyectado en
+`fastprox.dll` puede terminar el proceso nativo antes de que exista un log.
+El build excluye el módulo opcional `_wmi`; la biblioteca estándar usa entonces
+su fallback soportado (`sys.getwindowsversion()` y el registro). Recolecta no
+usa WMI para ninguna función, por lo que se evita ese punto de fallo sin
+reducir capacidades del producto.

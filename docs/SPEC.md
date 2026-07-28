@@ -203,6 +203,7 @@ CREATE TABLE connections (
     window_overlap_min INTEGER NOT NULL DEFAULT 15,
     quiet_period_s INTEGER NOT NULL DEFAULT 120,
     timezone TEXT NOT NULL DEFAULT 'America/Bogota',
+    schedule_time TEXT,                         -- HH:MM; NULL hereda agenda global
     dest_root TEXT NOT NULL,
     dest_template TEXT NOT NULL DEFAULT '{client}\{connection}\{yyyy}\{MM}\{dd}\{filename}',
     on_conflict TEXT NOT NULL DEFAULT 'skip',     -- skip|overwrite|keep_both
@@ -262,7 +263,7 @@ CREATE UNIQUE INDEX idx_file_identity
   completo sin descargar un solo byte.
 - Puertos por defecto: FTP/FTPS 21, SFTP 22, WEBDAV 80, WEBDAVS 443, SMB 445.
 - **Importación del backup de StabilityMonitor** (`monitor-backup.json`), formato exacto en §16.1:
-  - Acepta solo los protocolos de archivos: `FTP`, `FTPS`, `SFTP`, `WEBDAV`, `WEBDAVS`.
+  - Acepta solo los protocolos de archivos: `FTP`, `FTPS`, `SFTP`, `WEBDAV`, `WEBDAVS`, `SMB`.
   - Ignora `POSTGRES`, `MYSQL`, `MARIADB`, `SQLSERVER`, `ORACLE` reportando
     `"N conexiones de base de datos omitidas: no aplican a descarga de archivos"`.
   - Mapea `targets_json` → `remote_paths_json` (los objetivos monitoreados son justamente las carpetas a descargar).
@@ -566,11 +567,13 @@ Escríbelos en `docs/ACCEPTANCE.md` como checklist verificable:
    y la configuración, **sin una sola credencial**.
 10. Importar un `monitor-backup.json` de StabilityMonitor crea las conexiones FTP/FTPS/SFTP/WebDAV/WebDAVS
     y reporta explícitamente cuántas de base de datos se omitieron.
-11. Con el volumen destino casi lleno, la corrida aborta antes de descargar y emite alerta `disk_space`.
-12. Un servidor que devuelve `../../../Windows\System32\evil.dll` en el listado provoca `path_invalid`
+11. Dos conexiones pueden usar horas diarias diferentes y el catch-up conserva
+    la hora propia de cada una; una conexión sin hora hereda la agenda global.
+12. Con el volumen destino casi lleno, la corrida aborta antes de descargar y emite alerta `disk_space`.
+13. Un servidor que devuelve `../../../Windows\System32\evil.dll` en el listado provoca `path_invalid`
     y **no escribe nada fuera de `dest_root`**.
-13. Ninguna credencial aparece en `logs/`, en los exports, ni en ninguna respuesta de la API.
-14. `pytest` pasa completo y `build.ps1` genera el paquete sin acceso a la red.
+14. Ninguna credencial aparece en `logs/`, en los exports, ni en ninguna respuesta de la API.
+15. `pytest` pasa completo y `build.ps1` genera el paquete sin acceso a la red.
 
 ---
 

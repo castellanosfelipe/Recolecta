@@ -100,13 +100,17 @@ class CatchUpPlanner:
             if not connection.enabled or connection.id is None:
                 continue
             zone = ZoneInfo(connection.timezone)
+            schedule_hour, schedule_minute = _connection_schedule_fields(
+                connection,
+                settings,
+            )
             today = now_utc.astimezone(zone).date()
             last_end = self.runs.last_successful_end(connection.id)
             for days_ago in range(settings.catchup_max_days):
                 scheduled_date = today - timedelta(days=days_ago)
                 scheduled_local = datetime.combine(
                     scheduled_date,
-                    wall_time(settings.hour, settings.minute),
+                    wall_time(schedule_hour, schedule_minute),
                     tzinfo=zone,
                 )
                 scheduled_utc = scheduled_local.astimezone(timezone.utc)
@@ -202,9 +206,13 @@ class SchedulerService:
         for connection in self.connections.list(enabled_only=True):
             if connection.id is None:
                 continue
+            schedule_hour, schedule_minute = _connection_schedule_fields(
+                connection,
+                settings,
+            )
             base_hour, base_minute, jitter_seconds = _symmetric_jitter_fields(
-                settings.hour,
-                settings.minute,
+                schedule_hour,
+                schedule_minute,
                 settings.jitter_minutes,
             )
             trigger = CronTrigger(
@@ -343,12 +351,30 @@ def _nominal_scheduled_time(
     now_utc = now.astimezone(timezone.utc)
     zone = ZoneInfo(connection.timezone)
     local_now = now_utc.astimezone(zone)
+    schedule_hour, schedule_minute = _connection_schedule_fields(
+        connection,
+        settings,
+    )
     nominal_today = datetime.combine(
         local_now.date(),
-        wall_time(settings.hour, settings.minute),
+        wall_time(schedule_hour, schedule_minute),
         tzinfo=zone,
     )
     tolerance = timedelta(minutes=settings.jitter_minutes)
     if local_now < nominal_today and nominal_today - local_now > tolerance:
         nominal_today -= timedelta(days=1)
+    elif local_now >= nominal_today:
+        nominal_tomorrow = nominal_today + timedelta(days=1)
+        if nominal_tomorrow - local_now <= tolerance:
+            nominal_today = nominal_tomorrow
     return nominal_today.astimezone(timezone.utc)
+
+
+def _connection_schedule_fields(
+    connection: Connection,
+    settings: SchedulerSettings,
+) -> tuple[int, int]:
+    if connection.schedule_time is None:
+        return settings.hour, settings.minute
+    hour, minute = connection.schedule_time.split(":", 1)
+    return int(hour), int(minute)

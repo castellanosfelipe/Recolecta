@@ -45,6 +45,7 @@ def test_connection_crud_duplicate_and_secret_never_leaks(tmp_path: Path) -> Non
         "host": "sftp.example.test",
         "protocol": "SFTP",
         "remote_paths": ["/entrada"],
+        "schedule_time": "05:35",
         "secret": "super-secreto",
     }
     with client:
@@ -62,6 +63,7 @@ def test_connection_crud_duplicate_and_secret_never_leaks(tmp_path: Path) -> Non
         )
     assert created.status_code == 201
     assert created.json()["has_secret"] is True
+    assert created.json()["schedule_time"] == "05:35"
     assert "secret" not in created.json()
     assert "secret_encrypted" not in created.json()
     assert "super-secreto" not in created.text
@@ -72,6 +74,47 @@ def test_connection_crud_duplicate_and_secret_never_leaks(tmp_path: Path) -> Non
     assert duplicate.json()["enabled"] is False
     assert duplicate.json()["has_secret"] is False
     assert paused_run.status_code == 409
+
+
+def test_stability_backup_import_endpoint_reports_each_result(
+    tmp_path: Path,
+) -> None:
+    client, repository, _ = api(tmp_path)
+    backup = {
+        "app": "StabilityMonitor",
+        "version": "2.0.0",
+        "connections": [
+            {
+                "name": "Entrada FTP",
+                "protocol": "FTP",
+                "host": "ftp.example.test",
+                "port": 21,
+                "username": "reader",
+                "targets_json": '["/entrada"]',
+                "enabled": 1,
+            },
+            {
+                "name": "Base Oracle",
+                "protocol": "ORACLE",
+                "host": "db.example.test",
+                "port": 1521,
+            },
+        ],
+    }
+
+    with client:
+        imported = client.post("/api/import/connections", json=backup)
+
+    assert imported.status_code == 201
+    assert imported.json()["total"] == 2
+    assert imported.json()["created_count"] == 1
+    assert imported.json()["skipped_count"] == 1
+    assert imported.json()["error_count"] == 0
+    assert imported.json()["skipped"][0]["protocol"] == "ORACLE"
+    saved = repository.list()[0]
+    assert saved.name == "Entrada FTP"
+    assert saved.remote_paths == ("/entrada",)
+    assert saved.enabled is False
 
 
 def test_history_files_dashboard_settings_and_csv(tmp_path: Path) -> None:

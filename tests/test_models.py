@@ -25,12 +25,16 @@ def valid_connection(**changes) -> Connection:
 
 
 def test_normalization_applies_protocol_port_and_trims_values() -> None:
-    connection = valid_connection(port=None).normalized()
+    connection = valid_connection(
+        port=None,
+        schedule_time=" 5:07 ",
+    ).normalized()
     assert connection.name == "SFTP Producción"
     assert connection.client == "Cliente A"
     assert connection.host == "10.0.0.10"
     assert connection.port == 22
     assert connection.remote_paths == ("/entrada",)
+    assert connection.schedule_time == "05:07"
 
 
 @pytest.mark.parametrize(
@@ -55,6 +59,8 @@ def test_protocol_default_ports(protocol: Protocol, port: int) -> None:
         ({"host": ""}, "host"),
         ({"port": 70000}, "puerto"),
         ({"timezone": "Mars/Olympus"}, "Zona horaria"),
+        ({"schedule_time": "25:10"}, "hora de la conexión"),
+        ({"schedule_time": "mañana"}, "formato HH:MM"),
         ({"min_size_bytes": 10, "max_size_bytes": 5}, "mínimo"),
         ({"max_parallel_files": 0}, "trabajador"),
         ({"bandwidth_limit_kbps": 0}, "ancho de banda"),
