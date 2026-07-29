@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import os
 import zipfile
@@ -72,8 +74,20 @@ def test_support_bundle_report_and_csv_are_safe(tmp_path: Path) -> None:
         run_logs=logs,
         now=lambda: now,
     )
-    assert "'=formula.csv" in service.files_csv()
-    assert "Cliente A" in service.html_report(days=30, client="Cliente A")
+    files_csv = service.files_csv()
+    runs_csv = service.runs_csv(days=30)
+    report = service.html_report(days=30, client="Cliente A")
+    assert "'=formula.csv" in files_csv
+    assert "status_label" in files_csv.splitlines()[0]
+    assert "Omitido por configuración" in files_csv
+    exported_run = next(
+        csv.DictReader(io.StringIO(runs_csv.removeprefix("\ufeff")))
+    )
+    assert exported_run["status"] == "ok"
+    assert exported_run["result_status"] == "no_changes"
+    assert exported_run["status_label"] == "Sin archivos nuevos"
+    assert "Cliente A" in report
+    assert "Sin archivos nuevos" in report
     configuration = json.dumps(service.safe_configuration())
     assert "muy-secreto" not in configuration
     assert "no-exportar" not in configuration
@@ -94,6 +108,41 @@ def test_support_bundle_report_and_csv_are_safe(tmp_path: Path) -> None:
     assert any(name.startswith("logs/runs/") for name in names)
     assert "muy-secreto" not in content
     assert "no-exportar" not in content
+
+
+def test_empty_success_export_is_descriptive_but_keeps_raw_status(
+    tmp_path: Path,
+) -> None:
+    paths, _, connections, saved, runs, settings, logs = build_data(tmp_path)
+    now = datetime(2026, 7, 27, tzinfo=timezone.utc)
+    run_id = runs.start_run(
+        connection_id=saved.id,
+        trigger="manual",
+        window_start_utc=now - timedelta(days=1),
+        window_end_utc=now,
+        started_at=now,
+    )
+    runs.finish_run(run_id, status="ok")
+    service = ExportService(
+        paths=paths,
+        runs=runs,
+        connections=connections,
+        settings=settings,
+        run_logs=logs,
+        now=lambda: now,
+    )
+
+    csv_text = service.runs_csv(days=30)
+    report = service.html_report(days=30)
+
+    values = next(
+        csv.DictReader(io.StringIO(csv_text.removeprefix("\ufeff")))
+    )
+    assert values["status"] == "ok"
+    assert values["result_status"] == "no_files"
+    assert values["status_label"] == "Archivos no existentes"
+    assert "Archivos no existentes" in report
+    assert ">ok</span>" not in report
 
 
 def test_retention_removes_only_old_audit_data(tmp_path: Path) -> None:

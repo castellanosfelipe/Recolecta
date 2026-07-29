@@ -252,23 +252,56 @@ CREATE UNIQUE INDEX idx_file_identity
 
 `settings` y `alerts_log` como en el proyecto previo.
 
+### 6.1 Estado canónico y resultado descriptivo
+
+`runs.status` conserva exclusivamente los valores canónicos
+`running|ok|partial|failed|cancelled`. Este contrato alimenta persistencia,
+agenda, catch-up, métricas y compatibilidad de API; una corrida que lista
+correctamente y no encuentra archivos sigue siendo `ok`.
+
+La API, el dashboard y los reportes añaden un resultado derivado, sin
+reemplazar el estado canónico:
+
+| Condición canónica | `result_status` | Etiqueta visible |
+|---|---|---|
+| `status='ok'` y `files_found=0` | `no_files` | **Archivos no existentes** |
+| `status='ok'`, `files_found>0` y `files_downloaded=0` | `no_changes` | **Sin archivos nuevos** |
+| `status='ok'` y `files_downloaded>0` | `completed` | **Descarga completada** |
+| `status='running'` | `running` | **En ejecución** |
+| `status='partial'` | `partial` | **Completada con incidencias** |
+| `status='cancelled'` | `cancelled` | **Cancelada por el usuario** |
+| `status='failed'` | `failed` | Causa específica según `error_type` |
+
+La evaluación del estado canónico tiene precedencia sobre los contadores. Por
+lo tanto, una autenticación rechazada, una ruta remota inexistente o cualquier
+otro fallo con `files_found=0` nunca puede presentarse como
+**Archivos no existentes**. Los exports conservan `status` como dato estable y
+pueden añadir `result_status` y `status_label` para consumo humano.
+
 ---
 
 ## 7. Requisitos funcionales
 
 ### RF-1 · Gestión de conexiones
 
-- CRUD completo desde el dashboard, con **"Probar conexión"** (conecta, autentica, lista la primera carpeta,
-  devuelve cuántos archivos caerían en la ventana actual) y **"Simular corrida" (dry-run)**: muestra el plan
-  completo sin descargar un solo byte.
+- CRUD completo desde el dashboard, con **"Probar conexión y rutas"** en el
+  editor y **"Simular corrida" (dry-run)** para una conexión guardada: muestra
+  el plan completo sin descargar un solo byte.
+- El editor mantiene **Guardar conexión** bloqueado hasta validar el borrador
+  actual: credencial, todas las rutas remotas y capacidad de escritura y
+  renombrado en el destino local. Cualquier cambio posterior exige repetir la
+  prueba; el backend aplica la misma regla antes de persistir cambios de
+  conectividad o rutas. Si se configuró una acción de movimiento remoto,
+  también comprueba que su carpeta de destino sea accesible.
 - Puertos por defecto: FTP/FTPS 21, SFTP 22, WEBDAV 80, WEBDAVS 443, SMB 445.
 - **Importación del backup de StabilityMonitor** (`monitor-backup.json`), formato exacto en §16.1:
   - Acepta solo los protocolos de archivos: `FTP`, `FTPS`, `SFTP`, `WEBDAV`, `WEBDAVS`, `SMB`.
   - Ignora `POSTGRES`, `MYSQL`, `MARIADB`, `SQLSERVER`, `ORACLE` reportando
     `"N conexiones de base de datos omitidas: no aplican a descarga de archivos"`.
   - Mapea `targets_json` → `remote_paths_json` (los objetivos monitoreados son justamente las carpetas a descargar).
-  - Si el archivo trae `secret` en claro, lo cifra localmente al importar; si no, la conexión nace **en pausa**
-    con estado `"falta credencial"`.
+  - Todas las conexiones importadas nacen **en pausa** hasta validar sus rutas.
+    Si el archivo trae `secret` en claro, lo cifra localmente; si no, conserva
+    el estado `"falta credencial"`.
   - Reutiliza la clave de deduplicación `(protocol, host, port, name)`.
 - Exportación propia en el mismo formato (`"app": "Recolecta"`), **sin secretos**.
 
@@ -451,6 +484,31 @@ Nuevos, específicos de descarga:
 `path_invalid` (saneamiento imposible) · `interrupted` (corrida cortada por reinicio) · `timestamp_unreliable`
 (el servidor no soporta `MDTM`/`MLSD`).
 
+La interfaz, el detalle y los reportes deben traducir `error_type` a una causa
+accionable, en vez de mostrar únicamente **Fallida**:
+
+| `error_type` | Etiqueta visible |
+|---|---|
+| `auth` | Credencial rechazada |
+| `dns` | Servidor no encontrado |
+| `tcp_connect` | Servidor no disponible |
+| `tcp_timeout` | Tiempo de conexión agotado |
+| `tls` | Seguridad TLS/SSH no validada |
+| `permission` | Acceso denegado |
+| `target_missing` | Ruta remota no existente |
+| `disk_space` | Espacio local insuficiente |
+| `disk_write` | No se pudo escribir en el destino |
+| `integrity` | Validación del archivo fallida |
+| `partial_transfer` | Transferencia incompleta |
+| `path_invalid` | Ruta no permitida |
+| `interrupted` | Ejecución interrumpida |
+| `protocol` | Error de protocolo |
+| `timestamp_unreliable` | Fecha remota no confiable |
+| `unknown` | Error no identificado |
+
+El mensaje técnico saneado permanece disponible en el detalle, pero no
+reemplaza la etiqueta y nunca puede contener credenciales.
+
 ---
 
 ## 10. Dashboard
@@ -467,6 +525,8 @@ Vistas:
 6. **Ajustes** — hora, zona horaria, retención, cortesía, alertas, backup/restore.
 
 Accesibilidad mínima: contraste AA, foco visible, tabla navegable por teclado, estados no comunicados solo por color.
+Inicio, Historial y el detalle usan las etiquetas descriptivas de §6.1 y §9;
+el valor canónico continúa disponible para filtros, automatización y auditoría.
 
 ---
 
@@ -574,6 +634,11 @@ Escríbelos en `docs/ACCEPTANCE.md` como checklist verificable:
     y **no escribe nada fuera de `dest_root`**.
 14. Ninguna credencial aparece en `logs/`, en los exports, ni en ninguna respuesta de la API.
 15. `pytest` pasa completo y `build.ps1` genera el paquete sin acceso a la red.
+16. Una corrida `ok` con `files_found=0` se presenta como **Archivos no
+    existentes**, no como fallo; los demás resultados correctos distinguen
+    **Sin archivos nuevos** y **Descarga completada**.
+17. Una corrida `failed` con cero archivos conserva el fallo y muestra la causa
+    específica de `error_type`; nunca se reclasifica como `no_files`.
 
 ---
 

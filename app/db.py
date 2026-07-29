@@ -586,7 +586,18 @@ class RunRepository:
         if connection_id is not None:
             clauses.append("r.connection_id = ?")
             parameters.append(connection_id)
-        if status:
+        if status == "no_files":
+            clauses.append("r.status = 'ok' AND r.files_found = 0")
+        elif status == "no_changes":
+            clauses.append(
+                "r.status = 'ok' AND r.files_found > 0 "
+                "AND r.files_downloaded = 0"
+            )
+        elif status == "completed":
+            clauses.append(
+                "r.status = 'ok' AND r.files_downloaded > 0"
+            )
+        elif status:
             clauses.append("r.status = ?")
             parameters.append(status)
         if date_from:
@@ -688,9 +699,12 @@ class RunRepository:
                 SELECT c.id, c.name, c.client, c.protocol, c.enabled,
                        r.id AS last_run_id, r.started_at AS last_started_at,
                        r.status AS last_status,
+                       r.files_found AS last_files_found,
                        r.files_downloaded AS last_files_downloaded,
+                       r.files_skipped AS last_files_skipped,
                        r.files_failed AS last_files_failed,
-                       r.bytes_downloaded AS last_bytes_downloaded
+                       r.bytes_downloaded AS last_bytes_downloaded,
+                       r.error_type AS last_error_type
                 FROM connections c
                 LEFT JOIN runs r ON r.id = (
                     SELECT r2.id

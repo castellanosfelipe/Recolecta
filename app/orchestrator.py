@@ -4,23 +4,30 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import shutil
+import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from enum import StrEnum
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from app.config import AppPaths
 from app.alerts import AlertManager
+from app.connection_validation import (
+    ConnectionValidationResult,
+    validate_connection_paths,
+)
 from app.db import ConnectionRepository, Database, RunRepository
 from app.downloader import DownloadEngine, DownloadOutcome, DownloadStatus
 from app.errors import ErrorType, RecolectaError, classify_exception
-from app.models import Connection, WindowMode
+from app.models import Connection, Protocol, WindowMode
 from app.progress import ProgressRegistry
 from app.run_logging import RunEventLog, RunLogStore
+from app.statuses import enrich_run
 from app.throttle import ThrottleManager
 from app.transports import create_transport
 from app.transports.base import ListingResult, RemoteFile, Transport
@@ -98,22 +105,36 @@ class RunExecution:
     outcomes: tuple[DownloadOutcome, ...] = field(default_factory=tuple)
 
     def summary(self) -> dict[str, object]:
-        return {
+        outcomes = {
+            status.value: sum(
+                outcome.status == status for outcome in self.outcomes
+            )
+            for status in DownloadStatus
+        }
+        summary = {
             "connection_id": self.connection_id,
             "run_id": self.run_id,
             "trigger": self.trigger,
             "status": self.status,
             "window_start_utc": self.plan.window.start_utc.isoformat(),
             "window_end_utc": self.plan.window.end_utc.isoformat(),
+            "files_found": len(self.plan.items),
             "files_planned": len(self.plan.files_to_download),
             "warnings": list(self.plan.warnings),
-            "outcomes": {
-                status.value: sum(
-                    outcome.status == status for outcome in self.outcomes
-                )
-                for status in DownloadStatus
-            },
+            "outcomes": outcomes,
         }
+        result = enrich_run(
+            {
+                "status": self.status,
+                "files_found": len(self.plan.items),
+                "files_downloaded": outcomes[DownloadStatus.OK.value],
+                "files_failed": outcomes[DownloadStatus.FAILED.value],
+            }
+        )
+        summary["result_status"] = result["result_status"]
+        summary["status_label"] = result["status_label"]
+        summary["status_detail"] = result["status_detail"]
+        return summary
 
 
 class RunCoordinator:
@@ -151,6 +172,45 @@ class RunCoordinator:
         self._state_lock = threading.Lock()
         self._connection_locks: dict[int, threading.Lock] = {}
         self._cancel_events: dict[int, threading.Event] = {}
+
+    def validate_connection_draft(
+        self,
+        connection: Connection,
+        *,
+        secret: str | None,
+    ) -> ConnectionValidationResult:
+        """Validate an unsaved draft without downloading or persisting it."""
+        if connection.protocol == Protocol.SFTP:
+            with tempfile.TemporaryDirectory(
+                prefix="recolecta-known-hosts-"
+            ) as temporary:
+                temporary_known_hosts = Path(temporary) / "known_hosts"
+                if self.paths.known_hosts.is_file():
+                    try:
+                        shutil.copyfile(
+                            self.paths.known_hosts,
+                            temporary_known_hosts,
+                        )
+                    except OSError as exc:
+                        raise RecolectaError(
+                            ErrorType.DISK_WRITE,
+                            (
+                                "No se pudo preparar una copia temporal de "
+                                "known_hosts para validar SFTP."
+                            ),
+                        ) from exc
+                return validate_connection_paths(
+                    connection,
+                    secret=secret,
+                    portable_root=self.paths.root,
+                    known_hosts=temporary_known_hosts,
+                )
+        return validate_connection_paths(
+            connection,
+            secret=secret,
+            portable_root=self.paths.root,
+            known_hosts=self.paths.known_hosts,
+        )
 
     def execute_connection(
         self,

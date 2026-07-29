@@ -104,17 +104,17 @@ def test_stability_backup_imports_files_and_reports_unsupported_sources(
     assert "port" in result.errors[2].reason.lower()
     by_name = {item.name: item for item in connections.list()}
     paused = by_name["FTP sin secreto"]
-    active = by_name["SFTP con secreto"]
+    with_secret = by_name["SFTP con secreto"]
     key_based = by_name["SFTP con llave local"]
     later = by_name["WebDAV posterior"]
     assert paused.name == "FTP sin secreto"
     assert paused.remote_paths == ("/entrada", "/salida")
     assert paused.enabled is False
     assert paused.has_secret is False
-    assert active.name == "SFTP con secreto"
-    assert active.enabled is True
-    assert active.has_secret is True
-    assert connections.get_secret(active.id) == " clave-local "
+    assert with_secret.name == "SFTP con secreto"
+    assert with_secret.enabled is False
+    assert with_secret.has_secret is True
+    assert connections.get_secret(with_secret.id) == " clave-local "
     assert key_based.auth_type.value == "key"
     assert key_based.enabled is False
     assert key_based.has_secret is False

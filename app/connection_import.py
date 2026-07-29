@@ -220,8 +220,9 @@ def _connection_from_backup(
 
     _validate_text_fields(values)
     _normalize_scalar_fields(values)
-    if secret is None:
-        values["enabled"] = False
+    # Imported definitions are drafts until their current credential and paths
+    # are explicitly tested in this installation.
+    values["enabled"] = False
     return Connection(**values), secret
 
 

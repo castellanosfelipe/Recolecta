@@ -10,6 +10,12 @@ import pytest
 from app.errors import ErrorType, RecolectaError, classify_exception, is_retryable
 
 
+class WindowsNetworkError(OSError):
+    def __init__(self, winerror: int) -> None:
+        super().__init__(winerror, "Windows network error")
+        self.winerror = winerror
+
+
 @pytest.mark.parametrize(
     ("exc", "expected"),
     [
@@ -22,6 +28,10 @@ from app.errors import ErrorType, RecolectaError, classify_exception, is_retryab
         (OSError(errno.ENOSPC, "full"), ErrorType.DISK_SPACE),
         (ftplib.error_perm("530 Login incorrect"), ErrorType.AUTH),
         (ftplib.error_perm("550 Permission denied"), ErrorType.PERMISSION),
+        (WindowsNetworkError(86), ErrorType.AUTH),
+        (WindowsNetworkError(1326), ErrorType.AUTH),
+        (WindowsNetworkError(5), ErrorType.PERMISSION),
+        (WindowsNetworkError(53), ErrorType.TARGET_MISSING),
         (paramiko.AuthenticationException("bad"), ErrorType.AUTH),
         (
             httpx.ConnectTimeout(

@@ -141,6 +141,79 @@ def test_coordinator_plans_downloads_persists_and_deduplicates(
         assert db.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
 
 
+def test_valid_empty_listing_is_success_with_no_files_result(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 27, 12, tzinfo=timezone.utc)
+    transports: list[Transport] = []
+
+    class EmptyTransport(Transport):
+        def __init__(self) -> None:
+            self.closed = False
+
+        def connect(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+        def list_files(self, remote_paths, *, recursive, max_depth):
+            return ListingResult(())
+
+        def stat(self, remote_path):
+            raise AssertionError("No debe consultar archivos inexistentes.")
+
+        def download_to(self, *args, **kwargs):
+            raise AssertionError("No debe iniciar una descarga sin archivos.")
+
+    def create_empty_transport(connection, secret, known_hosts):
+        transport = EmptyTransport()
+        transports.append(transport)
+        return transport
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "create_transport",
+        create_empty_transport,
+    )
+    paths = AppPaths.from_root(tmp_path).ensure()
+    database = Database(paths.database)
+    database.initialize()
+    connections = ConnectionRepository(
+        database, FernetSecretStore(Fernet.generate_key())
+    )
+    saved = connections.create(
+        Connection(
+            name="Sin archivos",
+            host="example.test",
+            remote_paths=("/entrada",),
+            window_mode=WindowMode.ROLLING_HOURS,
+        )
+    )
+    coordinator = RunCoordinator(
+        database,
+        connections,
+        paths,
+        now=lambda: now,
+    )
+
+    execution = coordinator.execute_connection(saved.id, trigger="manual")
+    assert execution.run_id is not None
+    persisted = coordinator.runs.get_run(execution.run_id)
+    summary = execution.summary()
+
+    assert execution.status == "ok"
+    assert persisted["status"] == "ok"
+    assert persisted["files_found"] == 0
+    assert persisted["files_failed"] == 0
+    assert summary["status"] == "ok"
+    assert summary["result_status"] == "no_files"
+    assert summary["status_label"] == "Archivos no existentes"
+    assert transports
+    assert all(transport.closed for transport in transports)
+
+
 def test_coordinator_persists_and_redacts_listing_failure(
     monkeypatch, tmp_path: Path
 ) -> None:

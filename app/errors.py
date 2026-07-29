@@ -49,6 +49,13 @@ def classify_exception(exc: BaseException) -> ErrorType:
     """Map common Python/network exceptions to the public taxonomy."""
     if isinstance(exc, RecolectaError):
         return exc.error_type
+    winerror = getattr(exc, "winerror", None)
+    if winerror in {86, 1219, 1326, 1327, 1330, 1331, 1909}:
+        return ErrorType.AUTH
+    if winerror == 5:
+        return ErrorType.PERMISSION
+    if winerror in {53, 67}:
+        return ErrorType.TARGET_MISSING
     optional = _classify_optional_dependency_exception(exc)
     if optional is not None:
         return optional

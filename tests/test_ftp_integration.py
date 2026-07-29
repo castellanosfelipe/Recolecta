@@ -17,6 +17,8 @@ from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.log import config_logging
 from pyftpdlib.servers import FTPServer
 
+from app.connection_validation import validate_connection_paths
+from app.errors import ErrorType, RecolectaError
 from app.models import Connection, Protocol
 from app.transports.ftp import FtpTransport
 
@@ -137,6 +139,46 @@ def test_real_ftp_and_ftps_listing_is_recursive_and_uses_utc_mdtm(
     assert transfer.resumed_from == 2
     assert transfer.resume_supported
     assert restarts == []
+
+
+def test_pre_save_validation_accepts_valid_ftp_paths_and_explains_bad_password(
+    ftp_server_factory,
+    tmp_path: Path,
+) -> None:
+    server = ftp_server_factory(tls=False)
+    destination = tmp_path / "validated-downloads"
+    connection = Connection(
+        name="Validación FTP",
+        protocol=Protocol.FTP,
+        host="127.0.0.1",
+        port=server.port,
+        username="operator",
+        remote_paths=("/entrada",),
+        dest_root=str(destination),
+    )
+
+    result = validate_connection_paths(
+        connection,
+        secret="password",
+        portable_root=tmp_path,
+        known_hosts=tmp_path / "known_hosts",
+    )
+
+    assert result.remote_paths == ("/entrada",)
+    assert result.remote_files_found == 1
+    assert not destination.exists()
+
+    with pytest.raises(RecolectaError) as captured:
+        validate_connection_paths(
+            connection,
+            secret="incorrecta",
+            portable_root=tmp_path,
+            known_hosts=tmp_path / "known_hosts",
+        )
+
+    assert captured.value.error_type == ErrorType.AUTH
+    assert "credencial fue rechazada" in str(captured.value).lower()
+    assert "incorrecta" not in str(captured.value)
 
 
 def _create_certificate(path: Path) -> Path:

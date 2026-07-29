@@ -1,13 +1,16 @@
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from cryptography.fernet import Fernet
 
+from app.connection_validation import ConnectionValidationResult
 from app.db import ConnectionRepository, Database
 from app.models import Connection, Protocol, WindowMode
 from app.orchestrator import (
     PlanStatus,
+    RunCoordinator,
     TimeWindow,
     dry_run,
     plan_listing,
@@ -227,3 +230,47 @@ def test_dry_run_loads_successful_identities_from_database(tmp_path: Path) -> No
     transport = RecordingTransport(ListingResult((downloaded,)))
     plan = dry_run(saved, transport, started_at=started, database=database)
     assert plan.items[0].status == PlanStatus.DUPLICATE
+
+
+def test_sftp_validation_never_persists_a_new_host_key(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("clave-existente", encoding="utf-8")
+    seen_paths: list[Path] = []
+
+    def validate_paths(
+        draft,
+        *,
+        secret,
+        portable_root,
+        known_hosts: Path,
+    ):
+        seen_paths.append(known_hosts)
+        assert known_hosts.read_text(encoding="utf-8") == "clave-existente"
+        known_hosts.write_text("clave-nueva", encoding="utf-8")
+        return ConnectionValidationResult(
+            local_path=draft.dest_root,
+            remote_paths=draft.remote_paths,
+            remote_files_found=0,
+            warnings=(),
+        )
+
+    monkeypatch.setattr(
+        "app.orchestrator.validate_connection_paths",
+        validate_paths,
+    )
+    coordinator = RunCoordinator.__new__(RunCoordinator)
+    coordinator.paths = SimpleNamespace(
+        root=tmp_path,
+        known_hosts=known_hosts,
+    )
+
+    coordinator.validate_connection_draft(
+        connection(),
+        secret="credencial",
+    )
+
+    assert seen_paths[0] != known_hosts
+    assert known_hosts.read_text(encoding="utf-8") == "clave-existente"

@@ -23,17 +23,25 @@ from app.api.schemas import (
 )
 from app.alerts import AlertRepository
 from app.connection_import import import_connections
+from app.connection_validation import connection_validation_error
 from app.db import ConnectionRepository, RunRepository
 from app.errors import RecolectaError
-from app.models import Connection
 from app.exports import ExportService
 from app.logging_setup import redact_secrets
+from app.models import Connection
 from app.orchestrator import DryRunPlan, RunCoordinator
 from app.progress import ProgressRegistry
 from app.retention import RetentionService
 from app.run_logging import RunLogStore
 from app.scheduler import SchedulerService, SchedulerSettings
 from app.settings_store import SettingsStore
+from app.statuses import (
+    CONNECTION_STATUS_LABELS,
+    enrich_alert,
+    enrich_file,
+    enrich_plan,
+    enrich_run,
+)
 from app.throttle import ThrottleManager
 
 
@@ -105,15 +113,130 @@ def create_router(
     assert runs is not None
     assert settings is not None
     assert progress is not None
+    connection_mutation_lock = threading.RLock()
 
     def reload_scheduler() -> None:
         if scheduler is not None:
             scheduler.configure(SchedulerSettings.load(settings))
 
+    def connection_patch_values(
+        payload: ConnectionPatch,
+    ) -> tuple[dict[str, object], bool, str | None]:
+        values = payload.model_dump(exclude_unset=True)
+        secret_was_set = "secret" in values
+        secret = values.pop("secret", None)
+        nullable_fields = {
+            "port",
+            "key_path",
+            "min_size_bytes",
+            "max_size_bytes",
+            "bandwidth_limit_kbps",
+            "post_action_path",
+            "schedule_time",
+        }
+        filtered = {
+            key: value
+            for key, value in values.items()
+            if value is not None or key in nullable_fields
+        }
+        return filtered, secret_was_set, secret
+
+    validation_fields = frozenset(
+        {
+            "name",
+            "client",
+            "protocol",
+            "host",
+            "port",
+            "username",
+            "auth_type",
+            "key_path",
+            "ssl_mode",
+            "remote_paths",
+            "recursive",
+            "max_depth",
+            "dest_root",
+            "dest_template",
+            "timezone",
+            "post_action",
+            "post_action_path",
+            "timeout_s",
+        }
+    )
+    credential_scope_fields = frozenset(
+        {
+            "protocol",
+            "host",
+            "port",
+            "username",
+            "auth_type",
+            "key_path",
+        }
+    )
+
+    def credential_scope_changed(
+        current: Connection,
+        draft: Connection,
+    ) -> bool:
+        return any(
+            getattr(current, field) != getattr(draft, field)
+            for field in credential_scope_fields
+        )
+
+    def validation_secret_for_edit(
+        current: Connection,
+        draft: Connection,
+        *,
+        secret_was_set: bool,
+        submitted_secret: str | None,
+    ) -> str | None:
+        if secret_was_set:
+            return submitted_secret
+        if credential_scope_changed(current, draft) and current.has_secret:
+            raise ValueError(
+                "Por seguridad, vuelve a ingresar la credencial al cambiar "
+                "servidor, puerto, protocolo, usuario o autenticación."
+            )
+        return connections.get_secret(current.id)
+
+    def connection_requires_validation(
+        current: Connection,
+        draft: Connection,
+        *,
+        secret_was_set: bool,
+    ) -> bool:
+        if secret_was_set:
+            return True
+        if not current.enabled and draft.enabled:
+            return True
+        return any(
+            getattr(current, field) != getattr(draft, field)
+            for field in validation_fields
+        )
+
     @router.get("/api/dashboard")
     def dashboard() -> dict[str, object]:
         summaries = runs.dashboard_summary()
         for item in summaries:
+            if item["last_status"]:
+                last_run = enrich_run(
+                    {
+                        "status": item["last_status"],
+                        "files_found": item["last_files_found"],
+                        "files_downloaded": item["last_files_downloaded"],
+                        "files_failed": item["last_files_failed"],
+                        "error_type": item["last_error_type"],
+                    }
+                )
+                item["last_result_status"] = last_run["result_status"]
+                item["last_status_label"] = last_run["status_label"]
+                item["last_status_detail"] = last_run["status_detail"]
+            else:
+                item["last_result_status"] = "never_run"
+                item["last_status_label"] = CONNECTION_STATUS_LABELS["never_run"]
+                item["last_status_detail"] = (
+                    "Esta conexión todavía no tiene ejecuciones registradas."
+                )
             next_run = None
             if scheduler is not None:
                 job = scheduler.scheduler.get_job(
@@ -137,6 +260,50 @@ def create_router(
             "items": [item.to_public_dict() for item in connections.list()]
         }
 
+    @router.post("/api/connections/validate")
+    def validate_connection_draft(
+        payload: ConnectionPatch,
+        connection_id: int | None = Query(default=None, ge=1),
+    ) -> dict[str, object]:
+        values, secret_was_set, submitted_secret = connection_patch_values(
+            payload
+        )
+        try:
+            if connection_id is None:
+                create_payload = ConnectionCreate.model_validate(values)
+                draft = Connection(
+                    **create_payload.model_dump(exclude={"secret"})
+                )
+                secret = submitted_secret if secret_was_set else None
+            else:
+                with connection_mutation_lock:
+                    current = connections.get(connection_id)
+                    draft = current.with_changes(values)
+                    secret = validation_secret_for_edit(
+                        current,
+                        draft,
+                        secret_was_set=secret_was_set,
+                        submitted_secret=submitted_secret,
+                    )
+            result = coordinator.validate_connection_draft(
+                draft,
+                secret=secret,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (RecolectaError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=redact_secrets(exc),
+            ) from exc
+        except Exception as exc:
+            validation_error = connection_validation_error(exc)
+            raise HTTPException(
+                status_code=422,
+                detail=redact_secrets(validation_error),
+            ) from exc
+        return result.to_dict()
+
     @router.post(
         "/api/import/connections",
         status_code=status.HTTP_201_CREATED,
@@ -145,7 +312,8 @@ def create_router(
         backup: dict[str, Any],
     ) -> dict[str, object]:
         try:
-            result = import_connections(backup, connections)
+            with connection_mutation_lock:
+                result = import_connections(backup, connections)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         reload_scheduler()
@@ -158,12 +326,27 @@ def create_router(
     def create_connection(payload: ConnectionCreate) -> dict[str, object]:
         values = payload.model_dump(exclude={"secret"})
         try:
-            created = connections.create(
-                Connection(**values),
-                secret=payload.secret,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            with connection_mutation_lock:
+                draft = Connection(**values).normalized()
+                coordinator.validate_connection_draft(
+                    draft,
+                    secret=payload.secret,
+                )
+                created = connections.create(
+                    draft,
+                    secret=payload.secret,
+                )
+        except (RecolectaError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=redact_secrets(exc),
+            ) from exc
+        except Exception as exc:
+            validation_error = connection_validation_error(exc)
+            raise HTTPException(
+                status_code=422,
+                detail=redact_secrets(validation_error),
+            ) from exc
         reload_scheduler()
         return created.to_public_dict()
 
@@ -178,34 +361,45 @@ def create_router(
     def update_connection(
         connection_id: int, payload: ConnectionPatch
     ) -> dict[str, object]:
-        values = payload.model_dump(exclude_unset=True)
-        secret_marker = object()
-        secret = values.pop("secret", secret_marker)
-        nullable_fields = {
-            "port",
-            "key_path",
-            "min_size_bytes",
-            "max_size_bytes",
-            "bandwidth_limit_kbps",
-            "post_action_path",
-            "schedule_time",
-        }
-        values = {
-            key: value
-            for key, value in values.items()
-            if value is not None or key in nullable_fields
-        }
+        values, secret_was_set, secret = connection_patch_values(payload)
         try:
-            if secret is secret_marker:
-                updated = connections.update(connection_id, values)
-            else:
-                updated = connections.update(
-                    connection_id, values, secret=secret
-                )
+            with connection_mutation_lock:
+                current = connections.get(connection_id)
+                draft = current.with_changes(values)
+                if connection_requires_validation(
+                    current,
+                    draft,
+                    secret_was_set=secret_was_set,
+                ):
+                    validation_secret = validation_secret_for_edit(
+                        current,
+                        draft,
+                        secret_was_set=secret_was_set,
+                        submitted_secret=secret,
+                    )
+                    coordinator.validate_connection_draft(
+                        draft,
+                        secret=validation_secret,
+                    )
+                if secret_was_set:
+                    updated = connections.update(
+                        connection_id, values, secret=secret
+                    )
+                else:
+                    updated = connections.update(connection_id, values)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (RecolectaError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=redact_secrets(exc),
+            ) from exc
+        except Exception as exc:
+            validation_error = connection_validation_error(exc)
+            raise HTTPException(
+                status_code=422,
+                detail=redact_secrets(validation_error),
+            ) from exc
         reload_scheduler()
         return updated.to_public_dict()
 
@@ -214,7 +408,9 @@ def create_router(
         status_code=status.HTTP_204_NO_CONTENT,
     )
     def delete_connection(connection_id: int) -> Response:
-        if not connections.delete(connection_id):
+        with connection_mutation_lock:
+            deleted = connections.delete(connection_id)
+        if not deleted:
             raise HTTPException(
                 status_code=404,
                 detail=f"No existe la conexión {connection_id}.",
@@ -228,15 +424,21 @@ def create_router(
     )
     def duplicate_connection(connection_id: int) -> dict[str, object]:
         try:
-            source = connections.get(connection_id)
+            with connection_mutation_lock:
+                source = connections.get(connection_id)
+                values = source.to_public_dict()
+                for key in (
+                    "id",
+                    "has_secret",
+                    "created_at",
+                    "updated_at",
+                ):
+                    values.pop(key, None)
+                values["name"] = f"{source.name} (copia)"
+                values["enabled"] = False
+                duplicate = connections.create(Connection(**values))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        values = source.to_public_dict()
-        for key in ("id", "has_secret", "created_at", "updated_at"):
-            values.pop(key, None)
-        values["name"] = f"{source.name} (copia)"
-        values["enabled"] = False
-        duplicate = connections.create(Connection(**values))
         reload_scheduler()
         return duplicate.to_public_dict()
 
@@ -258,6 +460,12 @@ def create_router(
         except (RecolectaError, ValueError) as exc:
             raise HTTPException(
                 status_code=422, detail=redact_secrets(exc)
+            ) from exc
+        except Exception as exc:
+            validation_error = connection_validation_error(exc)
+            raise HTTPException(
+                status_code=422,
+                detail=redact_secrets(validation_error),
             ) from exc
         return _plan_response(execution.plan)
 
@@ -309,14 +517,19 @@ def create_router(
         offset: int = Query(default=0, ge=0),
     ) -> dict[str, object]:
         return {
-            "items": runs.list_runs(
-                connection_id=connection_id,
-                status=run_status,
-                date_from=date_from.isoformat() if date_from else None,
-                date_to=date_to.isoformat() if date_to else None,
-                limit=limit,
-                offset=offset,
-            )
+            "items": [
+                enrich_run(row)
+                for row in runs.list_runs(
+                    connection_id=connection_id,
+                    status=run_status,
+                    date_from=(
+                        date_from.isoformat() if date_from else None
+                    ),
+                    date_to=date_to.isoformat() if date_to else None,
+                    limit=limit,
+                    offset=offset,
+                )
+            ]
         }
 
     @router.get("/api/runs/{run_id}")
@@ -325,8 +538,9 @@ def create_router(
             run = runs.get_run(run_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        run["files"] = _all_files(runs, run_id=run_id)
-        return run
+        result = enrich_run(run)
+        result["files"] = _all_files(runs, run_id=run_id)
+        return result
 
     @router.get("/api/files")
     def list_files(
@@ -340,16 +554,21 @@ def create_router(
         offset: int = Query(default=0, ge=0),
     ) -> dict[str, object]:
         return {
-            "items": runs.list_files(
-                run_id=run_id,
-                connection_id=connection_id,
-                status=file_status,
-                search=search,
-                date_from=date_from.isoformat() if date_from else None,
-                date_to=date_to.isoformat() if date_to else None,
-                limit=limit,
-                offset=offset,
-            )
+            "items": [
+                enrich_file(row)
+                for row in runs.list_files(
+                    run_id=run_id,
+                    connection_id=connection_id,
+                    status=file_status,
+                    search=search,
+                    date_from=(
+                        date_from.isoformat() if date_from else None
+                    ),
+                    date_to=date_to.isoformat() if date_to else None,
+                    limit=limit,
+                    offset=offset,
+                )
+            ]
         }
 
     @router.get("/api/files/export.csv")
@@ -367,6 +586,7 @@ def create_router(
             "mtime_utc",
             "sha256",
             "status",
+            "status_label",
             "attempts",
             "error_type",
             "error_msg",
@@ -476,7 +696,12 @@ def create_router(
         def list_alerts(
             limit: int = Query(default=100, ge=1, le=500),
         ) -> dict[str, object]:
-            return {"items": alert_repository.list(limit=limit)}
+            return {
+                "items": [
+                    enrich_alert(row)
+                    for row in alert_repository.list(limit=limit)
+                ]
+            }
 
     if retention is not None:
 
@@ -611,7 +836,7 @@ def create_router(
 
 
 def _plan_response(plan: DryRunPlan) -> dict[str, object]:
-    return {
+    return enrich_plan({
         "connection_id": plan.connection_id,
         "window_start_utc": plan.window.start_utc.isoformat(),
         "window_end_utc": plan.window.end_utc.isoformat(),
@@ -633,7 +858,7 @@ def _plan_response(plan: DryRunPlan) -> dict[str, object]:
             }
             for item in plan.items
         ],
-    }
+    })
 
 
 def _settings_for_ui(values: dict[str, object]) -> dict[str, object]:
@@ -656,7 +881,7 @@ def _all_files(
     offset = 0
     while True:
         page = runs.list_files(run_id=run_id, limit=1000, offset=offset)
-        rows.extend(page)
+        rows.extend(enrich_file(row) for row in page)
         if len(page) < 1000:
             return rows
         offset += len(page)

@@ -56,16 +56,20 @@ class FtpTransport(Transport):
             ftp: ftplib.FTP = ftplib.FTP_TLS(context=context)
         else:
             ftp = ftplib.FTP()
-        ftp.connect(
-            self.connection.host,
-            self.connection.port or 21,
-            timeout=self.connection.timeout_s,
-        )
-        ftp.login(self.connection.username, self.secret)
-        ftp.set_pasv(True)
-        if isinstance(ftp, ftplib.FTP_TLS):
-            ftp.prot_p()
         self._ftp = ftp
+        try:
+            ftp.connect(
+                self.connection.host,
+                self.connection.port or 21,
+                timeout=self.connection.timeout_s,
+            )
+            ftp.login(self.connection.username, self.secret)
+            ftp.set_pasv(True)
+            if isinstance(ftp, ftplib.FTP_TLS):
+                ftp.prot_p()
+        except Exception:
+            self.close()
+            raise
 
     def close(self) -> None:
         ftp, self._ftp = self._ftp, None

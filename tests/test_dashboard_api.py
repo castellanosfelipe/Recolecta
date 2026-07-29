@@ -6,19 +6,46 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes import create_router
+from app.connection_validation import ConnectionValidationResult
 from app.db import ConnectionRepository, Database, RunRepository
+from app.errors import ErrorType, RecolectaError
 from app.models import Connection
 from app.platform.secrets_fernet import FernetSecretStore
 from app.progress import ProgressRegistry
 from app.settings_store import SettingsStore
+from app.transports.base import RemoteFile
 
 
 class Coordinator:
+    def __init__(self) -> None:
+        self.validations: list[tuple[Connection, str | None]] = []
+        self.validation_error: Exception | None = None
+
     def cancel(self, run_id: int) -> bool:
         return False
 
+    def validate_connection_draft(
+        self,
+        connection: Connection,
+        *,
+        secret: str | None,
+    ) -> ConnectionValidationResult:
+        self.validations.append((connection, secret))
+        if self.validation_error is not None:
+            raise self.validation_error
+        return ConnectionValidationResult(
+            local_path=connection.dest_root,
+            remote_paths=connection.remote_paths,
+            remote_files_found=0,
+            warnings=(),
+        )
 
-def api(tmp_path: Path) -> tuple[TestClient, ConnectionRepository, RunRepository]:
+
+def api(
+    tmp_path: Path,
+    *,
+    coordinator: Coordinator | None = None,
+) -> tuple[TestClient, ConnectionRepository, RunRepository]:
     database = Database(tmp_path / "recolecta.db")
     database.initialize()
     connections = ConnectionRepository(
@@ -28,7 +55,7 @@ def api(tmp_path: Path) -> tuple[TestClient, ConnectionRepository, RunRepository
     app = FastAPI()
     app.include_router(
         create_router(
-            Coordinator(),
+            coordinator or Coordinator(),
             connections=connections,
             runs=runs,
             settings=SettingsStore(database),
@@ -74,6 +101,135 @@ def test_connection_crud_duplicate_and_secret_never_leaks(tmp_path: Path) -> Non
     assert duplicate.json()["enabled"] is False
     assert duplicate.json()["has_secret"] is False
     assert paused_run.status_code == 409
+
+
+def test_draft_validation_uses_new_or_stored_secret_without_persisting(
+    tmp_path: Path,
+) -> None:
+    coordinator = Coordinator()
+    client, repository, _ = api(tmp_path, coordinator=coordinator)
+    payload = {
+        "name": "Nueva",
+        "host": "ftp.example.test",
+        "protocol": "FTP",
+        "remote_paths": ["/entrada"],
+        "dest_root": str(tmp_path / "destino"),
+        "secret": "secreto-nuevo",
+    }
+
+    with client:
+        new_result = client.post("/api/connections/validate", json=payload)
+        saved = repository.create(
+            Connection(
+                name="Guardada",
+                host="sftp.example.test",
+                remote_paths=("/original",),
+                dest_root=str(tmp_path / "guardada"),
+            ),
+            secret="secreto-guardado",
+        )
+        edit_result = client.post(
+            f"/api/connections/validate?connection_id={saved.id}",
+            json={"remote_paths": ["/editada"]},
+        )
+
+    assert new_result.status_code == 200
+    assert new_result.json()["valid"] is True
+    assert coordinator.validations[0][1] == "secreto-nuevo"
+    assert edit_result.status_code == 200
+    assert coordinator.validations[1][0].remote_paths == ("/editada",)
+    assert coordinator.validations[1][1] == "secreto-guardado"
+    persisted = repository.get(saved.id)
+    assert persisted.remote_paths == ("/original",)
+    assert repository.get_secret(saved.id) == "secreto-guardado"
+
+
+def test_failed_validation_blocks_create_and_connectivity_update(
+    tmp_path: Path,
+) -> None:
+    coordinator = Coordinator()
+    client, repository, _ = api(tmp_path, coordinator=coordinator)
+    existing = repository.create(
+        Connection(
+            name="Existente",
+            host="old.example.test",
+            remote_paths=("/entrada",),
+        ),
+        secret="no-filtrar",
+    )
+    coordinator.validation_error = RecolectaError(
+        ErrorType.AUTH,
+        "La credencial fue rechazada por el servidor remoto.",
+    )
+
+    with client:
+        rejected_create = client.post(
+            "/api/connections",
+            json={
+                "name": "Rechazada",
+                "host": "new.example.test",
+                "protocol": "FTP",
+                "remote_paths": ["/entrada"],
+                "secret": "no-filtrar",
+            },
+        )
+        rejected_update = client.patch(
+            f"/api/connections/{existing.id}",
+            json={"host": "changed.example.test", "secret": "no-filtrar"},
+        )
+
+    assert rejected_create.status_code == 422
+    assert rejected_update.status_code == 422
+    assert "credencial fue rechazada" in rejected_create.text.lower()
+    assert "no-filtrar" not in rejected_create.text
+    assert "no-filtrar" not in rejected_update.text
+    assert [item.name for item in repository.list()] == ["Existente"]
+    assert repository.get(existing.id).host == "old.example.test"
+    assert repository.get_secret(existing.id) == "no-filtrar"
+
+
+def test_changing_credential_scope_requires_an_explicit_secret(
+    tmp_path: Path,
+) -> None:
+    coordinator = Coordinator()
+    client, repository, _ = api(tmp_path, coordinator=coordinator)
+    existing = repository.create(
+        Connection(
+            name="Protegida",
+            protocol="FTP",
+            host="original.example.test",
+            username="reader",
+            remote_paths=("/entrada",),
+        ),
+        secret="credencial-guardada",
+    )
+
+    with client:
+        rejected_test = client.post(
+            f"/api/connections/validate?connection_id={existing.id}",
+            json={"host": "otro.example.test"},
+        )
+        rejected_save = client.patch(
+            f"/api/connections/{existing.id}",
+            json={"host": "otro.example.test"},
+        )
+        accepted_test = client.post(
+            f"/api/connections/validate?connection_id={existing.id}",
+            json={
+                "host": "otro.example.test",
+                "secret": "credencial-nueva",
+            },
+        )
+
+    assert rejected_test.status_code == 422
+    assert rejected_save.status_code == 422
+    assert "vuelve a ingresar la credencial" in rejected_test.text.lower()
+    assert "credencial-guardada" not in rejected_test.text
+    assert len(coordinator.validations) == 1
+    assert coordinator.validations[0][1] == "credencial-nueva"
+    assert accepted_test.status_code == 200
+    assert repository.get(existing.id).host == "original.example.test"
+    assert repository.get_secret(existing.id) == "credencial-guardada"
 
 
 def test_stability_backup_import_endpoint_reports_each_result(
@@ -151,8 +307,22 @@ def test_history_files_dashboard_settings_and_csv(tmp_path: Path) -> None:
             json={"values": {"alerts.smtp.password": "no-guardar"}},
         )
     assert history.json()["items"][0]["connection_name"] == "Auditoría"
+    assert history.json()["items"][0]["status"] == "ok"
+    assert history.json()["items"][0]["result_status"] == "no_files"
+    assert history.json()["items"][0]["status_label"] == (
+        "Archivos no existentes"
+    )
+    assert detail.json()["status"] == "ok"
+    assert detail.json()["result_status"] == "no_files"
+    assert detail.json()["status_label"] == "Archivos no existentes"
     assert detail.json()["files"] == []
     assert dashboard.json()["connections"][0]["last_status"] == "ok"
+    assert dashboard.json()["connections"][0]["last_result_status"] == (
+        "no_files"
+    )
+    assert dashboard.json()["connections"][0]["last_status_label"] == (
+        "Archivos no existentes"
+    )
     assert settings.json()["values"]["concurrency.global"] == 3
     assert settings.json()["values"]["schedule.hour"] == 3
     assert settings.json()["values"]["schedule.minute"] == 15
@@ -161,6 +331,110 @@ def test_history_files_dashboard_settings_and_csv(tmp_path: Path) -> None:
     assert exported.text.startswith("id,run_id,connection_name")
     assert rejected_secret.status_code == 422
     assert "no-guardar" not in rejected_secret.text
+
+
+def test_run_filters_use_visual_results_without_hiding_canonical_status(
+    tmp_path: Path,
+) -> None:
+    client, connections, runs = api(tmp_path)
+    saved = connections.create(
+        Connection(
+            name="Estados",
+            host="example.test",
+            remote_paths=("/in",),
+        )
+    )
+    started = datetime(2026, 7, 27, 3, tzinfo=timezone.utc)
+
+    empty_id = runs.start_run(
+        connection_id=saved.id,
+        trigger="manual",
+        window_start_utc=started - timedelta(days=1),
+        window_end_utc=started,
+        started_at=started,
+    )
+    runs.finish_run(empty_id, status="ok")
+
+    unchanged_id = runs.start_run(
+        connection_id=saved.id,
+        trigger="manual",
+        window_start_utc=started,
+        window_end_utc=started + timedelta(hours=1),
+        started_at=started + timedelta(hours=1),
+    )
+    runs.add_file(
+        run_id=unchanged_id,
+        connection_id=saved.id,
+        remote_file=RemoteFile(
+            "/in/ya-descargado.csv",
+            12,
+            started,
+        ),
+        status="duplicate",
+    )
+    runs.finish_run(unchanged_id, status="ok")
+
+    completed_id = runs.start_run(
+        connection_id=saved.id,
+        trigger="manual",
+        window_start_utc=started + timedelta(hours=1),
+        window_end_utc=started + timedelta(hours=2),
+        started_at=started + timedelta(hours=2),
+    )
+    runs.add_file(
+        run_id=completed_id,
+        connection_id=saved.id,
+        remote_file=RemoteFile(
+            "/in/nuevo.csv",
+            20,
+            started + timedelta(hours=1),
+        ),
+        status="ok",
+    )
+    runs.finish_run(completed_id, status="ok")
+
+    failed_id = runs.start_run(
+        connection_id=saved.id,
+        trigger="manual",
+        window_start_utc=started + timedelta(hours=2),
+        window_end_utc=started + timedelta(hours=3),
+        started_at=started + timedelta(hours=3),
+    )
+    runs.finish_run(
+        failed_id,
+        status="failed",
+        error_type="target_missing",
+        error_msg="No existe /in",
+    )
+
+    with client:
+        empty = client.get("/api/runs?status=no_files")
+        unchanged = client.get("/api/runs?status=no_changes")
+        completed = client.get("/api/runs?status=completed")
+        failed = client.get(f"/api/runs/{failed_id}")
+        completed_detail = client.get(f"/api/runs/{completed_id}")
+
+    assert [item["id"] for item in empty.json()["items"]] == [empty_id]
+    assert empty.json()["items"][0]["status"] == "ok"
+    assert [item["id"] for item in unchanged.json()["items"]] == [
+        unchanged_id
+    ]
+    assert unchanged.json()["items"][0]["status_label"] == (
+        "Sin archivos nuevos"
+    )
+    assert [item["id"] for item in completed.json()["items"]] == [
+        completed_id
+    ]
+    assert completed.json()["items"][0]["status_label"] == (
+        "Descarga completada"
+    )
+    assert completed_detail.json()["files"][0]["status_label"] == (
+        "Descargado y verificado"
+    )
+    assert failed.json()["status"] == "failed"
+    assert failed.json()["result_status"] == "failed"
+    assert failed.json()["status_label"] == "Ruta remota no existente"
+    assert failed.json()["status_label"] != "Archivos no existentes"
 
 
 def test_connection_error_paths_progress_and_delete(tmp_path: Path) -> None:

@@ -80,6 +80,20 @@ def test_connection_import_schedule_and_dialog_close_controls_are_exposed(
     assert 'id="connection-import-button"' in page
     assert 'id="connection-import-file"' in page
     assert 'name="schedule_time" type="time"' in page
+    assert 'name="remote_paths" rows="2" required' in page
+    assert 'id="connection-test-button" type="button"' in page
+    assert (
+        'id="connection-save-button" type="submit" '
+        'value="default" aria-describedby="connection-validation-status" '
+        "disabled"
+    ) in page
+    assert 'id="connection-validation-status"' in page
+    assert 'role="status" aria-live="polite"' in page
+    assert 'id="connection-form" method="dialog" aria-busy="false"' in page
+    assert (
+        'id="connection-test-button" type="button" '
+        'aria-describedby="connection-validation-status"'
+    ) in page
     for dialog_id in (
         "connection-dialog",
         "detail-dialog",
@@ -96,7 +110,63 @@ def test_connection_import_schedule_and_dialog_close_controls_are_exposed(
         in script
     )
     assert '"/api/import/connections"' in script
+    assert "/api/connections/validate" in script
+    assert "testConnectionDraft" in script
+    assert "invalidateConnectionValidation" in script
+    assert "connectionValidatedRevision" in script
+    assert "connectionValidatedFingerprint" in script
+    assert "connectionPayloadFingerprint" in script
+    assert "setConnectionDialogBusy" in script
+    assert "state.connectionSaving" in script
+    assert 'addEventListener("cancel"' in script
+    assert "event.preventDefault()" in script
+    assert '"Guardando y revalidando la conexión y sus rutas…"' in script
+    assert 'addEventListener("input"' in script
+    assert 'addEventListener("change"' in script
+    assert (
+        "Debes probar correctamente la conexión y sus rutas antes de guardar."
+        in script
+    )
     assert "La importación se completó, pero no se pudo actualizar la vista" in script
+
+
+def test_dashboard_exposes_descriptive_domain_specific_statuses(
+    tmp_path: Path,
+) -> None:
+    app = create_app(config(tmp_path))
+    with TestClient(app) as client:
+        page = client.get("/").text
+        script = client.get("/static/app.js").text
+        styles = client.get("/static/app.css").text
+
+    for value, label in (
+        ("no_files", "Archivos no existentes"),
+        ("no_changes", "Sin archivos nuevos"),
+        ("completed", "Descarga completada"),
+        ("partial", "Completada con incidencias"),
+        ("failed", "Ejecución fallida"),
+        ("cancelled", "Cancelada por el usuario"),
+    ):
+        assert f'<option value="{value}">{label}</option>' in page
+        assert f'{value}: "{label}"' in script
+
+    for value, label in (
+        ("pending", "Pendiente de descarga"),
+        ("ok", "Descargado y verificado"),
+        ("skipped", "Omitido por configuración"),
+        ("duplicate", "Ya descargado"),
+        ("failed", "No se pudo descargar"),
+    ):
+        assert f'<option value="{value}">{label}</option>' in page
+        assert f'{value}: "{label}"' in script
+
+    assert 'sent: "Enviada"' in script
+    assert 'failed: "No enviada"' in script
+    assert "runStatusBadge(run)" in script
+    assert "fileStatusBadge(file)" in script
+    assert "alertStatusBadge(alert)" in script
+    assert ".status.no_files" in styles
+    assert ".status.no_changes" in styles
 
 
 def test_support_exports_and_alert_api(tmp_path: Path) -> None:

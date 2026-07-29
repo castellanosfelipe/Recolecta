@@ -85,8 +85,10 @@ ejecute primero `.\uninstall.ps1` y luego el instalador elegido.
    un volumen con espacio suficiente.
 9. Configure filtros, conflicto (`skip`, `overwrite` o `keep_both`),
    verificación por tamaño o SHA-256, paralelismo y límites de ancho de banda.
-10. Guarde, pulse **Probar** y revise cuántos archivos entrarían en el plan.
-11. Ejecute primero un **dry-run**; después active la conexión y lance una
+10. Pulse **Probar conexión y rutas**. Recolecta autentica, comprueba cada
+    ruta remota y realiza una escritura temporal en el destino local.
+11. Cuando aparezca **Validación correcta**, pulse **Guardar conexión**.
+12. Ejecute primero un **dry-run**; después active la conexión y lance una
     corrida real.
 
 El dry-run lista metadatos, usa la misma ventana y filtros de la descarga, y no
@@ -99,13 +101,16 @@ integridad.
 1. Entre en **Conexiones** y pulse **Importar JSON**.
 2. Seleccione `monitor-backup.json` y confirme la cantidad detectada.
 3. Revise el resumen de conexiones importadas, omitidas y con error.
-4. Edite cada conexión marcada **Sin secreto**, ingrese la credencial, pulse
-   **Probar** y actívela solamente cuando la validación sea correcta.
+4. Edite cada conexión importada. Si está marcada **Sin secreto**, ingrese la
+   credencial; después pulse **Probar conexión y rutas**, guarde y actívela
+   solamente cuando la validación sea correcta.
 
 La operación es idempotente para la misma combinación de nombre, protocolo,
 host y puerto. Recolecta consume FTP, FTPS, SFTP, WebDAV, WebDAVS y SMB. Las
 entradas SQL Server u Oracle se omiten con un motivo visible porque no son
 fuentes de archivos soportadas. Un error en una entrada no cancela las demás.
+Todas las entradas importadas nacen en pausa; si el backup contiene un secreto,
+se cifra al importarlo y no se expone en la interfaz.
 
 ## Dashboard, agenda y cancelación
 
@@ -116,6 +121,37 @@ fuentes de archivos soportadas. Un error en una entrada no cancela las demás.
 - **Conexiones** crea, importa, prueba, duplica, pausa o elimina orígenes.
 - **Ajustes** controla hora diaria, zona, jitter, catch-up, concurrencia,
   cortesía, reserva de disco, retención y alertas.
+
+### Cómo leer los estados
+
+Una ejecución que logra consultar el origen, pero no encuentra archivos, no es
+un fallo. Recolecta conserva el resultado técnico correcto y muestra una
+explicación más útil:
+
+| Estado visible | Qué significa |
+|---|---|
+| **Sin ejecuciones** | La conexión todavía no tiene historial. |
+| **En ejecución** | El trabajo continúa activo. |
+| **Archivos no existentes** | La consulta terminó correctamente y las rutas configuradas no contenían archivos. |
+| **Sin archivos nuevos** | Se encontraron archivos, pero ninguno requería descarga por ventana, filtros o deduplicación. |
+| **Descarga completada** | Se descargó al menos un archivo y la corrida terminó sin incidencias. |
+| **Completada con incidencias** | La corrida avanzó, pero tuvo advertencias o fallos en parte de los archivos. |
+| **Cancelada por el usuario** | Un operador solicitó detener la corrida. |
+
+**Archivos no existentes** describe el resultado de un listado válido. Si
+Recolecta no pudo autenticar, conectar o abrir una ruta, muestra la causa real:
+**Credencial rechazada**, **Servidor no encontrado**, **Servidor no
+disponible**, **Tiempo de conexión agotado**, **Seguridad TLS/SSH no validada**,
+**Acceso denegado**, **Ruta remota no existente**, **Espacio local
+insuficiente**, **No se pudo escribir en el destino**, **Validación del archivo
+fallida**, **Transferencia incompleta**, **Ruta no permitida**, **Ejecución
+interrumpida** o **Error de protocolo**. Use el detalle de la corrida para ver
+el mensaje técnico saneado.
+
+Si una conexión que normalmente recibe archivos muestra **Archivos no
+existentes**, Recolecta puede emitir además una alerta de silencio sospechoso.
+La alerta invita a revisar el origen, pero no convierte la corrida válida en
+fallida.
 
 **Cancelar corrida** solicita una parada cooperativa. El `.part` queda
 disponible para reanudar. APScheduler conserva un job y una hora por conexión;

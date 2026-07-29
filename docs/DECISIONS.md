@@ -227,9 +227,10 @@ seguras de Recolecta. Cada entrada se procesa por separado: FTP, FTPS, SFTP,
 WebDAV(S) y SMB se normalizan con el modelo vigente; SQL Server, Oracle y
 otros protocolos se omiten con motivo explícito. Una entrada inválida no
 revierte las válidas. La huella nombre–protocolo–host–puerto evita duplicados
-al repetir el archivo. Toda conexión que no trae `secret` se guarda en pausa,
-incluida la autenticación por llave; si lo trae, se cifra inmediatamente
-mediante el `SecretStore` y nunca aparece en la respuesta.
+al repetir el archivo. Toda conexión importada se guarda en pausa hasta probar
+sus rutas en esta instalación. Si trae `secret`, se cifra inmediatamente
+mediante el `SecretStore` y nunca aparece en la respuesta; si no lo trae, el
+operador debe ingresarlo antes de validar y activar.
 
 ## D-046 · La hora global es un valor heredable por conexión
 
@@ -248,3 +249,58 @@ El build excluye el módulo opcional `_wmi`; la biblioteca estándar usa entonce
 su fallback soportado (`sys.getwindowsversion()` y el registro). Recolecta no
 usa WMI para ninguna función, por lo que se evita ese punto de fallo sin
 reducir capacidades del producto.
+
+## D-048 · Guardar exige validar el borrador y ambos extremos
+
+El editor prueba la configuración todavía no persistida mediante
+`POST /api/connections/validate`. En una edición, omitir el secreto reutiliza
+la credencial cifrada existente solo en memoria; escribir uno nuevo lo prueba
+sin guardarlo. Si cambia servidor, puerto, protocolo, usuario o autenticación,
+debe volver a ingresarlo para impedir que una credencial almacenada se envíe
+silenciosamente a otro destino. La validación exige al menos una ruta remota,
+autentica y lista cada raíz sin recursión ni descarga.
+
+El destino local y su plantilla se resuelven con las mismas reglas de operación
+y se prueban creando, escribiendo, renombrando y eliminando un archivo
+temporal. Las carpetas creadas únicamente para la prueba se eliminan si siguen
+vacías. La interfaz mantiene **Guardar conexión** bloqueado hasta un resultado
+correcto; cualquier cambio o respuesta obsoleta invalida esa aprobación.
+
+El backend vuelve a validar antes de crear, habilitar o cambiar conectividad,
+credencial o rutas, de modo que una llamada directa no evite la regla.
+Como salvaguarda operativa del API, cambios puramente descriptivos y la acción
+de pausar siguen disponibles si el servidor está caído; el editor mantiene la
+regla más estricta y vuelve a probar cualquier cambio. Importación y duplicado
+conservan su excepción segura:
+crean borradores en pausa para validarlos posteriormente; el duplicado no
+copia la credencial y la importación cifra la que venga en el archivo.
+
+Toda prueba SFTP usa una copia temporal de `known_hosts`, incluso la
+revalidación del guardado, por lo que un borrador fallido nunca modifica el
+almacén real. La primera sesión operativa conserva la política TOFU existente
+y fija allí una clave nueva. El backend serializa las mutaciones de conexión y
+toma conexión y secreto como un solo snapshot para no mezclar cambios
+concurrentes.
+
+## D-049 · El resultado descriptivo no reemplaza el estado canónico
+
+`runs.status` mantiene el contrato
+`running|ok|partial|failed|cancelled`. Una consulta remota válida sin archivos
+es una ejecución correcta y se persiste como `ok`; cambiarla a un nuevo estado
+rompería la semántica de catch-up, `since_last_run`, métricas y consumidores
+existentes.
+
+Para la presentación se deriva `result_status` después de evaluar el estado
+canónico: `ok` con `files_found=0` produce `no_files` y la etiqueta
+**Archivos no existentes**; `ok` con archivos encontrados pero ninguno
+descargado produce `no_changes` y **Sin archivos nuevos**; `ok` con al menos
+una descarga produce `completed` y **Descarga completada**. `partial`,
+`running` y `cancelled` se explican respectivamente como **Completada con
+incidencias**, **En ejecución** y **Cancelada por el usuario**.
+
+La precedencia evita que un fallo de autenticación, red o ruta con cero
+archivos se confunda con un listado vacío. Una corrida `failed` conserva ese
+estado y obtiene una etiqueta accionable desde `error_type`, con una causa
+genérica solo para códigos desconocidos. API y exports preservan `status` y
+pueden añadir `result_status` y `status_label`, sin migrar ni reinterpretar el
+historial.

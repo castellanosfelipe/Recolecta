@@ -116,7 +116,7 @@
         <div class="section-heading"><div><p class="eyebrow">AUDITORÍA</p><h2 id="history-heading">Historial de corridas</h2></div></div>
         <form id="history-filters" class="filter-bar">
           <label>Conexión<select name="connection_id" data-connections><option value="">Todas</option></select></label>
-          <label>Estado<select name="status"><option value="">Todos</option><option value="ok">Correcta</option><option value="partial">Parcial</option><option value="failed">Fallida</option><option value="running">En curso</option></select></label>
+          <label>Resultado<select name="status"><option value="">Todos los resultados</option><option value="no_files">Archivos no existentes</option><option value="no_changes">Sin archivos nuevos</option><option value="completed">Descarga completada</option><option value="partial">Completada con incidencias</option><option value="failed">Ejecución fallida</option><option value="running">En ejecución</option><option value="cancelled">Cancelada por el usuario</option></select></label>
           <label>Desde<input name="date_from" type="date"></label>
           <label>Hasta<input name="date_to" type="date"></label>
           <button class="btn secondary" type="submit">Filtrar</button>
@@ -136,7 +136,7 @@
         </div>
         <form id="file-filters" class="filter-bar">
           <label class="grow">Buscar<input name="search" type="search" placeholder="Nombre o ruta del archivo"></label>
-          <label>Estado<select name="status"><option value="">Todos</option><option value="ok">Correcto</option><option value="failed">Fallido</option><option value="skipped">Omitido</option><option value="duplicate">Duplicado</option></select></label>
+          <label>Estado<select name="status"><option value="">Todos los estados</option><option value="pending">Pendiente de descarga</option><option value="downloading">Descargando</option><option value="ok">Descargado y verificado</option><option value="skipped">Omitido por configuración</option><option value="duplicate">Ya descargado</option><option value="failed">No se pudo descargar</option><option value="cancelled">Descarga cancelada</option></select></label>
           <button class="btn secondary" type="submit">Buscar</button>
         </form>
         <div class="table-panel">
@@ -224,7 +224,7 @@
   </div>
 
   <dialog id="connection-dialog" aria-labelledby="connection-dialog-title">
-    <form id="connection-form" method="dialog">
+    <form id="connection-form" method="dialog" aria-busy="false">
       <div class="dialog-head">
         <div><p class="eyebrow">ORIGEN REMOTO</p><h2 id="connection-dialog-title">Nueva conexión</h2></div>
         <button class="icon-button" type="button" data-close-dialog="connection-dialog" aria-label="Cerrar">×</button>
@@ -240,7 +240,7 @@
         <label>Contraseña o frase secreta<input name="secret" type="password" autocomplete="new-password" placeholder="Sin cambios si se deja vacía"></label>
         <label>Zona horaria<input name="timezone" value="America/Bogota" required></label>
         <label>Hora diaria<input name="schedule_time" type="time"><small>Vacío: usa la hora global.</small></label>
-        <label class="span-2">Rutas remotas<textarea name="remote_paths" rows="2" placeholder="/entrada&#10;/reportes"></textarea><small>Una ruta por línea.</small></label>
+        <label class="span-2">Rutas remotas<textarea name="remote_paths" rows="2" required placeholder="/entrada&#10;/reportes"></textarea><small>Una ruta por línea.</small></label>
         <label class="span-2">Destino local<input name="dest_root" value="downloads" required></label>
         <label>Ventana<select name="window_mode"><option value="calendar_day">Día calendario anterior</option><option value="rolling_hours">Últimas horas</option><option value="since_last_run">Desde última corrida</option></select></label>
         <label>Horas de ventana<input name="window_hours" type="number" min="1" value="24"></label>
@@ -248,9 +248,11 @@
         <label>Reintentos<input name="retries" type="number" min="0" value="3"></label>
       </div>
       <label class="check"><input name="enabled" type="checkbox" checked> Conexión activa</label>
+      <p id="connection-validation-status" class="validation-status" role="status" aria-live="polite">Prueba la conexión y sus rutas antes de guardar.</p>
       <div class="dialog-actions">
         <button class="btn secondary" type="button" data-close-dialog="connection-dialog">Cancelar</button>
-        <button class="btn primary" type="submit" value="default">Guardar conexión</button>
+        <button class="btn secondary" id="connection-test-button" type="button" aria-describedby="connection-validation-status">Probar conexión y rutas</button>
+        <button class="btn primary" id="connection-save-button" type="submit" value="default" aria-describedby="connection-validation-status" disabled>Guardar conexión</button>
       </div>
     </form>
   </dialog>

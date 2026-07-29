@@ -9,7 +9,7 @@ Ejecute en este orden:
 3. `Get-ScheduledTask Recolecta* | Get-ScheduledTaskInfo`.
 4. Revise `logs\app.log` y el JSONL de la corrida en `logs\runs\`.
 5. Confirme espacio libre y permisos de escritura del destino.
-6. Use **Probar conexión** y después una corrida `--dry-run`.
+6. Use **Probar conexión y rutas** y después una corrida `--dry-run`.
 7. Revise hora, zona IANA, filtros, quiet period y ventana UTC persistida.
 
 El código de salida de `--run-now` es distinto de cero si la instancia
@@ -35,7 +35,7 @@ correctamente. Para una excepción auditable:
 1. En **Conexiones**, duplique la conexión original.
 2. Edite la copia, vuelva a ingresar el secreto y seleccione `keep_both` o
    `overwrite` según la política autorizada.
-3. Mantenga la copia pausada mientras ejecuta **Probar** y un dry-run.
+3. Mantenga la copia pausada mientras ejecuta **Probar conexión y rutas** y un dry-run.
 4. Active y ejecute solo la copia.
 5. Verifique integridad y desactive o elimine la copia.
 
@@ -46,7 +46,7 @@ No borre filas directamente de SQLite para saltarse deduplicación.
 
 1. Genere la nueva credencial en el sistema remoto.
 2. Edite la conexión y escriba el nuevo secreto o ruta de clave.
-3. Pulse **Probar** antes de revocar la credencial anterior.
+3. Pulse **Probar conexión y rutas** antes de revocar la credencial anterior.
 4. Ejecute un dry-run y luego una corrida real.
 5. Revoque la credencial antigua y descargue un bundle de soporte si necesita
    evidencia del cambio.

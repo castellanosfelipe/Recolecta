@@ -9,8 +9,8 @@
     <img src="https://img.shields.io/badge/status-active-2ea44f" alt="Estado activo"/>
     <img src="https://img.shields.io/badge/license-MIT-orange" alt="Licencia MIT"/>
     <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4" alt="Compatible con Windows 10 y Windows 11"/>
-    <img src="https://img.shields.io/badge/tests-190%20passing-2ea44f" alt="190 pruebas aprobadas"/>
-    <img src="https://img.shields.io/badge/coverage-85.25%25-2ea44f" alt="Cobertura de pruebas 85.25 por ciento"/>
+    <img src="https://img.shields.io/badge/tests-225%20passing-2ea44f" alt="225 pruebas aprobadas"/>
+    <img src="https://img.shields.io/badge/coverage-85.54%25-2ea44f" alt="Cobertura de pruebas 85.54 por ciento"/>
   </p>
 
   <p>
@@ -79,7 +79,7 @@ y la aplicación completa puede probarse desde la
 |---------|-------------|
 | 🔌 **Conexiones multiprotocolo** | Reúne archivos desde FTP, FTPS, SFTP, WebDAV, WebDAVS y SMB sin cambiar de herramienta. |
 | 🗓️ **Automatización con recuperación** | Permite una hora distinta por conexión —o la hora global— y recupera ventanas perdidas mediante catch-up sin duplicar entregas correctas. |
-| 🔄 **Migración controlada** | Importa backups JSON de StabilityMonitor, deja en pausa lo que no trae credencial e informa protocolos SQL/Oracle omitidos sin abortar el resto. |
+| 🔄 **Migración controlada** | Importa backups JSON de StabilityMonitor como borradores en pausa, protege las credenciales incluidas e informa protocolos SQL/Oracle omitidos sin abortar el resto. |
 | ✅ **Transferencias confiables** | Usa staging, reanudación, reintentos y validación por tamaño o SHA-256 antes de publicar cada archivo. |
 | 🔐 **Credenciales protegidas** | Almacena secretos mediante DPAPI de usuario o de máquina y evita exponerlos en API, logs y exportaciones. |
 | 📊 **Control y trazabilidad local** | Presenta progreso, velocidad, ETA, historial, alertas y archivos procesados desde un dashboard sin recursos externos. |
@@ -147,15 +147,17 @@ Set-ExecutionPolicy -Scope Process Bypass
 2. Selecciona **Conexiones → Nueva conexión**.
 3. Define protocolo, servidor, credencial, rutas remotas, destino local y,
    si lo necesitas, una hora diaria propia para esa conexión.
-4. Pulsa **Probar** para validar el acceso y previsualizar archivos.
+4. Pulsa **Probar conexión y rutas** para validar credencial, orígenes remotos
+   y escritura en el destino local.
 5. Guarda la conexión y usa **Ejecutar ahora** o deja que la agenda trabaje.
 
 El dashboard mostrará progreso, resultado e historial de cada archivo.
 
 También puedes usar **Conexiones → Importar JSON** con un
 `monitor-backup.json` de StabilityMonitor. Recolecta importa FTP, FTPS, SFTP,
-WebDAV(S) y SMB; las fuentes SQL/Oracle se informan como omitidas y las
-conexiones sin secreto quedan en pausa hasta que ingreses su credencial.
+WebDAV(S) y SMB; las fuentes SQL/Oracle se informan como omitidas. Todas las
+conexiones importadas quedan en pausa hasta probar sus credenciales y rutas;
+si alguna no trae secreto, debes ingresarlo antes de activarla.
 
 ### Casos de uso avanzados
 
@@ -223,7 +225,7 @@ flowchart LR
 - [x] Importación idempotente de conexiones desde StabilityMonitor con reporte de omisiones.
 - [x] Dashboard local, alertas, exportaciones y bundle de soporte.
 - [x] Instalador offline y paquete portable publicados en GitHub Releases.
-- [x] Suite de 190 pruebas con compuerta de cobertura mínima del 85 %.
+- [x] Suite de 225 pruebas con compuerta de cobertura mínima del 85 %.
 
 ### 🔄 En progreso
 

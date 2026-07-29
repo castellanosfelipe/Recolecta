@@ -18,6 +18,7 @@ from app.config import AppPaths
 from app.db import ConnectionRepository, RunRepository
 from app.run_logging import RunLogStore
 from app.settings_store import SettingsStore
+from app.statuses import RUN_ERROR_LABELS, enrich_file, enrich_run
 
 
 RUN_FIELDS = (
@@ -30,6 +31,8 @@ RUN_FIELDS = (
     "started_at",
     "finished_at",
     "status",
+    "result_status",
+    "status_label",
     "files_found",
     "files_downloaded",
     "files_skipped",
@@ -50,6 +53,7 @@ FILE_FIELDS = (
     "mtime_utc",
     "sha256",
     "status",
+    "status_label",
     "attempts",
     "error_type",
     "error_msg",
@@ -108,7 +112,7 @@ class ExportService:
                 limit=1000,
                 offset=offset,
             )
-            rows.extend(page)
+            rows.extend(enrich_file(row) for row in page)
             if len(page) < 1000:
                 break
             offset += len(page)
@@ -154,7 +158,9 @@ class ExportService:
         files = sum(int(row["files_downloaded"] or 0) for row in rows)
         volume = sum(int(row["bytes_downloaded"] or 0) for row in rows)
         errors = Counter(
-            str(row["error_type"])
+            RUN_ERROR_LABELS.get(
+                str(row["error_type"]), str(row["error_type"])
+            )
             for row in rows
             if row["error_type"]
         )
@@ -164,8 +170,9 @@ class ExportService:
             f"<td>#{int(row['id'])}</td>"
             f"<td>{html.escape(str(row['connection_name']))}</td>"
             f"<td>{html.escape(str(row['started_at']))}</td>"
-            f"<td><span class='state {html.escape(str(row['status']))}'>"
-            f"{html.escape(str(row['status']))}</span></td>"
+            f"<td><span class='state "
+            f"{html.escape(str(row['result_status']))}'>"
+            f"{html.escape(str(row['status_label']))}</span></td>"
             f"<td>{int(row['files_downloaded'] or 0)}</td>"
             f"<td>{_format_bytes(int(row['bytes_downloaded'] or 0))}</td>"
             "</tr>"
@@ -188,14 +195,14 @@ h1{{margin:4px 0}} .muted{{color:#64748b}} .cards{{display:grid;grid-template-co
 .card,section{{background:white;border:1px solid #d9e1ea;border-radius:10px;padding:18px}} .card strong{{display:block;font-size:26px;margin-top:8px}}
 .grid{{display:grid;grid-template-columns:1fr 2fr;gap:14px}} ul{{list-style:none;padding:0}} li{{display:flex;justify-content:space-between;padding:9px;border-bottom:1px solid #e7edf4}}
 table{{width:100%;border-collapse:collapse;font-size:13px}} th,td{{padding:10px;text-align:left;border-bottom:1px solid #e7edf4}}
-.state{{font-weight:700}} .ok{{color:#087c55}} .failed{{color:#b42336}} .partial{{color:#9a6500}}
+.state{{font-weight:700}} .ok,.completed{{color:#087c55}} .failed,.cancelled{{color:#b42336}} .partial,.running{{color:#9a6500}} .no_files,.no_changes{{color:#175cd3}}
 @media(max-width:760px){{.cards,.grid{{grid-template-columns:1fr}}}} @media print{{body{{background:white}}main{{padding:0}}}}
 </style></head><body><main>
 <header><small>REPORTE OPERATIVO</small><h1>Recolecta{title_suffix}</h1>
 <p>Últimos {days} días · generado {html.escape(generated)}</p></header>
 <div class="cards">
 <div class="card"><span>Corridas</span><strong>{total}</strong></div>
-<div class="card"><span>Tasa de éxito</span><strong>{success_rate:.1f}%</strong></div>
+<div class="card"><span>Ejecuciones sin error</span><strong>{success_rate:.1f}%</strong></div>
 <div class="card"><span>Archivos</span><strong>{files}</strong></div>
 <div class="card"><span>Volumen</span><strong>{_format_bytes(volume)}</strong></div>
 </div><div class="grid"><section><h2>Errores principales</h2><ul>{error_items}</ul></section>
@@ -249,7 +256,7 @@ table{{width:100%;border-collapse:collapse;font-size:13px}} th,td{{padding:10px;
                 limit=500,
                 offset=offset,
             )
-            rows.extend(page)
+            rows.extend(enrich_run(row) for row in page)
             if len(page) < 500:
                 return rows
             offset += len(page)

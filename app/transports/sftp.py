@@ -56,9 +56,13 @@ class SftpTransport(Transport):
             arguments["passphrase"] = self.secret
         else:
             arguments["password"] = self.secret
-        client.connect(**arguments)
         self._ssh = client
-        self._sftp = client.open_sftp()
+        try:
+            client.connect(**arguments)
+            self._sftp = client.open_sftp()
+        except Exception:
+            self.close()
+            raise
 
     def close(self) -> None:
         if not self._owns_clients:

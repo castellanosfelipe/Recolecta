@@ -1,3 +1,4 @@
+import ftplib
 import os
 import stat
 import sys
@@ -8,6 +9,7 @@ from pathlib import Path
 
 import httpx
 import paramiko
+import pytest
 
 from app.models import Connection, Protocol
 from app.transports import create_transport
@@ -138,6 +140,34 @@ def test_ftp_resumes_with_rest_and_restarts_when_unsupported() -> None:
         assert bool(restarts) is (not supports_rest)
 
 
+def test_ftp_closes_owned_client_when_authentication_fails(monkeypatch) -> None:
+    class RejectedFtp:
+        def __init__(self):
+            self.closed = False
+
+        def connect(self, host, port, timeout):
+            return None
+
+        def login(self, username, secret):
+            raise ftplib.error_perm("530 Login incorrect")
+
+        def quit(self):
+            raise RuntimeError("La sesión no llegó a autenticarse.")
+
+        def close(self):
+            self.closed = True
+
+    client = RejectedFtp()
+    monkeypatch.setattr(ftplib, "FTP", lambda: client)
+    transport = FtpTransport(connection(Protocol.FTP), secret="incorrecta")
+
+    with pytest.raises(ftplib.error_perm):
+        transport.connect()
+
+    assert client.closed is True
+    assert transport._ftp is None
+
+
 class FakeSftp:
     def __init__(self) -> None:
         self.entries = {
@@ -217,6 +247,41 @@ def test_sftp_connect_enables_tofu_and_disables_ambient_credentials(
     assert ssh.arguments["look_for_keys"] is False
     assert ssh.arguments["allow_agent"] is False
     assert ssh.arguments["password"] == "password"
+
+
+def test_sftp_closes_owned_client_when_authentication_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class RejectedSsh:
+        def __init__(self):
+            self.closed = False
+
+        def load_host_keys(self, path):
+            return None
+
+        def set_missing_host_key_policy(self, policy):
+            return None
+
+        def connect(self, **arguments):
+            raise paramiko.AuthenticationException("Authentication failed")
+
+        def close(self):
+            self.closed = True
+
+    client = RejectedSsh()
+    monkeypatch.setattr(paramiko, "SSHClient", lambda: client)
+    transport = SftpTransport(
+        connection(Protocol.SFTP),
+        secret="incorrecta",
+        known_hosts=tmp_path / "known_hosts",
+    )
+
+    with pytest.raises(paramiko.AuthenticationException):
+        transport.connect()
+
+    assert client.closed is True
+    assert transport._ssh is None
 
 
 def test_sftp_download_seeks_to_partial_offset(tmp_path: Path) -> None:

@@ -279,7 +279,8 @@ class AlertManager:
                 )
             )
         if (
-            int(run["files_found"] or 0) == 0
+            status == "ok"
+            and int(run["files_found"] or 0) == 0
             and self._had_previous_files(int(run["connection_id"]), run_id)
         ):
             alerts.append(

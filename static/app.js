@@ -9,6 +9,11 @@
     progress: { active: false, active_runs: 0, runs: [] },
     chart: null,
     pollTimer: null,
+    connectionValidationRevision: 0,
+    connectionValidatedRevision: -1,
+    connectionValidatedFingerprint: null,
+    connectionValidationRequest: 0,
+    connectionSaving: false,
   };
 
   const titles = {
@@ -82,25 +87,124 @@
     });
   }
 
-  function statusLabel(value) {
-    return {
-      ok: "Correcta",
-      failed: "Fallida",
-      partial: "Parcial",
-      running: "En curso",
-      downloading: "Descargando",
-      pending: "Pendiente",
-      skipped: "Omitido",
-      duplicate: "Duplicado",
-      cancelled: "Cancelado",
-      enabled: "Activa",
-      disabled: "En pausa",
-    }[value] || value || "Sin corridas";
+  const runStatusLabels = {
+    no_files: "Archivos no existentes",
+    no_changes: "Sin archivos nuevos",
+    completed: "Descarga completada",
+    ok: "Ejecución completada",
+    partial: "Completada con incidencias",
+    failed: "Ejecución fallida",
+    running: "En ejecución",
+    cancelled: "Cancelada por el usuario",
+    interrupted: "Ejecución interrumpida",
+  };
+
+  const fileStatusLabels = {
+    pending: "Pendiente de descarga",
+    downloading: "Descargando",
+    ok: "Descargado y verificado",
+    skipped: "Omitido por configuración",
+    duplicate: "Ya descargado",
+    failed: "No se pudo descargar",
+    cancelled: "Descarga cancelada",
+  };
+
+  const alertStatusLabels = {
+    sent: "Enviada",
+    pending: "Pendiente de envío",
+    failed: "No enviada",
+  };
+
+  const connectionStatusLabels = {
+    enabled: "Activa y programada",
+    disabled: "En pausa",
+    never_run: "Sin ejecuciones",
+  };
+
+  const planStatusLabels = {
+    no_files: "Archivos no existentes",
+    no_changes: "Sin archivos nuevos",
+    files_ready: "Archivos listos para descargar",
+    planned: "Listo para descargar",
+    duplicate: "Ya descargado",
+    outside_window: "Fuera del período",
+    quiet_period: "Todavía en escritura",
+    timestamp_missing: "Sin fecha remota",
+    include_filter: "No coincide con la inclusión",
+    exclude_filter: "Excluido por configuración",
+    size_filter: "Fuera del tamaño permitido",
+    symlink: "Enlace simbólico omitido",
+  };
+
+  function safeStatusClass(value) {
+    return /^[a-z_-]+$/i.test(value || "") ? value : "unknown";
   }
 
-  function statusBadge(value) {
-    const safe = /^[a-z_-]+$/i.test(value || "") ? value : "disabled";
-    return `<span class="status ${safe}">${escapeHtml(statusLabel(value))}</span>`;
+  function statusBadge(value, label) {
+    return `<span class="status ${safeStatusClass(value)}">${escapeHtml(label || value || "Sin estado")}</span>`;
+  }
+
+  function runResultStatus(run) {
+    return run?.result_status || run?.status || "no_runs";
+  }
+
+  function runStatusLabel(run) {
+    const status = runResultStatus(run);
+    return run?.status_label || runStatusLabels[status] || status;
+  }
+
+  function runStatusBadge(run) {
+    return statusBadge(runResultStatus(run), runStatusLabel(run));
+  }
+
+  function fileStatusLabel(file) {
+    const status = typeof file === "string" ? file : file?.status;
+    return (typeof file === "object" && file?.status_label)
+      || fileStatusLabels[status]
+      || status
+      || "Sin estado";
+  }
+
+  function fileStatusBadge(file) {
+    const status = typeof file === "string" ? file : file?.status;
+    return statusBadge(status, fileStatusLabel(file));
+  }
+
+  function alertStatusLabel(alert) {
+    const status = typeof alert === "string" ? alert : alert?.status;
+    return (typeof alert === "object" && alert?.status_label)
+      || alertStatusLabels[status]
+      || status
+      || "Sin estado";
+  }
+
+  function alertStatusBadge(alert) {
+    const status = typeof alert === "string" ? alert : alert?.status;
+    return statusBadge(status, alertStatusLabel(alert));
+  }
+
+  function connectionStatusBadge(connection, includeLastRun = false) {
+    if (!connection?.enabled) {
+      return statusBadge("disabled", connectionStatusLabels.disabled);
+    }
+    if (includeLastRun && connection.last_status) {
+      return runStatusBadge({
+        status: connection.last_status,
+        result_status: connection.last_result_status,
+        status_label: connection.last_status_label,
+      });
+    }
+    if (includeLastRun) {
+      return statusBadge("never_run", connectionStatusLabels.never_run);
+    }
+    return statusBadge("enabled", connectionStatusLabels.enabled);
+  }
+
+  function planResultLabel(result) {
+    return result?.result_label
+      || planStatusLabels[result?.result_status]
+      || result?.result_status
+      || "Simulación completada";
   }
 
   function toast(message, error = false) {
@@ -169,13 +273,13 @@
   function renderSummary(connections) {
     const enabled = connections.filter((item) => item.enabled).length;
     const ok = connections.filter((item) => item.last_status === "ok").length;
-    const failed = connections.filter((item) => item.last_status === "failed").length;
+    const attention = connections.filter((item) => ["failed", "partial"].includes(item.last_status)).length;
     const bytes = connections.reduce((sum, item) => sum + Number(item.last_bytes_downloaded || 0), 0);
     $("#hero-active").textContent = state.progress.active_runs || 0;
     $("#summary-stats").innerHTML = [
       ["Conexiones activas", enabled, `${connections.length} configuradas`],
-      ["Última ejecución correcta", ok, "orígenes sin novedades"],
-      ["Atención requerida", failed, failed ? "revisar fallos" : "sin fallos recientes"],
+      ["Últimas ejecuciones sin error", ok, "orígenes al día"],
+      ["Atención requerida", attention, attention ? "revisar incidencias" : "sin incidencias recientes"],
       ["Volumen reciente", formatBytes(bytes), "última corrida por origen"],
     ].map(([label, value, detail]) => `<article class="stat-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail)}</small></article>`).join("");
   }
@@ -190,7 +294,7 @@
       <article class="connection-card">
         <div class="card-top">
           <div><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.client || `${item.protocol} · origen remoto`)}</p></div>
-          ${statusBadge(item.enabled ? (item.last_status || "enabled") : "disabled")}
+          ${connectionStatusBadge(item, true)}
         </div>
         <div class="card-metrics">
           <div><span>Última corrida</span><strong>${escapeHtml(formatDate(item.last_started_at))}</strong></div>
@@ -217,7 +321,7 @@
       const files = run.files.map((file) => `
         <tr>
           <td class="path-cell mono" title="${escapeHtml(file.remote_path)}">${escapeHtml(file.remote_path)}</td>
-          <td>${statusBadge(file.status)}</td>
+          <td>${fileStatusBadge(file)}</td>
           <td>
             <div class="progress-meta"><span>${escapeHtml(formatBytes(file.bytes_done))} / ${escapeHtml(formatBytes(file.size_bytes))}</span><span>${file.percent === null ? "—" : `${file.percent}%`}</span></div>
             <div class="progress-track" role="progressbar" aria-label="Progreso de ${escapeHtml(file.remote_path)}" aria-valuenow="${file.percent ?? 0}" aria-valuemin="0" aria-valuemax="100"><span style="width:${file.percent ?? 3}%"></span></div>
@@ -244,7 +348,7 @@
         <td class="mono">#${run.id}</td>
         <td>${escapeHtml(run.connection_name)}</td>
         <td>${escapeHtml(formatDate(run.started_at))}</td>
-        <td>${statusBadge(run.status)}</td>
+        <td>${runStatusBadge(run)}</td>
         <td>${Number(run.files_downloaded || 0).toLocaleString("es-CO")}</td>
         <td>${Number(run.files_failed || 0).toLocaleString("es-CO")}</td>
         <td>${escapeHtml(formatBytes(run.bytes_downloaded))}</td>
@@ -258,7 +362,7 @@
         <td class="path-cell mono" title="${escapeHtml(file.remote_path)}">${escapeHtml(file.remote_path)}</td>
         <td>${escapeHtml(file.connection_name)}</td>
         <td>${escapeHtml(formatDate(file.run_started_at))}</td>
-        <td>${statusBadge(file.status)}</td>
+        <td>${fileStatusBadge(file)}</td>
         <td>${escapeHtml(formatBytes(file.size_bytes))}</td>
         <td>${escapeHtml(formatDuration(file.duration_s))}</td>
         <td>${file.average_bps === null ? "—" : `${escapeHtml(formatBytes(file.average_bps))}/s`}</td>
@@ -273,10 +377,10 @@
         <td class="mono">${escapeHtml(item.host)}:${item.port}</td>
         <td>${escapeHtml(item.schedule_time || "Global")}</td>
         <td>${item.has_secret ? "Configurada" : "Sin secreto"}</td>
-        <td>${statusBadge(item.enabled ? "enabled" : "disabled")}</td>
+        <td>${connectionStatusBadge(item)}</td>
         <td><div class="actions">
           <button class="btn secondary small" data-edit="${item.id}">Editar</button>
-          <button class="btn secondary small" data-test="${item.id}">Probar</button>
+          <button class="btn secondary small" data-test="${item.id}">Simular corrida</button>
           <button class="btn secondary small" data-duplicate="${item.id}">Duplicar</button>
           <button class="btn danger small" data-delete="${item.id}">Eliminar</button>
         </div></td>
@@ -290,7 +394,7 @@
         <td>${escapeHtml(alert.connection_name || "Sistema")}</td>
         <td class="mono">${escapeHtml(alert.cause)}</td>
         <td>${escapeHtml(alert.channel)}</td>
-        <td>${statusBadge(alert.status === "sent" ? "ok" : "failed")}</td>
+        <td>${alertStatusBadge(alert)}</td>
         <td class="path-cell" title="${escapeHtml(alert.message)}">${escapeHtml(alert.message)}</td>
       </tr>`).join("") : `<tr><td colspan="6">No hay alertas registradas.</td></tr>`;
   }
@@ -332,6 +436,8 @@
   }
 
   function openConnection(id = null) {
+    if (state.connectionSaving) return;
+    setConnectionDialogBusy(false);
     const form = $("#connection-form");
     form.reset();
     form.elements.enabled.checked = true;
@@ -355,6 +461,7 @@
       });
       form.elements.id.value = item.id;
     }
+    invalidateConnectionValidation();
     $("#connection-dialog").showModal();
   }
 
@@ -374,20 +481,235 @@
     return payload;
   }
 
+  async function connectionPayloadFingerprint(id, payload) {
+    const serialized = JSON.stringify([String(id || ""), payload]);
+    if (!window.crypto?.subtle) {
+      let left = 0x811c9dc5;
+      let right = 0x9e3779b9;
+      for (let index = 0; index < serialized.length; index += 1) {
+        const code = serialized.charCodeAt(index);
+        left = Math.imul(left ^ code, 0x01000193);
+        right = Math.imul(right ^ code, 0x85ebca6b);
+      }
+      return `${(left >>> 0).toString(16)}${(right >>> 0).toString(16)}`;
+    }
+    const bytes = new TextEncoder().encode(serialized);
+    const digest = await window.crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)]
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  function setConnectionDialogBusy(busy) {
+    state.connectionSaving = busy;
+    const form = $("#connection-form");
+    form.setAttribute("aria-busy", String(busy));
+    $$("input, select, textarea, button", form).forEach((control) => {
+      control.disabled = busy;
+    });
+    $$('[data-close-dialog="connection-dialog"]').forEach((control) => {
+      control.disabled = busy;
+    });
+    const saveButton = $("#connection-save-button");
+    saveButton.textContent = busy ? "Guardando…" : "Guardar conexión";
+    if (!busy) {
+      $("#connection-test-button").disabled = false;
+      saveButton.disabled = (
+        state.connectionValidatedRevision
+        !== state.connectionValidationRevision
+        || !state.connectionValidatedFingerprint
+      );
+    }
+  }
+
+  function setConnectionValidationStatus(message, status = "") {
+    const element = $("#connection-validation-status");
+    element.textContent = message;
+    element.className = `validation-status${status ? ` ${status}` : ""}`;
+  }
+
+  function invalidateConnectionValidation(
+    message = "Prueba la conexión y sus rutas antes de guardar.",
+  ) {
+    state.connectionValidationRevision += 1;
+    state.connectionValidationRequest += 1;
+    state.connectionValidatedRevision = -1;
+    state.connectionValidatedFingerprint = null;
+    $("#connection-save-button").disabled = true;
+    const testButton = $("#connection-test-button");
+    testButton.removeAttribute("aria-busy");
+    testButton.disabled = state.connectionSaving;
+    testButton.textContent = "Probar conexión y rutas";
+    $("#connection-form").elements.remote_paths.setCustomValidity("");
+    setConnectionValidationStatus(message);
+  }
+
+  async function testConnectionDraft() {
+    const form = $("#connection-form");
+    const remotePaths = form.elements.remote_paths;
+    remotePaths.setCustomValidity("");
+    const payload = connectionPayload(form);
+    if (!payload.remote_paths.length) {
+      remotePaths.setCustomValidity("Ingresa al menos una ruta remota.");
+    }
+    if (!form.reportValidity()) {
+      invalidateConnectionValidation(
+        "Completa los campos obligatorios antes de probar.",
+      );
+      setConnectionValidationStatus(
+        "Completa los campos obligatorios antes de probar.",
+        "invalid",
+      );
+      return;
+    }
+
+    const id = form.elements.id.value;
+    const revision = state.connectionValidationRevision;
+    const requestId = ++state.connectionValidationRequest;
+    let fingerprint;
+    try {
+      fingerprint = await connectionPayloadFingerprint(id, payload);
+    } catch (error) {
+      if (requestId !== state.connectionValidationRequest) return;
+      invalidateConnectionValidation(
+        "No fue posible identificar el borrador para validarlo.",
+      );
+      setConnectionValidationStatus(error.message, "invalid");
+      toast(error.message, true);
+      return;
+    }
+    if (
+      requestId !== state.connectionValidationRequest
+      || revision !== state.connectionValidationRevision
+    ) {
+      return;
+    }
+    const testButton = $("#connection-test-button");
+    testButton.disabled = true;
+    testButton.setAttribute("aria-busy", "true");
+    testButton.textContent = "Probando…";
+    $("#connection-save-button").disabled = true;
+    setConnectionValidationStatus(
+      "Validando credencial, rutas remotas y escritura local…",
+      "testing",
+    );
+    try {
+      const query = id ? `?connection_id=${encodeURIComponent(id)}` : "";
+      const result = await api(`/api/connections/validate${query}`, {
+        method: "POST",
+        body: payload,
+      });
+      if (
+        requestId !== state.connectionValidationRequest
+        || revision !== state.connectionValidationRevision
+      ) {
+        return;
+      }
+      if (!result.valid) {
+        throw new Error("La conexión o sus rutas no pudieron validarse.");
+      }
+      const currentFingerprint = await connectionPayloadFingerprint(
+        form.elements.id.value,
+        connectionPayload(form),
+      );
+      if (
+        requestId !== state.connectionValidationRequest
+        || revision !== state.connectionValidationRevision
+      ) {
+        return;
+      }
+      if (currentFingerprint !== fingerprint) {
+        invalidateConnectionValidation(
+          "Los datos cambiaron. Vuelve a probar la conexión y sus rutas.",
+        );
+        return;
+      }
+      state.connectionValidatedRevision = revision;
+      state.connectionValidatedFingerprint = fingerprint;
+      $("#connection-save-button").disabled = false;
+      const warning = result.warnings?.length
+        ? ` Advertencias: ${result.warnings.join(" ")}`
+        : "";
+      setConnectionValidationStatus(
+        `Validación correcta: ${result.remote_paths.length} ruta(s) remota(s) accesible(s) y destino local escribible.${warning}`,
+        "valid",
+      );
+      toast("Conexión y rutas validadas. Ya puedes guardar.");
+    } catch (error) {
+      if (requestId !== state.connectionValidationRequest) return;
+      state.connectionValidatedRevision = -1;
+      state.connectionValidatedFingerprint = null;
+      $("#connection-save-button").disabled = true;
+      setConnectionValidationStatus(error.message, "invalid");
+      toast(error.message, true);
+    } finally {
+      if (requestId === state.connectionValidationRequest) {
+        testButton.removeAttribute("aria-busy");
+        testButton.disabled = false;
+        testButton.textContent = "Probar conexión y rutas";
+      }
+    }
+  }
+
   async function submitConnection(event) {
     event.preventDefault();
+    if (state.connectionSaving) return;
     const form = event.currentTarget;
     const id = form.elements.id.value;
+    const payload = connectionPayload(form);
+    setConnectionDialogBusy(true);
+    let fingerprint;
+    try {
+      fingerprint = await connectionPayloadFingerprint(id, payload);
+    } catch (error) {
+      setConnectionDialogBusy(false);
+      invalidateConnectionValidation(
+        "No fue posible confirmar el borrador validado.",
+      );
+      toast(error.message, true);
+      return;
+    }
+    if (
+      state.connectionValidatedRevision
+      !== state.connectionValidationRevision
+      || fingerprint !== state.connectionValidatedFingerprint
+    ) {
+      setConnectionDialogBusy(false);
+      invalidateConnectionValidation();
+      toast(
+        "Debes probar correctamente la conexión y sus rutas antes de guardar.",
+        true,
+      );
+      return;
+    }
+    setConnectionValidationStatus(
+      "Guardando y revalidando la conexión y sus rutas…",
+      "testing",
+    );
     try {
       await api(id ? `/api/connections/${id}` : "/api/connections", {
         method: id ? "PATCH" : "POST",
-        body: connectionPayload(form),
+        body: payload,
       });
-      $("#connection-dialog").close();
-      toast(id ? "Conexión actualizada." : "Conexión creada.");
+    } catch (error) {
+      setConnectionDialogBusy(false);
+      invalidateConnectionValidation(
+        "La conexión debe volver a probarse antes de guardar.",
+      );
+      setConnectionValidationStatus(error.message, "invalid");
+      toast(error.message, true);
+      return;
+    }
+    setConnectionDialogBusy(false);
+    $("#connection-dialog").close();
+    toast(id ? "Conexión actualizada." : "Conexión creada.");
+    try {
       await Promise.all([loadConnections(), loadDashboard()]);
     } catch (error) {
-      toast(error.message, true);
+      toast(
+        `La conexión se guardó, pero no se pudo actualizar la vista: ${error.message}`,
+        true,
+      );
     }
   }
 
@@ -398,7 +720,7 @@
     try {
       const backup = JSON.parse(await file.text());
       const total = Array.isArray(backup.connections) ? backup.connections.length : 0;
-      if (!window.confirm(`Se revisarán ${total} conexión(es). Los protocolos no compatibles se omitirán y las conexiones sin credencial quedarán en pausa. ¿Continuar?`)) return;
+      if (!window.confirm(`Se revisarán ${total} conexión(es). Los protocolos no compatibles se omitirán y todas las conexiones quedarán en pausa hasta validar sus rutas. ¿Continuar?`)) return;
       const result = await api("/api/import/connections", {
         method: "POST",
         body: backup,
@@ -430,7 +752,7 @@
         <div><span>Omitidas</span><strong>${result.skipped_count}</strong></div>
         <div><span>Con error</span><strong>${result.error_count}</strong></div>
       </div>
-      <p>Las conexiones sin credencial se guardaron en pausa.</p>
+      <p>Las conexiones importadas se guardaron en pausa hasta validar sus credenciales y rutas.</p>
       ${issueSection("Entradas omitidas", result.skipped)}
       ${issueSection("Entradas con error", result.errors)}
     `;
@@ -449,11 +771,16 @@
   }
 
   async function testConnection(id) {
-    toast("Probando conexión y calculando el plan…");
+    toast("Simulando la corrida y calculando el plan…");
     try {
       const result = await api(`/api/connections/${id}/test`, { method: "POST" });
       const suffix = result.is_partial ? " Hay advertencias en el listado." : "";
-      toast(`Conexión correcta: ${result.files_to_download} archivo(s) entrarían en la ventana.${suffix}`);
+      const detail = result.result_status === "no_files"
+        ? "No se encontraron archivos en las rutas remotas configuradas."
+        : result.result_status === "no_changes"
+          ? "Los archivos encontrados no requieren una nueva descarga."
+          : `${result.files_to_download} archivo(s) están listos para descargar.`;
+      toast(`${planResultLabel(result)}: ${detail}${suffix}`);
     } catch (error) {
       toast(error.message, true);
     }
@@ -472,18 +799,51 @@
   async function showRunDetail(id) {
     try {
       const run = await api(`/api/runs/${id}`);
+      const resultStatus = runResultStatus(run);
+      const resultLabel = runStatusLabel(run);
+      const causeTitle = run.error_msg || run.error_type ? "Causa reportada" : "Resultado";
+      const causeMessage = run.error_msg
+        || run.status_detail
+        || (resultStatus === "no_files"
+          ? "No se encontraron archivos en las rutas remotas configuradas durante esta ejecución."
+          : resultStatus === "no_changes"
+            ? "Se encontraron archivos, pero ninguno requería una nueva descarga."
+            : resultStatus === "completed"
+              ? "Los archivos previstos se descargaron y verificaron correctamente."
+              : resultStatus === "partial"
+                ? "La ejecución terminó, pero uno o más archivos presentaron incidencias."
+                : resultStatus === "cancelled"
+                  ? "La ejecución fue cancelada antes de completar el procesamiento."
+                  : resultStatus === "failed"
+                    ? "La ejecución terminó con un error antes de completar el procesamiento."
+                    : "Consulta los archivos y métricas registrados para esta ejecución.");
+      const emptyFilesMessage = resultStatus === "no_files"
+        ? "No se encontraron archivos en las rutas remotas configuradas."
+        : resultStatus === "no_changes"
+          ? "No hubo archivos que requirieran una nueva descarga."
+          : resultStatus === "failed"
+            ? "La ejecución terminó antes de registrar archivos. Revisa la causa indicada arriba."
+            : resultStatus === "cancelled"
+              ? "La ejecución se canceló antes de registrar archivos."
+              : "No hay registros de archivos para esta ejecución.";
       $("#detail-content").innerHTML = `
         <div class="detail-grid">
           <div><span>Conexión</span><strong>${escapeHtml(run.connection_name)}</strong></div>
-          <div><span>Estado</span><strong>${escapeHtml(statusLabel(run.status))}</strong></div>
+          <div><span>Estado</span><strong>${escapeHtml(resultLabel)}</strong></div>
           <div><span>Inicio</span><strong>${escapeHtml(formatDate(run.started_at))}</strong></div>
+          <div><span>Encontrados</span><strong>${run.files_found || 0}</strong></div>
           <div><span>Descargados</span><strong>${run.files_downloaded || 0}</strong></div>
           <div><span>Fallidos</span><strong>${run.files_failed || 0}</strong></div>
           <div><span>Volumen</span><strong>${escapeHtml(formatBytes(run.bytes_downloaded))}</strong></div>
         </div>
+        <div class="detail-message ${safeStatusClass(resultStatus)}">
+          <span>${escapeHtml(causeTitle)}</span>
+          <strong>${escapeHtml(resultLabel)}</strong>
+          <p>${escapeHtml(causeMessage)}</p>
+        </div>
         <p><a class="btn secondary small" href="/api/runs/${run.id}/log.jsonl">Descargar log JSONL</a></p>
-        <div class="table-panel"><table><thead><tr><th>Archivo</th><th>Estado</th><th>Tamaño</th><th>Error</th></tr></thead><tbody>
-          ${run.files.length ? run.files.map((file) => `<tr><td class="path-cell mono">${escapeHtml(file.remote_path)}</td><td>${statusBadge(file.status)}</td><td>${escapeHtml(formatBytes(file.size_bytes))}</td><td>${escapeHtml(file.error_msg || "—")}</td></tr>`).join("") : `<tr><td colspan="4">La corrida no contiene archivos.</td></tr>`}
+        <div class="table-panel"><table><thead><tr><th>Archivo</th><th>Estado</th><th>Tamaño</th><th>Detalle</th></tr></thead><tbody>
+          ${run.files.length ? run.files.map((file) => `<tr><td class="path-cell mono">${escapeHtml(file.remote_path)}</td><td>${fileStatusBadge(file)}</td><td>${escapeHtml(formatBytes(file.size_bytes))}</td><td>${escapeHtml(file.error_msg || file.reason || "—")}</td></tr>`).join("") : `<tr><td colspan="4">${escapeHtml(emptyFilesMessage)}</td></tr>`}
         </tbody></table></div>`;
       $("#detail-dialog").showModal();
     } catch (error) {
@@ -593,6 +953,27 @@
     $("#new-connection-button").addEventListener("click", () => openConnection());
     $("#refresh-button").addEventListener("click", refreshAll);
     $("#connection-form").addEventListener("submit", submitConnection);
+    $("#connection-form").addEventListener("input", () => {
+      invalidateConnectionValidation(
+        "Los datos cambiaron. Vuelve a probar la conexión y sus rutas.",
+      );
+    });
+    $("#connection-form").addEventListener("change", () => {
+      invalidateConnectionValidation(
+        "Los datos cambiaron. Vuelve a probar la conexión y sus rutas.",
+      );
+    });
+    $("#connection-test-button").addEventListener(
+      "click",
+      testConnectionDraft,
+    );
+    $("#connection-dialog").addEventListener(
+      "close",
+      () => invalidateConnectionValidation(),
+    );
+    $("#connection-dialog").addEventListener("cancel", (event) => {
+      if (state.connectionSaving) event.preventDefault();
+    });
     $("#connection-import-button").addEventListener("click", () => {
       $("#connection-import-file").value = "";
       $("#connection-import-file").click();
