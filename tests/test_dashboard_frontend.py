@@ -34,8 +34,7 @@ def test_dashboard_and_assets_are_local(tmp_path: Path) -> None:
     assert "/static/vendor/chart.umd.js" in page.text
     assert 'src="http' not in page.text
     assert 'href="http' not in page.text.replace(
-        'href="https://github.com/castellanosfelipe/'
-        'Recolecta-Automatizaci-n-confiable-de-archivos"',
+        'href="https://github.com/castellanosfelipe/Recolecta"',
         "",
     ).replace(
         'href="https://www.linkedin.com/in/'

@@ -5,7 +5,7 @@
   <img src="docs/images/dashboard.png" alt="Dashboard principal de Recolecta con el estado de conexiones, ejecuciones y archivos descargados" width="800"/>
 
   <p>
-    <img src="https://img.shields.io/badge/version-0.1.1-blue" alt="Versión 0.1.1"/>
+    <img src="https://img.shields.io/badge/version-0.1.2-blue" alt="Versión 0.1.2"/>
     <img src="https://img.shields.io/badge/status-active-2ea44f" alt="Estado activo"/>
     <img src="https://img.shields.io/badge/license-MIT-orange" alt="Licencia MIT"/>
     <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4" alt="Compatible con Windows 10 y Windows 11"/>
@@ -14,7 +14,7 @@
   </p>
 
   <p>
-    <a href="https://github.com/castellanosfelipe/Recolecta-Automatizaci-n-confiable-de-archivos/releases/latest"><strong>Descargar la última versión</strong></a>
+    <a href="https://github.com/castellanosfelipe/Recolecta/releases/latest"><strong>Descargar la última versión</strong></a>
     ·
     <a href="docs/USER_GUIDE.md">Guía de usuario</a>
     ·
@@ -71,7 +71,7 @@ constantemente cada servidor.
 El repositorio todavía no incluye un video o GIF verificable. La
 [captura del dashboard](#-capturas-de-pantalla) muestra la experiencia actual,
 y la aplicación completa puede probarse desde la
-[release v0.1.1](https://github.com/castellanosfelipe/Recolecta-Automatizaci-n-confiable-de-archivos/releases/tag/v0.1.1).
+[release v0.1.2](https://github.com/castellanosfelipe/Recolecta/releases/tag/v0.1.2).
 
 ## ✨ Características principales
 
@@ -105,7 +105,7 @@ y la aplicación completa puede probarse desde la
 ### Pasos
 
 1. Descarga `Recolecta-Setup.exe` y `SHA256SUMS.txt` desde la
-   [última release](https://github.com/castellanosfelipe/Recolecta-Automatizaci-n-confiable-de-archivos/releases/latest).
+   [última release](https://github.com/castellanosfelipe/Recolecta/releases/latest).
 2. Verifica el instalador:
 
 ```powershell
@@ -244,7 +244,7 @@ Las contribuciones son bienvenidas, especialmente cuando incluyen un caso de
 uso reproducible y pruebas. Antes de abrir un pull request:
 
 1. Crea un issue en
-   [GitHub Issues](https://github.com/castellanosfelipe/Recolecta-Automatizaci-n-confiable-de-archivos/issues)
+   [GitHub Issues](https://github.com/castellanosfelipe/Recolecta/issues)
    para describir el problema o resultado esperado.
 2. Trabaja en una rama enfocada y evita mezclar cambios no relacionados.
 3. Ejecuta la validación offline:
@@ -272,7 +272,7 @@ La especificación, decisiones y criterios verificables están en
     <a href="https://github.com/castellanosfelipe">castellanosfelipe</a>
   </p>
   <p>
-    <a href="https://github.com/castellanosfelipe/Recolecta-Automatizaci-n-confiable-de-archivos">GitHub</a>
+    <a href="https://github.com/castellanosfelipe/Recolecta">GitHub</a>
     ·
     <a href="https://www.linkedin.com/in/bairon-felipe-peña-castellanos-ab18411b5">LinkedIn</a>
   </p>
