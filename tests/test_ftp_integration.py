@@ -131,7 +131,7 @@ def test_real_ftp_and_ftps_listing_is_recursive_and_uses_utc_mdtm(
         )
     assert {item.name for item in result.files} == {"today.csv", "deep.csv"}
     assert result.warnings == ()
-    assert all(item.timestamp_source == "MDTM" for item in result.files)
+    assert all(item.timestamp_source == "MLSD" for item in result.files)
     assert metadata.size_bytes == 5
     assert metadata.mtime_utc is not None
     assert metadata.mtime_utc.tzinfo == timezone.utc

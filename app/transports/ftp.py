@@ -6,12 +6,18 @@ import ftplib
 import posixpath
 import re
 import ssl
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import BinaryIO, Callable
 from zoneinfo import ZoneInfo
 
 from app.models import Connection, Protocol
-from app.transports.base import ListingResult, RemoteFile, TransferResult, Transport
+from app.transports.base import (
+    DirectoryWorkQueue,
+    RemoteFile,
+    TransferResult,
+    Transport,
+)
 
 
 _UNIX_LIST_RE = re.compile(
@@ -26,6 +32,10 @@ _WINDOWS_LIST_RE = re.compile(
     re.IGNORECASE,
 )
 _MLSD_UNSUPPORTED = ("500", "501", "502", "504")
+_LIST_FALLBACK_WARNING = (
+    "El servidor FTP no soporta MLSD/MDTM de forma utilizable; "
+    "se usó LIST con precisión temporal limitada."
+)
 
 
 class FtpTransport(Transport):
@@ -83,50 +93,48 @@ class FtpTransport(Transport):
             except Exception:
                 pass
 
-    def list_files(
+    def iter_files(
         self,
         remote_paths: tuple[str, ...],
         *,
         recursive: bool,
         max_depth: int,
-    ) -> ListingResult:
+    ) -> Iterator[RemoteFile]:
         ftp = self._require_client()
-        files: list[RemoteFile] = []
-        warnings: list[str] = []
-        for configured_path in remote_paths:
-            root = _normalize_remote_path(configured_path)
-            root_files: list[RemoteFile] = []
-            try:
-                self._walk_mlsd(
+        self._reset_listing_warnings()
+        return self._iter_roots(
+            ftp,
+            remote_paths,
+            recursive=recursive,
+            max_depth=max_depth,
+        )
+
+    def _iter_roots(
+        self,
+        ftp: ftplib.FTP,
+        remote_paths: tuple[str, ...],
+        *,
+        recursive: bool,
+        max_depth: int,
+    ) -> Iterator[RemoteFile]:
+        roots = (
+            (_normalize_remote_path(configured_path), 0)
+            for configured_path in remote_paths
+        )
+        with DirectoryWorkQueue(roots) as directories:
+            while True:
+                work = directories.pop()
+                if work is None:
+                    return
+                path, depth = work
+                yield from self._walk_mlsd(
                     ftp,
-                    root,
+                    path,
                     recursive=recursive,
                     max_depth=max_depth,
-                    depth=0,
-                    output=root_files,
+                    depth=depth,
+                    directories=directories,
                 )
-            except (AttributeError, ftplib.error_perm) as exc:
-                if isinstance(exc, ftplib.error_perm) and not str(exc).startswith(
-                    _MLSD_UNSUPPORTED
-                ):
-                    raise
-                warning = (
-                    "El servidor FTP no soporta MLSD/MDTM de forma utilizable; "
-                    "se usó LIST con precisión temporal limitada."
-                )
-                if warning not in warnings:
-                    warnings.append(warning)
-                root_files.clear()
-                self._walk_list(
-                    ftp,
-                    root,
-                    recursive=recursive,
-                    max_depth=max_depth,
-                    depth=0,
-                    output=root_files,
-                )
-            files.extend(root_files)
-        return ListingResult(tuple(files), tuple(warnings))
 
     def stat(self, remote_path: str) -> RemoteFile:
         ftp = self._require_client()
@@ -207,45 +215,55 @@ class FtpTransport(Transport):
         recursive: bool,
         max_depth: int,
         depth: int,
-        output: list[RemoteFile],
-    ) -> None:
-        entries = list(ftp.mlsd(path, facts=["type", "size", "modify"]))
-        for name, facts in entries:
-            if name in {".", ".."}:
-                continue
-            remote_path = posixpath.join(path.rstrip("/"), name) or "/"
-            entry_type = facts.get("type", "").lower()
-            if entry_type in {"cdir", "pdir"}:
-                continue
-            is_symlink = "slink" in entry_type
-            if entry_type == "dir":
-                if recursive and depth < max_depth:
-                    self._walk_mlsd(
-                        ftp,
-                        remote_path,
-                        recursive=recursive,
-                        max_depth=max_depth,
-                        depth=depth + 1,
-                        output=output,
-                    )
-                continue
-            if entry_type not in {"file"} and not is_symlink:
-                continue
-            size = _parse_int(facts.get("size"))
-            modified = self._mdtm(ftp, remote_path)
-            source = "MDTM"
-            if modified is None:
+        directories: DirectoryWorkQueue,
+    ) -> Iterator[RemoteFile]:
+        listed_any = False
+        try:
+            for name, facts in _iter_mlsd_entries(
+                ftp,
+                path,
+            ):
+                listed_any = True
+                if name in {".", ".."}:
+                    continue
+                remote_path = posixpath.join(path.rstrip("/"), name) or "/"
+                entry_type = facts.get("type", "").lower()
+                if entry_type in {"cdir", "pdir"}:
+                    continue
+                is_symlink = "slink" in entry_type
+                if entry_type == "dir":
+                    if recursive and depth < max_depth:
+                        directories.add(remote_path, depth + 1)
+                    continue
+                if entry_type not in {"file"} and not is_symlink:
+                    continue
+                size = _parse_int(facts.get("size"))
+                # MLSD already reports RFC 3659 UTC metadata. Issuing MDTM
+                # here would require a second command per file and is invalid
+                # while the streaming MLSD data channel remains open.
                 modified = _parse_mlsd_timestamp(facts.get("modify"))
-                source = "MLSD"
-            output.append(
-                RemoteFile(
+                yield RemoteFile(
                     remote_path,
                     size,
                     modified,
                     timestamp_reliable=modified is not None,
-                    timestamp_source=source,
+                    timestamp_source="MLSD",
                     is_symlink=is_symlink,
                 )
+        except (AttributeError, ftplib.error_perm) as exc:
+            unsupported = not isinstance(
+                exc, ftplib.error_perm
+            ) or str(exc).startswith(_MLSD_UNSUPPORTED)
+            if not unsupported or listed_any:
+                raise
+            self._add_listing_warning(_LIST_FALLBACK_WARNING)
+            yield from self._walk_list(
+                ftp,
+                path,
+                recursive=recursive,
+                max_depth=max_depth,
+                depth=depth,
+                directories=directories,
             )
 
     def _walk_list(
@@ -256,11 +274,9 @@ class FtpTransport(Transport):
         recursive: bool,
         max_depth: int,
         depth: int,
-        output: list[RemoteFile],
-    ) -> None:
-        lines: list[str] = []
-        ftp.retrlines(f"LIST {path}", lines.append)
-        for line in lines:
+        directories: DirectoryWorkQueue,
+    ) -> Iterator[RemoteFile]:
+        for line in _iter_ftp_lines(ftp, f"LIST {path}"):
             parsed = _parse_list_line(
                 line,
                 server_zone=ZoneInfo(self.connection.timezone),
@@ -272,24 +288,15 @@ class FtpTransport(Transport):
             remote_path = posixpath.join(path.rstrip("/"), name) or "/"
             if is_dir:
                 if recursive and not is_symlink and depth < max_depth:
-                    self._walk_list(
-                        ftp,
-                        remote_path,
-                        recursive=recursive,
-                        max_depth=max_depth,
-                        depth=depth + 1,
-                        output=output,
-                    )
+                    directories.add(remote_path, depth + 1)
                 continue
-            output.append(
-                RemoteFile(
-                    remote_path,
-                    size,
-                    modified,
-                    timestamp_reliable=False,
-                    timestamp_source="LIST",
-                    is_symlink=is_symlink,
-                )
+            yield RemoteFile(
+                remote_path,
+                size,
+                modified,
+                timestamp_reliable=False,
+                timestamp_source="LIST",
+                is_symlink=is_symlink,
             )
 
     @staticmethod
@@ -329,6 +336,67 @@ def _parse_int(value: str | None) -> int | None:
         return int(value) if value is not None else None
     except ValueError:
         return None
+
+
+def _iter_mlsd_entries(
+    ftp: ftplib.FTP,
+    path: str,
+) -> Iterator[tuple[str, dict[str, str]]]:
+    """Stream MLSD on real clients while retaining lightweight test doubles."""
+    if not callable(getattr(ftp, "transfercmd", None)):
+        yield from ftp.mlsd(
+            path,
+            facts=["type", "size", "modify"],
+        )
+        return
+    ftp.sendcmd("OPTS MLST type;size;modify;")
+    for line in _iter_ftp_lines(ftp, f"MLSD {path}"):
+        facts_text, separator, name = line.partition(" ")
+        if not separator:
+            continue
+        facts: dict[str, str] = {}
+        for raw_fact in facts_text.split(";"):
+            if not raw_fact or "=" not in raw_fact:
+                continue
+            key, value = raw_fact.split("=", 1)
+            facts[key.lower()] = value
+        yield name, facts
+
+
+def _iter_ftp_lines(
+    ftp: ftplib.FTP,
+    command: str,
+) -> Iterator[str]:
+    """Read a data command line by line without ftplib's internal list."""
+    transfer = getattr(ftp, "transfercmd", None)
+    if not callable(transfer):
+        lines: list[str] = []
+        ftp.retrlines(command, lines.append)
+        yield from lines
+        return
+
+    ftp.voidcmd("TYPE A")
+    data_socket = transfer(command)
+    stream = data_socket.makefile(
+        "r",
+        encoding=getattr(ftp, "encoding", "utf-8"),
+        newline="",
+    )
+    completed = False
+    try:
+        for line in stream:
+            yield line.rstrip("\r\n")
+        completed = True
+    finally:
+        try:
+            stream.close()
+        finally:
+            data_socket.close()
+        try:
+            ftp.voidresp()
+        except ftplib.error_temp as exc:
+            if completed or not str(exc).lstrip().startswith("426"):
+                raise
 
 
 def _parse_list_line(

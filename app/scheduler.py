@@ -106,6 +106,37 @@ class CatchUpPlanner:
             )
             today = now_utc.astimezone(zone).date()
             last_end = self.runs.last_successful_end(connection.id)
+            if connection.full_local_reconciliation:
+                for days_ago in range(settings.catchup_max_days):
+                    scheduled_date = today - timedelta(days=days_ago)
+                    scheduled_local = datetime.combine(
+                        scheduled_date,
+                        wall_time(schedule_hour, schedule_minute),
+                        tzinfo=zone,
+                    )
+                    scheduled_utc = scheduled_local.astimezone(timezone.utc)
+                    if scheduled_utc > now_utc:
+                        continue
+                    window = calculate_window(
+                        connection,
+                        started_at=scheduled_utc,
+                        last_successful_end_utc=last_end,
+                    )
+                    if not self.runs.has_successful_window(
+                        connection.id,
+                        window_start_utc=window.start_utc,
+                        window_end_utc=window.end_utc,
+                    ):
+                        candidates.append(
+                            CatchUpCandidate(
+                                connection.id,
+                                connection.name,
+                                scheduled_utc,
+                            )
+                        )
+                    # One complete reconciliation covers every older window.
+                    break
+                continue
             for days_ago in range(settings.catchup_max_days):
                 scheduled_date = today - timedelta(days=days_ago)
                 scheduled_local = datetime.combine(

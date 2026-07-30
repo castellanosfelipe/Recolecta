@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timezone
@@ -21,6 +22,8 @@ from app.models import (
     utc_now_iso,
 )
 from app.logging_setup import redact_secrets
+from app.errors import RecolectaError
+from app.naming import collision_path, local_path_key
 
 if TYPE_CHECKING:
     from app.downloader import DownloadOutcome
@@ -148,6 +151,92 @@ MIGRATIONS: Final[dict[int, tuple[str, ...]]] = {
     ),
     3: (
         "ALTER TABLE connections ADD COLUMN schedule_time TEXT",
+    ),
+    4: (
+        """
+        ALTER TABLE connections
+        ADD COLUMN full_local_reconciliation INTEGER NOT NULL DEFAULT 0
+        CHECK (full_local_reconciliation IN (0, 1))
+        """,
+        """
+        UPDATE connections
+        SET dest_template = '{remote_tree}'
+        WHERE dest_template =
+            '{client}\\{connection}\\{yyyy}\\{MM}\\{dd}\\{filename}'
+        """,
+        """
+        ALTER TABLE runs
+        ADD COLUMN scan_mode TEXT NOT NULL DEFAULT 'window'
+        CHECK (scan_mode IN ('window', 'full_local_reconciliation'))
+        """,
+        """
+        ALTER TABLE runs
+        ADD COLUMN phase TEXT NOT NULL DEFAULT 'finished'
+        """,
+        """
+        ALTER TABLE runs
+        ADD COLUMN files_planned INTEGER NOT NULL DEFAULT 0
+        """,
+        """
+        ALTER TABLE runs
+        ADD COLUMN planned_bytes INTEGER NOT NULL DEFAULT 0
+        """,
+        """
+        ALTER TABLE runs
+        ADD COLUMN files_discovery_skipped INTEGER NOT NULL DEFAULT 0
+        """,
+        """
+        ALTER TABLE run_files
+        ADD COLUMN identity_key TEXT NOT NULL DEFAULT ''
+        """,
+        "ALTER TABLE run_files ADD COLUMN plan_status TEXT",
+        """
+        ALTER TABLE run_files
+        ADD COLUMN reason TEXT NOT NULL DEFAULT ''
+        """,
+        "DROP INDEX IF EXISTS idx_file_identity",
+        """
+        CREATE INDEX idx_file_identity_lookup
+        ON run_files(
+            connection_id, remote_path, mtime_utc, size_bytes, status
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX idx_run_file_identity
+        ON run_files(run_id, identity_key)
+        WHERE identity_key <> ''
+        """,
+        """
+        CREATE INDEX idx_run_files_queue
+        ON run_files(run_id, status, id)
+        """,
+        """
+        CREATE TABLE destination_reservations (
+            connection_id INTEGER NOT NULL
+                REFERENCES connections(id) ON DELETE CASCADE,
+            mapping_scope TEXT NOT NULL,
+            remote_path TEXT NOT NULL,
+            candidate_key BLOB NOT NULL,
+            local_path TEXT NOT NULL,
+            local_key BLOB NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(
+                connection_id, mapping_scope, remote_path, candidate_key
+            ),
+            UNIQUE(local_key)
+        )
+        """,
+    ),
+    5: (
+        """
+        ALTER TABLE run_files
+        ADD COLUMN timestamp_reliable INTEGER NOT NULL DEFAULT 0
+        CHECK (timestamp_reliable IN (0, 1))
+        """,
+        """
+        ALTER TABLE run_files
+        ADD COLUMN timestamp_source TEXT NOT NULL DEFAULT ''
+        """,
     ),
 }
 
@@ -323,15 +412,18 @@ class RunRepository:
         window_start_utc: datetime,
         window_end_utc: datetime,
         started_at: datetime | None = None,
+        scan_mode: str = "window",
     ) -> int:
         started = started_at or datetime.now(timezone.utc)
+        if scan_mode not in {"window", "full_local_reconciliation"}:
+            raise ValueError(f"Modo de exploración no soportado: {scan_mode}.")
         with self.database.connect() as database:
             cursor = database.execute(
                 """
                 INSERT INTO runs(
                     connection_id, trigger, window_start_utc, window_end_utc,
-                    started_at, status
-                ) VALUES (?, ?, ?, ?, ?, 'running')
+                    started_at, status, scan_mode, phase
+                ) VALUES (?, ?, ?, ?, ?, 'running', ?, 'discovering')
                 """,
                 (
                     connection_id,
@@ -339,6 +431,7 @@ class RunRepository:
                     _aware_iso(window_start_utc),
                     _aware_iso(window_end_utc),
                     _aware_iso(started),
+                    scan_mode,
                 ),
             )
             return int(cursor.lastrowid)
@@ -350,14 +443,18 @@ class RunRepository:
         connection_id: int,
         remote_file: "RemoteFile",
         status: str = "pending",
+        local_path: str | None = None,
+        plan_status: str | None = None,
+        reason: str = "",
     ) -> int:
         with self.database.connect() as database:
             cursor = database.execute(
                 """
                 INSERT INTO run_files(
                     run_id, connection_id, remote_path, size_bytes,
-                    mtime_utc, status
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    mtime_utc, timestamp_reliable, timestamp_source,
+                    status, local_path, identity_key, plan_status, reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -369,10 +466,302 @@ class RunRepository:
                         if remote_file.mtime_utc is not None
                         else None
                     ),
+                    int(remote_file.timestamp_reliable),
+                    remote_file.timestamp_source,
                     status,
+                    local_path,
+                    _identity_key(remote_file),
+                    plan_status,
+                    reason,
                 ),
             )
             return int(cursor.lastrowid)
+
+    def add_file_batch(
+        self,
+        *,
+        run_id: int,
+        connection_id: int,
+        items: Sequence[
+            tuple[
+                "RemoteFile",
+                str,
+                str | None,
+                str,
+                str | None,
+                str | None,
+                str,
+            ]
+        ],
+    ) -> list[int | None]:
+        """Insert one discovery batch and return ids; duplicates return None."""
+        inserted: list[int | None] = []
+        with self.database.connect() as database:
+            pending_candidates = tuple(
+                dict.fromkeys(
+                    remote_file.remote_path
+                    for remote_file, status, *_ in items
+                    if status == "pending"
+                )
+            )
+            pending_paths: set[str] = set()
+            for offset in range(0, len(pending_candidates), 500):
+                path_batch = pending_candidates[offset : offset + 500]
+                placeholders = ", ".join("?" for _ in path_batch)
+                rows = database.execute(
+                    f"""
+                    SELECT remote_path
+                    FROM run_files
+                    WHERE run_id = ?
+                      AND status IN ('pending', 'downloading')
+                      AND remote_path IN ({placeholders})
+                    """,
+                    (run_id, *path_batch),
+                ).fetchall()
+                pending_paths.update(row["remote_path"] for row in rows)
+            for (
+                remote_file,
+                status,
+                plan_status,
+                reason,
+                local_path,
+                error_type,
+                error_msg,
+            ) in items:
+                if status == "pending" and remote_file.remote_path in pending_paths:
+                    inserted.append(None)
+                    continue
+                cursor = database.execute(
+                    """
+                    INSERT OR IGNORE INTO run_files(
+                        run_id, connection_id, remote_path, size_bytes,
+                        mtime_utc, timestamp_reliable, timestamp_source,
+                        status, local_path, identity_key, plan_status, reason,
+                        error_type, error_msg, finished_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        connection_id,
+                        remote_file.remote_path,
+                        remote_file.size_bytes,
+                        (
+                            remote_file.mtime_utc.isoformat(
+                                timespec="seconds"
+                            )
+                            if remote_file.mtime_utc is not None
+                            else None
+                        ),
+                        int(remote_file.timestamp_reliable),
+                        remote_file.timestamp_source,
+                        status,
+                        local_path,
+                        _identity_key(remote_file),
+                        plan_status,
+                        reason,
+                        error_type,
+                        redact_secrets(error_msg),
+                        utc_now_iso() if status == "failed" else None,
+                    ),
+                )
+                inserted.append(
+                    int(cursor.lastrowid) if cursor.rowcount == 1 else None
+                )
+                if status == "pending" and cursor.rowcount == 1:
+                    pending_paths.add(remote_file.remote_path)
+        return inserted
+
+    def successful_identities_for(
+        self,
+        connection_id: int,
+        remote_files: Sequence["RemoteFile"],
+    ) -> set[tuple[str, str | None, int | None]]:
+        """Load successful identities only for one bounded discovery batch."""
+        paths = tuple(dict.fromkeys(item.remote_path for item in remote_files))
+        if not paths:
+            return set()
+        placeholders = ", ".join("?" for _ in paths)
+        with self.database.connect() as database:
+            rows = database.execute(
+                f"""
+                SELECT remote_path, mtime_utc, size_bytes
+                FROM run_files
+                WHERE connection_id = ? AND status = 'ok'
+                  AND remote_path IN ({placeholders})
+                """,
+                (connection_id, *paths),
+            ).fetchall()
+        return {
+            (
+                row["remote_path"],
+                _canonical_timestamp(row["mtime_utc"]),
+                row["size_bytes"],
+            )
+            for row in rows
+        }
+
+    def reserve_destination(
+        self,
+        *,
+        connection_id: int,
+        mapping_scope: str,
+        remote_path: str,
+        candidate: Path,
+    ) -> Path:
+        """Reserve a stable collision-free local path across runs."""
+        reserved = self.reserve_destinations(
+            connection_id=connection_id,
+            mapping_scope=mapping_scope,
+            candidates=((remote_path, candidate),),
+        )[0]
+        if isinstance(reserved, RecolectaError):
+            raise reserved
+        return reserved
+
+    def reserve_destinations(
+        self,
+        *,
+        connection_id: int,
+        mapping_scope: str,
+        candidates: Sequence[tuple[str, Path]],
+    ) -> list[Path | RecolectaError]:
+        """Reserve one bounded mapping batch in a single transaction."""
+        reserved: list[Path | RecolectaError] = []
+        with self.database.connect() as database:
+            for remote_path, candidate in candidates:
+                candidate_key = local_path_key(candidate)
+                existing = database.execute(
+                    """
+                    SELECT local_path
+                    FROM destination_reservations
+                    WHERE connection_id = ? AND mapping_scope = ?
+                      AND remote_path = ? AND candidate_key = ?
+                    """,
+                    (
+                        connection_id,
+                        mapping_scope,
+                        remote_path,
+                        candidate_key,
+                    ),
+                ).fetchone()
+                if existing is not None:
+                    reserved.append(Path(existing["local_path"]))
+                    continue
+
+                selected = candidate
+                suffix = hashlib.sha256(
+                    remote_path.encode("utf-8", errors="surrogatepass")
+                ).hexdigest()[:10]
+                counter = 1
+                while True:
+                    try:
+                        database.execute(
+                            """
+                            INSERT INTO destination_reservations(
+                                connection_id, mapping_scope, remote_path,
+                                candidate_key, local_path, local_key, created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                connection_id,
+                                mapping_scope,
+                                remote_path,
+                                candidate_key,
+                                str(selected),
+                                local_path_key(selected),
+                                utc_now_iso(),
+                            ),
+                        )
+                        reserved.append(selected)
+                        break
+                    except sqlite3.IntegrityError:
+                        owner = database.execute(
+                            """
+                            SELECT connection_id, remote_path, local_path
+                            FROM destination_reservations
+                            WHERE local_key = ?
+                            """,
+                            (local_path_key(selected),),
+                        ).fetchone()
+                        if (
+                            owner is not None
+                            and int(owner["connection_id"]) == connection_id
+                            and owner["remote_path"] == remote_path
+                        ):
+                            reserved.append(Path(owner["local_path"]))
+                            break
+                        if owner is None:
+                            raise
+                        marker = f"__{suffix}"
+                        if counter > 1:
+                            marker += f"_{counter}"
+                        try:
+                            selected = collision_path(candidate, marker)
+                        except RecolectaError as exc:
+                            reserved.append(exc)
+                            break
+                        counter += 1
+        return reserved
+
+    def update_discovery(
+        self,
+        run_id: int,
+        *,
+        files_found: int,
+        files_planned: int,
+        planned_bytes: int,
+        files_skipped: int,
+        phase: str = "downloading",
+    ) -> None:
+        with self.database.connect() as database:
+            cursor = database.execute(
+                """
+                UPDATE runs
+                SET files_found = ?, files_planned = ?, planned_bytes = ?,
+                    files_discovery_skipped = ?, phase = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (
+                    max(0, files_found),
+                    max(0, files_planned),
+                    max(0, planned_bytes),
+                    max(0, files_skipped),
+                    phase,
+                    run_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"No existe la corrida activa {run_id}.")
+
+    def claim_pending_batch(
+        self, run_id: int, *, limit: int
+    ) -> list[dict[str, Any]]:
+        """Atomically claim a bounded queue batch for download workers."""
+        bounded = max(1, min(int(limit), 5000))
+        with self.database.connect() as database:
+            rows = database.execute(
+                """
+                WITH selected AS (
+                    SELECT id
+                    FROM run_files
+                    WHERE run_id = ? AND status = 'pending'
+                    ORDER BY id
+                    LIMIT ?
+                )
+                UPDATE run_files
+                SET status = 'downloading',
+                    started_at = COALESCE(started_at, ?)
+                WHERE status = 'pending'
+                  AND id IN (SELECT id FROM selected)
+                RETURNING id, remote_path, size_bytes, mtime_utc,
+                          timestamp_reliable, timestamp_source, local_path
+                """,
+                (run_id, bounded, utc_now_iso()),
+            ).fetchall()
+        return sorted(
+            (dict(row) for row in rows),
+            key=lambda row: int(row["id"]),
+        )
 
     def mark_downloading(
         self, run_file_id: int, *, attempts: int, bytes_done: int
@@ -405,39 +794,72 @@ class RunRepository:
     def record_download_outcome(
         self, run_file_id: int, outcome: "DownloadOutcome"
     ) -> None:
-        status_value = outcome.status.value
-        persisted_status = "pending" if status_value == "cancelled" else status_value
-        finished_at = None if status_value == "cancelled" else utc_now_iso()
+        self.record_download_outcomes_batch(((run_file_id, outcome),))
+
+    def record_download_outcomes_batch(
+        self,
+        items: Sequence[tuple[int, "DownloadOutcome"]],
+    ) -> None:
+        """Persist a completed worker batch with one SQLite commit."""
+        if not items:
+            return
         with self.database.connect() as database:
-            cursor = database.execute(
+            for run_file_id, outcome in items:
+                status_value = outcome.status.value
+                cursor = database.execute(
+                    """
+                    UPDATE run_files
+                    SET local_path = ?, size_bytes = ?, bytes_done = ?,
+                        sha256 = ?, status = ?, attempts = ?,
+                        error_type = ?, error_msg = ?, finished_at = ?,
+                        duration_s = ?, average_bps = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        (
+                            str(outcome.local_path)
+                            if outcome.local_path
+                            else None
+                        ),
+                        outcome.remote_file.size_bytes,
+                        outcome.bytes_done,
+                        outcome.sha256,
+                        status_value,
+                        outcome.attempts,
+                        (
+                            outcome.error_type.value
+                            if outcome.error_type
+                            else None
+                        ),
+                        redact_secrets(outcome.error_msg),
+                        utc_now_iso(),
+                        outcome.duration_s,
+                        (
+                            outcome.bytes_done / outcome.duration_s
+                            if outcome.duration_s > 0
+                            else 0.0
+                        ),
+                        run_file_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise KeyError(
+                        f"No existe el archivo de corrida {run_file_id}."
+                    )
+
+    def cancel_unfinished(self, run_id: int) -> int:
+        """Mark queued work as cancelled when an operator stops a run."""
+        with self.database.connect() as database:
+            return database.execute(
                 """
                 UPDATE run_files
-                SET local_path = ?, size_bytes = ?, bytes_done = ?, sha256 = ?,
-                    status = ?, attempts = ?, error_type = ?, error_msg = ?,
-                    finished_at = ?, duration_s = ?, average_bps = ?
-                WHERE id = ?
+                SET status = 'cancelled', error_type = 'interrupted',
+                    error_msg = 'La corrida fue cancelada por el usuario.',
+                    finished_at = ?
+                WHERE run_id = ? AND status IN ('pending', 'downloading')
                 """,
-                (
-                    str(outcome.local_path) if outcome.local_path else None,
-                    outcome.remote_file.size_bytes,
-                    outcome.bytes_done,
-                    outcome.sha256,
-                    persisted_status,
-                    outcome.attempts,
-                    outcome.error_type.value if outcome.error_type else None,
-                    redact_secrets(outcome.error_msg),
-                    finished_at,
-                    outcome.duration_s,
-                    (
-                        outcome.bytes_done / outcome.duration_s
-                        if outcome.duration_s > 0
-                        else 0.0
-                    ),
-                    run_file_id,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise KeyError(f"No existe el archivo de corrida {run_file_id}.")
+                (utc_now_iso(), run_id),
+            ).rowcount
 
     def finish_run(
         self,
@@ -451,11 +873,23 @@ class RunRepository:
             counts = database.execute(
                 """
                 SELECT
-                    COUNT(*) AS files_found,
+                    COUNT(*) AS persisted_files,
                     SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END)
                         AS files_downloaded,
-                    SUM(CASE WHEN status IN ('skipped', 'duplicate') THEN 1 ELSE 0 END)
-                        AS files_skipped,
+                    SUM(
+                        CASE
+                            WHEN status IN ('skipped', 'duplicate')
+                             AND (
+                                plan_status IS NULL
+                                OR plan_status IN (
+                                    'planned',
+                                    'local_missing',
+                                    'local_different'
+                                )
+                             )
+                            THEN 1 ELSE 0
+                        END
+                    ) AS runtime_skipped,
                     SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)
                         AS files_failed,
                     SUM(CASE WHEN status = 'ok' THEN bytes_done ELSE 0 END)
@@ -465,20 +899,39 @@ class RunRepository:
                 """,
                 (run_id,),
             ).fetchone()
+            discovery = database.execute(
+                """
+                SELECT files_found, files_discovery_skipped
+                FROM runs
+                WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if discovery is None:
+                raise KeyError(f"No existe la corrida {run_id}.")
+            files_found = max(
+                int(discovery["files_found"] or 0),
+                int(counts["persisted_files"] or 0),
+            )
+            files_skipped = (
+                int(discovery["files_discovery_skipped"] or 0)
+                + int(counts["runtime_skipped"] or 0)
+            )
             cursor = database.execute(
                 """
                 UPDATE runs
                 SET finished_at = ?, status = ?, files_found = ?,
                     files_downloaded = ?, files_skipped = ?, files_failed = ?,
-                    bytes_downloaded = ?, error_type = ?, error_msg = ?
+                    bytes_downloaded = ?, error_type = ?, error_msg = ?,
+                    phase = 'finished'
                 WHERE id = ?
                 """,
                 (
                     utc_now_iso(),
                     status,
-                    counts["files_found"] or 0,
+                    files_found,
                     counts["files_downloaded"] or 0,
-                    counts["files_skipped"] or 0,
+                    files_skipped,
                     counts["files_failed"] or 0,
                     counts["bytes_downloaded"] or 0,
                     error_type,
@@ -528,24 +981,64 @@ class RunRepository:
         )
 
     def recover_interrupted(self) -> tuple[int, int]:
-        """Fail orphaned running runs and return downloading files to pending."""
+        """Terminalize orphaned runs; a new run can reuse deterministic parts."""
         now = utc_now_iso()
         with self.database.connect() as database:
             files = database.execute(
                 """
                 UPDATE run_files
-                SET status = 'pending', error_type = 'interrupted',
-                    error_msg = 'La aplicación se reinició durante la descarga.'
-                WHERE status = 'downloading'
+                SET status = 'failed', error_type = 'interrupted',
+                    error_msg = 'La aplicación se reinició durante la descarga.',
+                    finished_at = ?
+                WHERE status IN ('pending', 'downloading')
                   AND run_id IN (SELECT id FROM runs WHERE status = 'running')
-                """
+                """,
+                (now,),
             ).rowcount
             runs = database.execute(
                 """
                 UPDATE runs
                 SET status = 'failed', finished_at = ?,
                     error_type = 'interrupted',
-                    error_msg = 'La aplicación se reinició durante la corrida.'
+                    error_msg = 'La aplicación se reinició durante la corrida.',
+                    phase = 'finished',
+                    files_found = MAX(
+                        files_found,
+                        (
+                            SELECT COUNT(*)
+                            FROM run_files f
+                            WHERE f.run_id = runs.id
+                        )
+                    ),
+                    files_downloaded = (
+                        SELECT COUNT(*)
+                        FROM run_files f
+                        WHERE f.run_id = runs.id AND f.status = 'ok'
+                    ),
+                    files_skipped = files_discovery_skipped + (
+                        SELECT COUNT(*)
+                        FROM run_files f
+                        WHERE f.run_id = runs.id
+                          AND f.status IN ('skipped', 'duplicate')
+                          AND (
+                            f.plan_status IS NULL
+                            OR f.plan_status IN (
+                                'planned',
+                                'local_missing',
+                                'local_different'
+                            )
+                          )
+                    ),
+                    files_failed = (
+                        SELECT COUNT(*)
+                        FROM run_files f
+                        WHERE f.run_id = runs.id AND f.status = 'failed'
+                    ),
+                    bytes_downloaded = (
+                        SELECT COALESCE(SUM(f.bytes_done), 0)
+                        FROM run_files f
+                        WHERE f.run_id = runs.id AND f.status = 'ok'
+                    )
                 WHERE status = 'running'
                 """,
                 (now,),
@@ -752,6 +1245,9 @@ def _connection_db_values(
         "schedule_time": connection.schedule_time,
         "dest_root": connection.dest_root,
         "dest_template": connection.dest_template,
+        "full_local_reconciliation": int(
+            connection.full_local_reconciliation
+        ),
         "on_conflict": connection.on_conflict.value,
         "verify_mode": connection.verify_mode.value,
         "max_parallel_files": connection.max_parallel_files,
@@ -794,6 +1290,9 @@ def _connection_from_row(row: sqlite3.Row) -> Connection:
         schedule_time=row["schedule_time"],
         dest_root=row["dest_root"],
         dest_template=row["dest_template"],
+        full_local_reconciliation=bool(
+            row["full_local_reconciliation"]
+        ),
         on_conflict=ConflictMode(row["on_conflict"]),
         verify_mode=VerifyMode(row["verify_mode"]),
         max_parallel_files=int(row["max_parallel_files"]),
@@ -821,3 +1320,30 @@ def _parse_datetime(value: str) -> datetime:
     if parsed.tzinfo is None:
         raise ValueError("Timestamp persistido sin zona horaria.")
     return parsed.astimezone(timezone.utc)
+
+
+def _identity_key(remote_file: "RemoteFile") -> str:
+    timestamp = (
+        remote_file.mtime_utc.isoformat(timespec="seconds")
+        if remote_file.mtime_utc is not None
+        else ""
+    )
+    material = "\x1f".join(
+        (
+            remote_file.remote_path,
+            timestamp,
+            "" if remote_file.size_bytes is None else str(remote_file.size_bytes),
+        )
+    )
+    return hashlib.sha256(
+        material.encode("utf-8", errors="surrogatepass")
+    ).hexdigest()
+
+
+def _canonical_timestamp(value: str | None) -> str | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")

@@ -187,6 +187,31 @@ def test_catchup_finds_only_windows_without_success(
     ]
 
 
+def test_full_reconciliation_collapses_catchup_to_latest_scan(
+    scheduler_data,
+) -> None:
+    _, connections, runs, saved = scheduler_data
+    connections.update(
+        saved.id,
+        {"full_local_reconciliation": True},
+    )
+
+    candidates = CatchUpPlanner(runs).candidates(
+        connections.list(enabled_only=True),
+        now=datetime(2026, 7, 27, 8, tzinfo=timezone.utc),
+        settings=SchedulerSettings(
+            hour=2,
+            minute=0,
+            catchup_max_days=5,
+            startup_delay_s=0,
+        ),
+    )
+
+    assert [candidate.scheduled_for_utc for candidate in candidates] == [
+        datetime(2026, 7, 27, 7, tzinfo=timezone.utc)
+    ]
+
+
 def test_scheduler_executes_catchup_oldest_first_and_applies_delay(
     scheduler_data,
 ) -> None:

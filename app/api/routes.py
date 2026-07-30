@@ -539,7 +539,15 @@ def create_router(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         result = enrich_run(run)
-        result["files"] = _all_files(runs, run_id=run_id)
+        files = [
+            enrich_file(row)
+            for row in runs.list_files(run_id=run_id, limit=500)
+        ]
+        result["files"] = files
+        result["files_returned"] = len(files)
+        result["files_truncated"] = int(run.get("files_found") or 0) > len(
+            files
+        )
         return result
 
     @router.get("/api/files")
@@ -840,7 +848,11 @@ def _plan_response(plan: DryRunPlan) -> dict[str, object]:
         "connection_id": plan.connection_id,
         "window_start_utc": plan.window.start_utc.isoformat(),
         "window_end_utc": plan.window.end_utc.isoformat(),
-        "files_to_download": len(plan.files_to_download),
+        "files_found": plan.files_found_count,
+        "files_to_download": plan.files_to_download_count,
+        "planned_bytes": plan.planned_bytes,
+        "scan_mode": plan.scan_mode,
+        "items_truncated": plan.items_truncated,
         "is_partial": plan.is_partial,
         "warnings": list(plan.warnings),
         "counters": plan.counters,

@@ -2,6 +2,7 @@ from dataclasses import replace
 
 import pytest
 
+from app.api.schemas import ConnectionCreate, ConnectionPatch
 from app.models import (
     AuthType,
     Connection,
@@ -84,6 +85,7 @@ def test_public_serialization_contains_no_secret_material() -> None:
         valid_connection().normalized(),
         id=7,
         has_secret=True,
+        full_local_reconciliation=True,
     )
     public = connection.to_public_dict()
     assert public["has_secret"] is True
@@ -91,3 +93,45 @@ def test_public_serialization_contains_no_secret_material() -> None:
     assert "secret_encrypted" not in public
     assert public["protocol"] == "SFTP"
     assert public["window_mode"] == WindowMode.CALENDAR_DAY.value
+    assert public["full_local_reconciliation"] is True
+
+
+def test_full_local_reconciliation_is_mutable_and_defaults_to_remote_tree() -> None:
+    connection = valid_connection().normalized()
+
+    updated = connection.with_changes({"full_local_reconciliation": True})
+
+    assert connection.full_local_reconciliation is False
+    assert connection.dest_template == r"{remote_tree}"
+    assert updated.full_local_reconciliation is True
+    assert ConnectionCreate(name="Nueva", host="example.test").model_dump()[
+        "dest_template"
+    ] == r"{remote_tree}"
+    assert ConnectionCreate(name="Nueva", host="example.test").model_dump()[
+        "full_local_reconciliation"
+    ] is False
+    assert ConnectionPatch(
+        full_local_reconciliation=True
+    ).model_dump(exclude_unset=True) == {
+        "full_local_reconciliation": True
+    }
+
+
+@pytest.mark.parametrize(
+    "template",
+    (
+        r"{run_id}\{remote_tree}",
+        r"{run_id!s}\{remote_tree}",
+        r"{run_id:05d}\{remote_tree}",
+        r"{filename:{run_id}}\{remote_tree}",
+    ),
+)
+def test_full_local_reconciliation_rejects_run_specific_destination(
+    template: str,
+) -> None:
+    with pytest.raises(ValueError, match="no admite \\{run_id\\}"):
+        replace(
+            valid_connection(),
+            full_local_reconciliation=True,
+            dest_template=template,
+        ).normalized()

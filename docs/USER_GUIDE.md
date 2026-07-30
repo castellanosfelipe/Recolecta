@@ -76,13 +76,14 @@ ejecute primero `.\uninstall.ps1` y luego el instalador elegido.
 5. Escriba servidor, puerto, usuario y secreto. Si omite el puerto se usa el
    estándar del protocolo.
 6. Indique una ruta remota por línea. Active recursividad solo si necesita
-   subcarpetas y fije una profundidad razonable.
+   subcarpetas y fije una profundidad razonable para las corridas por ventana.
 7. Elija la zona IANA, por ejemplo `America/Bogota`, y una ventana:
    día calendario anterior, últimas N horas o desde la última corrida correcta.
    Si esa conexión debe ejecutarse a una hora distinta, complete **Hora
    diaria**; si queda vacía, usa la hora global de **Ajustes**.
 8. Seleccione un destino local. En producción prefiera una ruta absoluta en
-   un volumen con espacio suficiente.
+   un volumen con espacio suficiente. La plantilla predeterminada
+   `{remote_tree}` conserva allí la misma jerarquía de carpetas del remoto.
 9. Configure filtros, conflicto (`skip`, `overwrite` o `keep_both`),
    verificación por tamaño o SHA-256, paralelismo y límites de ancho de banda.
 10. Pulse **Probar conexión y rutas**. Recolecta autentica, comprueba cada
@@ -91,10 +92,70 @@ ejecute primero `.\uninstall.ps1` y luego el instalador elegido.
 12. Ejecute primero un **dry-run**; después active la conexión y lance una
     corrida real.
 
-El dry-run lista metadatos, usa la misma ventana y filtros de la descarga, y no
-abre archivos para lectura. Una corrida real escribe primero en
-`<destino>\.staging`; solo publica el archivo final después de validar
-integridad.
+La prueba de conexión recorre cada raíz por separado, incluso si una anterior
+contiene millones de entradas. Solo lee metadatos del primer nivel y toma una
+muestra máxima de 100 archivos por raíz; nunca abre ni descarga su contenido.
+En la respuesta, `remote_files_found` es el tamaño de la muestra de las raíces
+de origen (no incluye una carpeta configurada solo para movimiento). El campo
+`remote_files_found_is_exact` solo vale `true` cuando todas esas raíces se
+agotaron dentro del límite. Si hay más entradas, la prueba cierra el listado,
+continúa con la siguiente raíz y muestra una advertencia que aclara que el
+conteo fue truncado. Una raíz accesible pero vacía sigue siendo válida.
+
+El dry-run lista metadatos, usa el mismo modo y filtros de la descarga, y no
+abre archivos para lectura. En orígenes grandes muestra hasta 500 elementos,
+pero también informa los totales reales y que la lista visible fue truncada.
+Una corrida real escribe primero en
+`<destino>\.staging\<2-hex>\<uuid>.part`; el prefijo reparte los parciales
+entre shards para que un único directorio no acumule millones de entradas.
+Solo publica el archivo final después de validar integridad. Instalaciones
+anteriores pueden conservar el formato plano `.staging\<uuid>.part`:
+Recolecta lo migra después de comprobar espacio y, si Windows impide moverlo,
+lo reutiliza en su ubicación original sin perder la reanudación.
+
+### Árbol remoto y contenido de los documentos
+
+`{remote_tree}` conserva todos los componentes de la ruta remota bajo el
+destino elegido. Por ejemplo, `/entrada/2026/07/factura.pdf` se guarda como
+`<destino>\entrada\2026\07\factura.pdf`. Para SMB, el árbol comienza en el
+recurso compartido. Si dos nombres saneados para Windows colisionan, Recolecta
+reserva destinos distintos y estables; no deja que el último sobrescriba al
+primero.
+
+La transferencia es binaria de extremo a extremo. Recolecta no interpreta el
+archivo como texto, no cambia su codificación ni sus saltos de línea y no
+recomprime documentos. La validación por tamaño o SHA-256 se aplica sobre los
+mismos bytes que se publican en el destino.
+
+Un parcial solo se reanuda cuando tamaño y fecha confiable identifican la
+misma versión remota. Si el servidor no informa tamaño, Recolecta reserva
+64 MiB por worker activo, comprueba el espacio durante la transferencia y
+reinicia ese archivo desde cero. WebDAV procesa el contenido HTTP crudo, sin
+descompresión automática.
+
+### Comparación completa con carpeta local
+
+Active **Comparación completa con carpeta local** desde las acciones de la
+conexión o en su editor cuando quiera reparar o completar un espejo local. El
+checkbox queda guardado para las siguientes ejecuciones de esa conexión.
+
+Con el modo activo, Recolecta:
+
+- recorre recursivamente todo el árbol bajo las raíces remotas;
+- ignora la ventana temporal y el historial de descargas correctas;
+- conserva filtros de inclusión/exclusión, tamaños, quiet period y no sigue
+  symlinks;
+- descarga un archivo si falta localmente o si su tamaño/fecha remota no
+  coincide, y omite el que ya es equivalente;
+- nunca elimina, mueve ni modifica archivos locales extra que no existan en
+  el remoto.
+
+La comparación es unidireccional, de remoto a local. Desactive el checkbox
+para volver al comportamiento normal por ventana y deduplicación histórica.
+Antes de una reconciliación de millones de documentos, ejecute un dry-run,
+confirme el total y los bytes planificados y revise el espacio libre.
+No use `{run_id}` ni sus variantes en la plantilla de este modo: Recolecta las
+rechaza porque impedirían comparar el mismo archivo entre corridas.
 
 ## Importar conexiones desde StabilityMonitor
 
@@ -158,6 +219,21 @@ disponible para reanudar. APScheduler conserva un job y una hora por conexión;
 el catch-up usa esa misma hora y recupera ventanas perdidas después de un
 apagado o suspensión.
 
+En cada arranque se revisa una sola vez el staging de cada destino configurado,
+sin seguir enlaces simbólicos. Los `.part` vacíos se eliminan de inmediato;
+los que contienen datos se conservan durante al menos siete días y siempre
+más que el horizonte de `catchup.max_days`. Los parciales activos o recientes
+y cualquier archivo que no termine en `.part` se preservan. Una ruta sin
+acceso se registra como advertencia y no impide abrir la aplicación.
+
+Durante un listado grande puede verse la fase **Descubriendo** antes de
+**Descargando**. Recolecta persiste todos los archivos que requieren acción
+en la cola SQLite y conserva hasta 500 decisiones omitidas como muestra; los
+totales exactos permanecen en la corrida. En memoria mantiene solo archivos
+activos y contadores agregados. El indicador de truncamiento distingue la
+muestra del total. La descarga procesa toda la cola accionable, no solo las
+filas visibles.
+
 ## Logs, exports y soporte
 
 - `logs\app.log`: ciclo de vida, scheduler y errores generales.
@@ -165,6 +241,10 @@ apagado o suspensión.
   progreso cada 10 %.
 - `exports\`: CSV, HTML y bundles ZIP generados.
 - `data\recolecta.db`: configuración, agenda e historial.
+
+`run_files` contiene toda la cola accionable y una muestra acotada de las
+decisiones omitidas. No edite ni elimine filas manualmente mientras Recolecta
+está activo.
 
 En **Ajustes → Descargar bundle** se genera un ZIP con logs, CSV, reporte HTML
 y configuración pública sin secretos. La retención predeterminada es de 180
@@ -215,10 +295,16 @@ respaldarlos y confirmar que ya no se necesitan.
    ciegas.
 7. **No aparecen archivos.** Revise zona horaria, ventana, quiet period,
    filtros glob, tamaño mínimo/máximo, ruta remota y el resultado del dry-run.
+   Para buscar ausentes o distintos sin importar su antigüedad, active
+   **Comparación completa con carpeta local**.
 8. **`disk_space`.** Libere el tamaño planificado más la reserva configurada o
    cambie el destino. El motor no crea staging si el pre-flight falla.
 9. **Queda un `.part`.** Es normal tras cancelación o caída de red. No lo
    renombre; la siguiente corrida de la misma identidad intentará reanudarlo.
+   Puede estar bajo `.staging\<2-hex>\`. Solo un parcial vacío se limpia de
+   inmediato; uno con datos respeta la retención de arranque. Si falta una
+   fecha remota confiable o el tamaño, se reinicia porque no puede demostrarse
+   que pertenezca a la misma versión.
 10. **La conexión se movió a otro equipo y el secreto ya no abre.** DPAPI está
     ligado al equipo y, en modo usuario, también a la cuenta. Reingrese todas
     las credenciales en el nuevo host.

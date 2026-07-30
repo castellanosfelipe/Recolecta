@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import timezone
 from email.utils import parsedate_to_datetime
+import re
 from typing import BinaryIO, Callable
 from urllib.parse import quote, unquote, urlsplit
 from xml.etree import ElementTree
@@ -12,7 +14,12 @@ from xml.etree import ElementTree
 import httpx
 
 from app.models import Connection, Protocol
-from app.transports.base import ListingResult, RemoteFile, TransferResult, Transport
+from app.transports.base import (
+    DirectoryWorkQueue,
+    RemoteFile,
+    TransferResult,
+    Transport,
+)
 
 
 _PROPFIND_BODY = b"""<?xml version="1.0" encoding="utf-8"?>
@@ -23,6 +30,10 @@ _PROPFIND_BODY = b"""<?xml version="1.0" encoding="utf-8"?>
     <d:getlastmodified/>
   </d:prop>
 </d:propfind>"""
+_CONTENT_RANGE = re.compile(
+    r"^bytes\s+(?P<start>\d+)-(?P<end>\d+)/(?P<total>\d+|\*)$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -87,25 +98,41 @@ class WebDavTransport(Transport):
         if client is not None and self._owns_client:
             client.close()
 
-    def list_files(
+    def iter_files(
         self,
         remote_paths: tuple[str, ...],
         *,
         recursive: bool,
         max_depth: int,
-    ) -> ListingResult:
-        files: list[RemoteFile] = []
-        visited: set[str] = set()
-        for root in remote_paths:
-            self._walk(
-                _normalize_path(root),
-                recursive=recursive,
-                max_depth=max_depth,
-                depth=0,
-                visited=visited,
-                output=files,
-            )
-        return ListingResult(tuple(files))
+    ) -> Iterator[RemoteFile]:
+        self._reset_listing_warnings()
+        return self._iter_roots(
+            remote_paths,
+            recursive=recursive,
+            max_depth=max_depth,
+        )
+
+    def _iter_roots(
+        self,
+        remote_paths: tuple[str, ...],
+        *,
+        recursive: bool,
+        max_depth: int,
+    ) -> Iterator[RemoteFile]:
+        roots = ((_normalize_path(root), 0) for root in remote_paths)
+        with DirectoryWorkQueue(roots) as directories:
+            while True:
+                work = directories.pop()
+                if work is None:
+                    return
+                path, depth = work
+                yield from self._walk(
+                    path,
+                    recursive=recursive,
+                    max_depth=max_depth,
+                    depth=depth,
+                    directories=directories,
+                )
 
     def stat(self, remote_path: str) -> RemoteFile:
         path = _normalize_path(remote_path)
@@ -127,16 +154,24 @@ class WebDavTransport(Transport):
     ) -> TransferResult:
         client = self._require_client()
         path = _normalize_path(remote_path)
-        headers = {"Range": f"bytes={offset}-"} if offset else {}
+        headers = {"Accept-Encoding": "identity"}
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
         bytes_received = 0
         resumed_from = offset
         resume_supported = True
         with client.stream("GET", self._url(path), headers=headers) as response:
             if offset and response.status_code == 206:
                 content_range = response.headers.get("Content-Range", "")
-                if content_range and not content_range.startswith(f"bytes {offset}-"):
+                match = _CONTENT_RANGE.fullmatch(content_range.strip())
+                if (
+                    match is None
+                    or int(match.group("start")) != offset
+                    or int(match.group("end")) < offset
+                ):
                     raise RuntimeError(
-                        "WebDAV devolvió un Content-Range distinto del solicitado."
+                        "WebDAV no confirmó el rango exacto solicitado; "
+                        "el parcial no se modificó."
                     )
             elif offset and response.status_code == 200:
                 target.seek(0)
@@ -146,7 +181,7 @@ class WebDavTransport(Transport):
                 resume_supported = False
             else:
                 response.raise_for_status()
-            for chunk in response.iter_bytes(block_size):
+            for chunk in response.iter_raw(block_size):
                 if not chunk:
                     continue
                 on_chunk(chunk)
@@ -165,87 +200,60 @@ class WebDavTransport(Transport):
         recursive: bool,
         max_depth: int,
         depth: int,
-        visited: set[str],
-        output: list[RemoteFile],
-    ) -> None:
-        if path in visited:
-            return
-        visited.add(path)
+        directories: DirectoryWorkQueue,
+    ) -> Iterator[RemoteFile]:
         entries = self._propfind(path, depth="1")
         for entry in entries:
             if _same_resource(entry.path, path):
                 if not entry.is_directory and entry.file is not None:
-                    output.append(entry.file)
+                    yield entry.file
                 continue
             if entry.is_directory:
                 if recursive and depth < max_depth:
-                    self._walk(
-                        entry.path,
-                        recursive=recursive,
-                        max_depth=max_depth,
-                        depth=depth + 1,
-                        visited=visited,
-                        output=output,
-                    )
+                    directories.add(entry.path, depth + 1)
             elif entry.file is not None:
-                output.append(entry.file)
+                yield entry.file
 
-    def _propfind(self, path: str, *, depth: str) -> tuple[_DavEntry, ...]:
+    def _propfind(
+        self,
+        path: str,
+        *,
+        depth: str,
+    ) -> Iterator[_DavEntry]:
         client = self._require_client()
-        response = client.request(
+        with client.stream(
             "PROPFIND",
             self._url(path),
-            headers={"Depth": depth, "Content-Type": "application/xml; charset=utf-8"},
+            headers={
+                "Depth": depth,
+                "Content-Type": "application/xml; charset=utf-8",
+            },
             content=_PROPFIND_BODY,
-        )
-        if response.status_code != 207:
-            response.raise_for_status()
-            raise RuntimeError(
-                f"WebDAV devolvió HTTP {response.status_code}; se esperaba 207."
-            )
-        root = ElementTree.fromstring(response.content)
-        entries: list[_DavEntry] = []
-        for response_node in root.findall(".//{DAV:}response"):
-            href_node = response_node.find("{DAV:}href")
-            if href_node is None or not href_node.text:
-                continue
-            remote_path = _normalize_path(
-                unquote(urlsplit(href_node.text).path)
-            )
-            prop = response_node.find(".//{DAV:}prop")
-            if prop is None:
-                continue
-            resource_type = prop.find("{DAV:}resourcetype")
-            is_directory = (
-                resource_type is not None
-                and resource_type.find("{DAV:}collection") is not None
-            )
-            if is_directory:
-                entries.append(_DavEntry(remote_path, True, None))
-                continue
-            size_node = prop.find("{DAV:}getcontentlength")
-            modified_node = prop.find("{DAV:}getlastmodified")
-            size = _optional_int(size_node.text if size_node is not None else None)
-            modified = None
-            if modified_node is not None and modified_node.text:
-                modified = parsedate_to_datetime(modified_node.text)
-                if modified.tzinfo is None:
-                    modified = modified.replace(tzinfo=timezone.utc)
-                modified = modified.astimezone(timezone.utc)
-            entries.append(
-                _DavEntry(
-                    remote_path,
-                    False,
-                    RemoteFile(
-                        remote_path,
-                        size,
-                        modified,
-                        timestamp_reliable=modified is not None,
-                        timestamp_source="getlastmodified",
-                    ),
+        ) as response:
+            if response.status_code != 207:
+                response.raise_for_status()
+                raise RuntimeError(
+                    f"WebDAV devolvió HTTP {response.status_code}; se esperaba 207."
                 )
-            )
-        return tuple(entries)
+            parser = ElementTree.XMLPullParser(events=("start", "end"))
+            document_root = None
+            for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                parser.feed(chunk)
+                for event, node in parser.read_events():
+                    if event == "start" and document_root is None:
+                        document_root = node
+                        continue
+                    if event != "end" or node.tag != "{DAV:}response":
+                        continue
+                    entry = _dav_entry(node)
+                    if document_root is not None:
+                        try:
+                            document_root.remove(node)
+                        except ValueError:
+                            pass
+                    node.clear()
+                    if entry is not None:
+                        yield entry
 
     def _url(self, path: str) -> str:
         return self._base_url + quote(path, safe="/")
@@ -254,6 +262,47 @@ class WebDavTransport(Transport):
         if self._client is None:
             raise RuntimeError("La sesión WebDAV no está conectada.")
         return self._client
+
+
+def _dav_entry(response_node: ElementTree.Element) -> _DavEntry | None:
+    href_node = response_node.find("{DAV:}href")
+    if href_node is None or not href_node.text:
+        return None
+    remote_path = _normalize_path(
+        unquote(urlsplit(href_node.text).path)
+    )
+    prop = response_node.find(".//{DAV:}prop")
+    if prop is None:
+        return None
+    resource_type = prop.find("{DAV:}resourcetype")
+    is_directory = (
+        resource_type is not None
+        and resource_type.find("{DAV:}collection") is not None
+    )
+    if is_directory:
+        return _DavEntry(remote_path, True, None)
+    size_node = prop.find("{DAV:}getcontentlength")
+    modified_node = prop.find("{DAV:}getlastmodified")
+    size = _optional_int(
+        size_node.text if size_node is not None else None
+    )
+    modified = None
+    if modified_node is not None and modified_node.text:
+        modified = parsedate_to_datetime(modified_node.text)
+        if modified.tzinfo is None:
+            modified = modified.replace(tzinfo=timezone.utc)
+        modified = modified.astimezone(timezone.utc)
+    return _DavEntry(
+        remote_path,
+        False,
+        RemoteFile(
+            remote_path,
+            size,
+            modified,
+            timestamp_reliable=modified is not None,
+            timestamp_source="getlastmodified",
+        ),
+    )
 
 
 def _normalize_path(value: str) -> str:

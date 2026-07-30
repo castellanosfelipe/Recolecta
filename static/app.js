@@ -379,6 +379,10 @@
         <td>${item.has_secret ? "Configurada" : "Sin secreto"}</td>
         <td>${connectionStatusBadge(item)}</td>
         <td><div class="actions">
+          <label class="reconciliation-action" title="Compara todo el árbol remoto con la carpeta local, repara los archivos ausentes o diferentes y no elimina archivos locales extra. Puede tardar en orígenes grandes.">
+            <input type="checkbox" data-full-local-reconciliation="${item.id}" ${item.full_local_reconciliation ? "checked" : ""}>
+            <span>Comparar todo el árbol<small>Repara ausentes o diferentes; conserva extras locales</small></span>
+          </label>
           <button class="btn secondary small" data-edit="${item.id}">Editar</button>
           <button class="btn secondary small" data-test="${item.id}">Simular corrida</button>
           <button class="btn secondary small" data-duplicate="${item.id}">Duplicar</button>
@@ -444,6 +448,9 @@
     form.elements.timezone.value = "America/Bogota";
     form.elements.dest_root.value = "downloads";
     form.elements.window_hours.value = "24";
+    form.elements.recursive.checked = false;
+    form.elements.max_depth.value = "3";
+    form.elements.full_local_reconciliation.checked = false;
     form.elements.max_parallel_files.value = "2";
     form.elements.retries.value = "3";
     form.elements.id.value = "";
@@ -467,7 +474,7 @@
 
   function connectionPayload(form) {
     const data = new FormData(form);
-    const numeric = ["port", "window_hours", "max_parallel_files", "retries"];
+    const numeric = ["port", "window_hours", "max_depth", "max_parallel_files", "retries"];
     const payload = {};
     for (const [key, value] of data.entries()) {
       if (key === "id") continue;
@@ -477,6 +484,10 @@
       else payload[key] = value;
     }
     payload.enabled = form.elements.enabled.checked;
+    payload.recursive = form.elements.recursive.checked;
+    payload.full_local_reconciliation = (
+      form.elements.full_local_reconciliation.checked
+    );
     if (!payload.secret) delete payload.secret;
     return payload;
   }
@@ -786,6 +797,51 @@
     }
   }
 
+  async function toggleFullLocalReconciliation(input) {
+    const id = Number(input.dataset.fullLocalReconciliation);
+    const previous = !input.checked;
+    const enabled = input.checked;
+    input.disabled = true;
+    try {
+      const updated = await api(`/api/connections/${id}`, {
+        method: "PATCH",
+        body: { full_local_reconciliation: enabled },
+      });
+      const current = state.connections.find(
+        (candidate) => candidate.id === id,
+      );
+      if (current) {
+        current.full_local_reconciliation = Boolean(
+          updated.full_local_reconciliation,
+        );
+      }
+      toast(
+        enabled
+          ? "Comparación completa habilitada."
+          : "Comparación completa deshabilitada.",
+      );
+      try {
+        await Promise.all([loadConnections(), loadDashboard()]);
+      } catch (error) {
+        toast(
+          `La opción se guardó, pero no se pudo actualizar la vista: ${error.message}`,
+          true,
+        );
+      }
+      if (input.isConnected) {
+        input.checked = Boolean(updated.full_local_reconciliation);
+        input.disabled = false;
+      }
+    } catch (error) {
+      input.checked = previous;
+      input.disabled = false;
+      toast(
+        `No se pudo cambiar la comparación completa: ${error.message}`,
+        true,
+      );
+    }
+  }
+
   async function cancelRun(id) {
     try {
       const result = await api(`/api/runs/${id}/cancel`, { method: "POST" });
@@ -962,6 +1018,12 @@
       invalidateConnectionValidation(
         "Los datos cambiaron. Vuelve a probar la conexión y sus rutas.",
       );
+    });
+    document.addEventListener("change", (event) => {
+      const input = event.target.closest(
+        "input[data-full-local-reconciliation]",
+      );
+      if (input) toggleFullLocalReconciliation(input);
     });
     $("#connection-test-button").addEventListener(
       "click",

@@ -33,11 +33,20 @@ def test_size_mode_does_not_read_existing_partial() -> None:
     assert partial.tell() == 3
 
 
-def test_size_mismatch_is_integrity_error() -> None:
+def test_short_size_is_retryable_partial_transfer() -> None:
     verifier = StreamingVerifier(VerifyMode.SIZE)
     with pytest.raises(RecolectaError) as raised:
         verifier.verify_size(actual=9, expected=10)
+    assert raised.value.error_type == ErrorType.PARTIAL_TRANSFER
+    assert raised.value.retryable is True
+
+
+def test_oversized_result_is_integrity_error() -> None:
+    verifier = StreamingVerifier(VerifyMode.SIZE)
+    with pytest.raises(RecolectaError) as raised:
+        verifier.verify_size(actual=11, expected=10)
     assert raised.value.error_type == ErrorType.INTEGRITY
+    assert raised.value.retryable is False
 
 
 def test_disk_preflight_requires_ten_percent_reserve(tmp_path: Path) -> None:

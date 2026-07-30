@@ -48,6 +48,10 @@ FILE_STATUS_LABELS = {
 
 PLAN_STATUS_LABELS = {
     "planned": "Listo para descargar",
+    "local_present": "Ya existe y coincide en destino",
+    "local_missing": "No existe en destino",
+    "local_different": "Existe, pero no coincide",
+    "path_invalid": "Ruta remota no permitida",
     "duplicate": "Ya descargado",
     "outside_window": "Fuera del período configurado",
     "quiet_period": "Todavía en escritura",
@@ -264,7 +268,7 @@ def enrich_plan(row: Mapping[str, Any]) -> dict[str, Any]:
         }
         for item in result.get("items", [])
     ]
-    files_found = len(items)
+    files_found = result.get("files_found", len(items))
     files_planned = result.get("files_to_download", 0)
     result["items"] = items
     result["result_status"] = plan_result_status(

@@ -1,5 +1,9 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
+from app.api.routes import _plan_response
+from app.orchestrator import DryRunPlan, PlanItem, PlanStatus, TimeWindow
 from app.statuses import (
     enrich_alert,
     enrich_file,
@@ -8,6 +12,7 @@ from app.statuses import (
     run_result_label,
     run_result_status,
 )
+from app.transports.base import RemoteFile
 
 
 @pytest.mark.parametrize(
@@ -143,3 +148,69 @@ def test_enrich_plan_labels_items_and_summarizes_an_empty_listing() -> None:
         "Ya descargado",
         "Fuera del período configurado",
     ]
+
+
+def test_enrich_plan_uses_explicit_total_when_items_are_a_sample() -> None:
+    enriched = enrich_plan(
+        {
+            "files_found": 1_000_000,
+            "files_to_download": 0,
+            "items_truncated": True,
+            "items": [],
+        }
+    )
+
+    assert enriched["files_found"] == 1_000_000
+    assert enriched["result_status"] == "no_changes"
+    assert enriched["result_label"] == "Sin archivos nuevos"
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    (
+        ("local_present", "Ya existe y coincide en destino"),
+        ("local_missing", "No existe en destino"),
+        ("local_different", "Existe, pero no coincide"),
+        ("path_invalid", "Ruta remota no permitida"),
+    ),
+)
+def test_reconciliation_plan_statuses_have_descriptive_labels(
+    status: str,
+    expected: str,
+) -> None:
+    enriched = enrich_plan(
+        {
+            "files_found": 1,
+            "files_to_download": int(status != "local_present"),
+            "items": [{"status": status, "remote_path": "/in/documento.bin"}],
+        }
+    )
+
+    assert enriched["items"][0]["status_label"] == expected
+
+
+def test_plan_response_exposes_full_totals_and_bounded_sample_metadata() -> None:
+    now = datetime(2026, 7, 29, tzinfo=timezone.utc)
+    plan = DryRunPlan(
+        connection_id=8,
+        window=TimeWindow(now - timedelta(days=1), now),
+        items=(
+            PlanItem(
+                RemoteFile("/in/documento.bin", 12, now),
+                PlanStatus.LOCAL_MISSING,
+            ),
+        ),
+        total_items=1_000_000,
+        planned_total=900_000,
+        planned_bytes=12_345_678,
+        scan_mode="full_local_reconciliation",
+    )
+
+    response = _plan_response(plan)
+
+    assert response["files_found"] == 1_000_000
+    assert response["files_to_download"] == 900_000
+    assert response["planned_bytes"] == 12_345_678
+    assert response["scan_mode"] == "full_local_reconciliation"
+    assert response["items_truncated"] is True
+    assert len(response["items"]) == 1

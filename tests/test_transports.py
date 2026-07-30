@@ -1,10 +1,11 @@
 import ftplib
+import gzip
 import os
 import stat
 import sys
 from dataclasses import replace
 from datetime import datetime, timezone
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 
 import httpx
@@ -68,7 +69,7 @@ class FakeFtp:
         callback("-rw-r--r-- 1 owner group 42 Jul 26 03:04 legacy.csv")
 
 
-def test_ftp_prefers_mdtm_over_mlsd_modify() -> None:
+def test_ftp_uses_streamed_mlsd_modify_metadata() -> None:
     transport = FtpTransport(
         connection(Protocol.FTP),
         secret="x",
@@ -77,10 +78,122 @@ def test_ftp_prefers_mdtm_over_mlsd_modify() -> None:
     with transport:
         result = transport.list_files(("/root",), recursive=False, max_depth=0)
     assert result.warnings == ()
-    assert result.files[0].timestamp_source == "MDTM"
+    assert result.files[0].timestamp_source == "MLSD"
     assert result.files[0].mtime_utc == datetime(
-        2026, 7, 26, 3, 4, 5, tzinfo=timezone.utc
+        2026, 1, 1, 1, 1, 1, tzinfo=timezone.utc
     )
+
+
+def test_ftp_iter_files_consumes_mlsd_lazily() -> None:
+    consumed: list[str] = []
+
+    class LazyFtp(FakeFtp):
+        def mlsd(self, path, facts):
+            def entries():
+                for name in ("first.csv", "second.csv"):
+                    consumed.append(name)
+                    yield (
+                        name,
+                        {
+                            "type": "file",
+                            "size": "12",
+                            "modify": "20260101010101",
+                        },
+                    )
+
+            return entries()
+
+    transport = FtpTransport(
+        connection(Protocol.FTP),
+        secret="x",
+        client=LazyFtp(),
+    )
+    with transport:
+        files = transport.iter_files(
+            ("/root",),
+            recursive=False,
+            max_depth=0,
+        )
+        assert next(files).name == "first.csv"
+        assert consumed == ["first.csv"]
+        assert transport.last_listing_warnings == ()
+        files.close()
+
+
+class _FtpListingSocket:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def makefile(self, mode, *, encoding, newline):
+        assert mode == "r"
+        assert encoding == "utf-8"
+        assert newline == ""
+        return StringIO(
+            "type=file;size=1;modify=20260101010101; first.csv\r\n"
+            "type=file;size=1;modify=20260101010101; second.csv\r\n"
+        )
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FtpListingWithAbortReply(FakeFtp):
+    encoding = "utf-8"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.data_socket = _FtpListingSocket()
+        self.voidresp_calls = 0
+
+    def transfercmd(self, command):
+        assert command == "MLSD /root"
+        return self.data_socket
+
+    def voidresp(self):
+        self.voidresp_calls += 1
+        raise ftplib.error_temp("426 Transfer aborted")
+
+
+def test_ftp_partial_listing_ignores_expected_426_abort_reply() -> None:
+    client = _FtpListingWithAbortReply()
+    transport = FtpTransport(
+        connection(Protocol.FTP),
+        secret="x",
+        client=client,
+    )
+
+    with transport:
+        files = transport.iter_files(
+            ("/root",),
+            recursive=False,
+            max_depth=0,
+        )
+        assert next(files).name == "first.csv"
+        files.close()
+
+    assert client.data_socket.closed is True
+    assert client.voidresp_calls == 1
+
+
+def test_ftp_completed_listing_propagates_426_reply() -> None:
+    client = _FtpListingWithAbortReply()
+    transport = FtpTransport(
+        connection(Protocol.FTP),
+        secret="x",
+        client=client,
+    )
+
+    with transport, pytest.raises(ftplib.error_temp, match="426"):
+        list(
+            transport.iter_files(
+                ("/root",),
+                recursive=False,
+                max_depth=0,
+            )
+        )
+
+    assert client.data_socket.closed is True
+    assert client.voidresp_calls == 1
 
 
 def test_ftp_list_fallback_marks_timestamp_unreliable() -> None:
@@ -96,6 +209,25 @@ def test_ftp_list_fallback_marks_timestamp_unreliable() -> None:
     assert result.files[0].name == "legacy.csv"
     assert not result.files[0].timestamp_reliable
     assert result.files[0].timestamp_source == "LIST"
+    assert transport.last_listing_warnings == result.warnings
+
+
+def test_ftp_list_fallback_aggregates_warning_across_roots() -> None:
+    transport = FtpTransport(
+        connection(Protocol.FTP, timezone="America/Bogota"),
+        secret="x",
+        client=FakeFtp(mlsd_supported=False),
+        now=lambda: datetime(2026, 7, 27, tzinfo=timezone.utc),
+    )
+    with transport:
+        result = transport.list_files(
+            ("/first", "/second"),
+            recursive=False,
+            max_depth=0,
+        )
+    assert len(result.files) == 2
+    assert len(result.warnings) == 1
+    assert transport.last_listing_warnings == result.warnings
 
 
 def test_ftp_resumes_with_rest_and_restarts_when_unsupported() -> None:
@@ -211,6 +343,40 @@ def test_sftp_lists_recursively_without_following_symlinks(tmp_path: Path) -> No
     assert {item.name for item in result.files} == {"a.csv", "b.csv", "link"}
     assert next(item for item in result.files if item.name == "link").is_symlink
     assert metadata.size_bytes == 10
+
+
+def test_sftp_prefers_lazy_listdir_iter(tmp_path: Path) -> None:
+    consumed: list[str] = []
+
+    class LazySftp:
+        def listdir_iter(self, path):
+            for name in ("first.csv", "second.csv"):
+                consumed.append(name)
+                yield _sftp_attr(
+                    name,
+                    stat.S_IFREG | 0o644,
+                    10,
+                    1_700_000_000,
+                )
+
+        def listdir_attr(self, path):
+            raise AssertionError("No debe materializar listdir_attr.")
+
+    transport = SftpTransport(
+        connection(Protocol.SFTP),
+        secret="x",
+        known_hosts=tmp_path / "known_hosts",
+        sftp_client=LazySftp(),
+    )
+    with transport:
+        files = transport.iter_files(
+            ("/root",),
+            recursive=False,
+            max_depth=0,
+        )
+        assert next(files).name == "first.csv"
+        assert consumed == ["first.csv"]
+        files.close()
 
 
 def test_sftp_connect_enables_tofu_and_disables_ambient_credentials(
@@ -373,6 +539,43 @@ def test_webdav_propfind_lists_recursively_and_never_uses_get() -> None:
     client.close()
 
 
+def test_webdav_iter_files_requests_subdirectories_incrementally() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/root/sub":
+            entries = [
+                ("/root/sub/", True, None),
+                ("/root/sub/b.csv", False, 20),
+            ]
+        else:
+            entries = [
+                ("/root/", True, None),
+                ("/root/a.csv", False, 10),
+                ("/root/sub/", True, None),
+            ]
+        return httpx.Response(207, content=_dav_multistatus(entries))
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    transport = WebDavTransport(
+        connection(Protocol.WEBDAV),
+        secret="x",
+        client=client,
+    )
+    with transport:
+        files = transport.iter_files(
+            ("/root",),
+            recursive=True,
+            max_depth=1,
+        )
+        assert next(files).name == "a.csv"
+        assert calls == ["/root"]
+        assert [item.name for item in files] == ["b.csv"]
+        assert calls == ["/root", "/root/sub"]
+    client.close()
+
+
 def test_webdav_range_resume_and_200_restart() -> None:
     content = b"abcdefgh"
     for supports_range, expected_resume in ((True, 3), (False, 0)):
@@ -382,10 +585,10 @@ def test_webdav_range_resume_and_200_restart() -> None:
                 assert request.headers["Range"] == "bytes=3-"
                 return httpx.Response(
                     206,
-                    content=content[3:],
+                    stream=httpx.ByteStream(content[3:]),
                     headers={"Content-Range": "bytes 3-7/8"},
                 )
-            return httpx.Response(200, content=content)
+            return httpx.Response(200, stream=httpx.ByteStream(content))
 
         client = httpx.Client(transport=httpx.MockTransport(handler))
         target = BytesIO(b"abc")
@@ -412,6 +615,77 @@ def test_webdav_range_resume_and_200_restart() -> None:
         client.close()
 
 
+@pytest.mark.parametrize(
+    "headers",
+    (
+        {},
+        {"Content-Range": "bytes 2-7/8"},
+        {"Content-Range": "not-a-range"},
+    ),
+)
+def test_webdav_rejects_unconfirmed_partial_ranges(
+    headers: dict[str, str],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Range"] == "bytes=3-"
+        return httpx.Response(206, content=b"defgh", headers=headers)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    target = BytesIO(b"abc")
+    target.seek(3)
+    transport = WebDavTransport(
+        connection(Protocol.WEBDAV),
+        secret="x",
+        client=client,
+    )
+
+    with transport, pytest.raises(RuntimeError, match="rango exacto"):
+        transport.download_to(
+            "/root/a.bin",
+            target,
+            offset=3,
+            block_size=2,
+            on_chunk=lambda chunk: None,
+            on_restart=lambda: None,
+        )
+
+    assert target.getvalue() == b"abc"
+    client.close()
+
+
+def test_webdav_download_preserves_raw_content_encoding_bytes() -> None:
+    encoded = gzip.compress(b"\xff\xfecontenido\r\n", mtime=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Accept-Encoding"] == "identity"
+        return httpx.Response(
+            200,
+            stream=httpx.ByteStream(encoded),
+            headers={"Content-Encoding": "gzip"},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    target = BytesIO()
+    transport = WebDavTransport(
+        connection(Protocol.WEBDAV),
+        secret="x",
+        client=client,
+    )
+    with transport:
+        result = transport.download_to(
+            "/root/a.bin",
+            target,
+            offset=0,
+            block_size=3,
+            on_chunk=lambda chunk: None,
+            on_restart=lambda: None,
+        )
+
+    assert target.getvalue() == encoded
+    assert result.bytes_received == len(encoded)
+    client.close()
+
+
 def test_smb_lists_local_tree_for_development(tmp_path: Path) -> None:
     root = tmp_path / "share"
     nested = root / "nested"
@@ -436,6 +710,58 @@ def test_smb_lists_local_tree_for_development(tmp_path: Path) -> None:
     assert metadata.mtime_utc == datetime(
         2026, 7, 26, 3, 4, 5, tzinfo=timezone.utc
     )
+
+
+def test_smb_iter_files_consumes_scandir_lazily(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "share"
+    root.mkdir()
+    (root / "first.bin").write_bytes(b"first")
+    (root / "second.bin").write_bytes(b"second")
+    real_scandir = os.scandir
+    consumed: list[str] = []
+
+    class TrackingScandir:
+        def __init__(self, path):
+            self._entries = real_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self._entries.close()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            entry = next(self._entries)
+            consumed.append(entry.name)
+            return entry
+
+    monkeypatch.setattr(
+        "app.transports.smb.os.scandir",
+        lambda path: TrackingScandir(path),
+    )
+    transport = SmbTransport(
+        connection(Protocol.SMB, remote_paths=(str(root),)),
+        secret=None,
+    )
+    with transport:
+        files = transport.iter_files(
+            (str(root),),
+            recursive=False,
+            max_depth=0,
+        )
+        first = next(files)
+        assert first.name in {"first.bin", "second.bin"}
+        assert len(consumed) == 1
+        assert {first.name, *(item.name for item in files)} == {
+            "first.bin",
+            "second.bin",
+        }
 
 
 def test_smb_download_resumes_from_offset(tmp_path: Path) -> None:

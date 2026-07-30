@@ -18,19 +18,103 @@ residente no responde o la ejecución directa falla.
 ## Estado y recuperación
 
 Una corrida que estaba `running` al arrancar pasa a `failed/interrupted`. Sus
-archivos `downloading` vuelven a `pending`; el staging UUIDv5 se conserva y el
-catch-up reintenta la ventana. Si ya existe una corrida `ok` con los mismos
-límites UTC, no se crea otra.
+archivos `pending` o `downloading` también quedan terminalizados como
+`failed/interrupted` dentro de esa corrida; no vuelven a la cola. El staging
+UUIDv5 se conserva. La corrida interrumpida no continúa con el mismo
+identificador: una ejecución nueva —por catch-up, agenda o disparo manual—
+redescubre el remoto y puede reanudar ese `.part`. Si ya existe una corrida
+`ok` con los mismos límites UTC, no se crea otra en modo ventana.
 
-La cancelación es cooperativa y puede esperar al bloque de red actual. No
-renombre ni publique manualmente los `.part`. Si falta espacio, el motor
-requiere el volumen planificado más la reserva —10 % por defecto— antes de
-abrir conexiones.
+La cancelación es cooperativa: detiene descubrimiento, espera de cupos,
+espaciado, límite de ancho de banda y backoff sin iniciar otro intento. Una
+lectura de red ya entregada al transporte puede esperar hasta el bloque o
+timeout actual. No renombre ni publique manualmente los `.part`. Si falta
+espacio, el motor requiere el volumen planificado más la reserva —10 % por
+defecto— antes de abrir conexiones.
+
+Para archivos con tamaño conocido, el cálculo descuenta los bytes de un
+parcial cuya versión remota sea confiable. Para archivos cuyo servidor no
+informa tamaño reserva 64 MiB por worker activo y vuelve a comprobar el
+espacio por ventanas durante el stream; así no multiplica la reserva por
+millones de elementos ni permite consumir el margen del volumen.
+
+Los parciales nuevos se distribuyen como
+`.staging\<2-hex>\<uuid>.part`; el UUIDv5 no cambia respecto del formato plano
+anterior. La migración del legado ocurre después del pre-flight y usa un
+renombre atómico. Si falla se continúa con el archivo plano; si existen ambas
+copias se usa el shard.
+
+Al arrancar, Recolecta limpia una vez cada `dest_root` único. Recorre
+recursivamente sin seguir symlinks, elimina `.part` vacíos y solo elimina
+parciales con datos anteriores al mayor valor entre siete días y
+`catchup.max_days + 1`. Conserva activos, recientes y archivos que no sean
+`.part`, y retira shards vacíos. El resultado del recorrido se registra como
+conteos/bytes/errores, no como una lista de millones de rutas. Una raíz
+inaccesible genera una advertencia y el servicio continúa.
+
+## Comparación completa y reparación del destino
+
+Use **Comparación completa con carpeta local** cuando el destino haya perdido
+archivos, se sospeche que fueron alterados o se necesite completar por primera
+vez todo el árbol:
+
+1. Active el checkbox en las acciones de la conexión.
+2. Ejecute un dry-run y anote totales, bytes planificados y si la lista visible
+   indica que es una muestra.
+3. Confirme espacio libre y lance la corrida real.
+4. Revise los contadores de archivos presentes, ausentes y diferentes.
+5. Verifique el resultado y desactive el checkbox si las corridas siguientes
+   deben volver a usar ventana e historial.
+
+Este modo ignora antigüedad e identidades exitosas, pero conserva globs,
+límites de tamaño, quiet period y la prohibición de seguir symlinks. Descarga
+ausentes o diferentes y omite equivalentes. Nunca elimina archivos locales
+extra: si se requiere limpieza, debe ejecutarse como un proceso independiente,
+revisado y autorizado.
+
+El destino predeterminado `{remote_tree}` preserva el árbol remoto. No cambie a
+una plantilla que omita su jerarquía sin revisar previamente un dry-run; las
+reservas persistentes evitan colisiones entre rutas diferentes saneadas al
+mismo nombre Windows.
+
+## Operación con colas masivas
+
+La fase **Descubriendo** clasifica metadatos en lotes de hasta 500.
+`run_files` conserva toda la cola accionable y hasta 500 decisiones omitidas
+como muestra; `runs` conserva los totales exactos. La fase **Descargando**
+reclama como máximo 64 filas por lote, nunca más de dos veces el paralelismo,
+y reutiliza una sesión por worker. La interfaz conserva solo trabajadores
+activos y totales; dry-run, resultado y detalle indican truncamiento. Ningún
+archivo accionable queda fuera de la cola por no aparecer en la muestra.
+
+Para corridas de millones de documentos:
+
+1. use un `dest_root` en un volumen local estable y mida primero con dry-run;
+2. no abra ni copie `data\recolecta.db` durante la ejecución;
+3. supervise espacio libre, tamaño de la base/WAL, fase, contadores agregados y
+   `logs\runs\`;
+4. mantenga bajo `max_parallel_files` y use límite de ancho de banda cuando el
+   remoto sea compartido;
+5. cancele desde la interfaz si es necesario; no termine SQLite ni elimine
+   filas de la cola manualmente.
+
+Si se repite el mismo tipo de fallo sistémico en forma consecutiva, Recolecta
+abre el cortacircuitos, conserva la evidencia del lote ejecutado y terminaliza
+el resto de la cola con la misma causa. Corrija autenticación, permisos,
+protocolo, DNS, red, timeout, TLS o transferencia parcial antes de iniciar otra
+corrida. Un éxito o una categoría distinta reinicia la secuencia; un fallo de
+integridad aislado no abre el circuito.
+
+La cola es persistente para planificación y auditoría, pero no promete
+reanudar exactamente la misma corrida después de un crash. Se aplica el flujo
+de recuperación descrito arriba.
 
 ## Forzar una descarga controlada
 
-Recolecta evita por diseño volver a bajar una identidad que ya terminó
-correctamente. Para una excepción auditable:
+En modo ventana, Recolecta evita por diseño volver a bajar una identidad que ya
+terminó correctamente. Para reparar un archivo local ausente o diferente,
+prefiera la comparación completa descrita arriba. Para forzar otra copia aun
+cuando el archivo local sea equivalente:
 
 1. En **Conexiones**, duplique la conexión original.
 2. Edite la copia, vuelva a ingresar el secreto y seleccione `keep_both` o
@@ -41,6 +125,20 @@ correctamente. Para una excepción auditable:
 
 La copia tiene otro identificador y, por tanto, un historial independiente.
 No borre filas directamente de SQLite para saltarse deduplicación.
+
+## Integridad binaria
+
+Recolecta transfiere y publica bytes sin interpretar contenido, codificación o
+saltos de línea. Ante una sospecha de alteración, configure `verify_mode=sha256`
+y compare el hash persistido con el del destino:
+
+```powershell
+Get-FileHash 'D:\Descargas\ruta\documento.bin' -Algorithm SHA256
+```
+
+No abra y vuelva a guardar el archivo con un editor antes de comparar. Una
+diferencia de hash se investiga en el transporte, staging y almacenamiento; no
+debe corregirse convirtiendo la codificación.
 
 ## Rotar credenciales
 

@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PureWindowsPath
 from zoneinfo import ZoneInfo
 
 from app.errors import ErrorType, RecolectaError
-from app.models import ConflictMode, Connection
+from app.models import ConflictMode, Connection, Protocol
 from app.transports.base import RemoteFile
 
 
 _INVALID_WINDOWS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _DRIVE_ABSOLUTE = re.compile(r"^[A-Za-z]:[/\\]")
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 _RESERVED = {
     "CON",
     "PRN",
@@ -32,6 +34,17 @@ class Destination:
     root: Path
     path: Path
     was_truncated: bool = False
+
+
+@dataclass(frozen=True)
+class _RemotePath:
+    kind: str
+    anchor: str
+    components: tuple[str, ...]
+
+    @property
+    def case_insensitive(self) -> bool:
+        return self.kind in {"smb", "local_windows"}
 
 
 def sanitize_windows_segment(value: str) -> str:
@@ -55,23 +68,155 @@ def sanitize_windows_segment(value: str) -> str:
 
 def validate_remote_path(remote_path: str) -> tuple[str, ...]:
     """Reject traversal/absolute Windows paths and return POSIX components."""
-    if not remote_path or "\x00" in remote_path:
-        raise RecolectaError(ErrorType.PATH_INVALID, "La ruta remota no es válida.")
-    if remote_path.startswith("\\\\") or _DRIVE_ABSOLUTE.match(remote_path):
+    value = _validate_path_text(remote_path)
+    if value.startswith(("\\\\", "//")) or _WINDOWS_DRIVE.match(value):
         raise RecolectaError(
             ErrorType.PATH_INVALID,
             "El servidor devolvió una ruta absoluta de Windows.",
         )
-    normalized = remote_path.replace("\\", "/")
-    components = tuple(
-        component for component in PurePosixPath(normalized).parts if component != "/"
+    return _split_components(value)
+
+
+def _remote_tree_components(
+    connection: Connection, remote_path: str
+) -> tuple[str, ...]:
+    """Return a safe remote hierarchy rooted below the local destination."""
+    parsed = _parse_remote_path(connection, remote_path)
+    matched_root = _longest_matching_root(connection, parsed)
+    if parsed.kind in {"local_windows", "local_posix"}:
+        if matched_root is None:
+            raise RecolectaError(
+                ErrorType.PATH_INVALID,
+                "Una ruta local absoluta requiere una raíz SMB configurada.",
+            )
+        relative = parsed.components[len(matched_root.components) :]
+        raw_tree = (matched_root.components[-1], *relative)
+    else:
+        raw_tree = parsed.components
+    return tuple(
+        _sanitize_remote_tree_segment(
+            part,
+            is_filename=index == len(raw_tree) - 1,
+        )
+        for index, part in enumerate(raw_tree)
     )
-    if not components or any(component in {".", ".."} for component in components):
+
+
+def _parse_remote_path(connection: Connection, value: str) -> _RemotePath:
+    text = _validate_path_text(value)
+    is_smb = connection.protocol == Protocol.SMB
+    normalized = text.replace("\\", "/")
+    if normalized.startswith("//"):
+        if not is_smb:
+            raise RecolectaError(
+                ErrorType.PATH_INVALID,
+                "El servidor devolvió una ruta UNC para un protocolo no SMB.",
+            )
+        parts = _split_components(normalized[2:])
+        if len(parts) < 2:
+            raise RecolectaError(
+                ErrorType.PATH_INVALID,
+                "La ruta UNC debe incluir servidor y recurso compartido.",
+            )
+        host, components = parts[0], parts[1:]
+        if host.casefold() != connection.host.casefold():
+            raise RecolectaError(
+                ErrorType.PATH_INVALID,
+                "La ruta UNC pertenece a un servidor distinto al configurado.",
+            )
+        return _RemotePath("smb", connection.host.casefold(), components)
+    if _WINDOWS_DRIVE.match(text):
+        if not is_smb or not _DRIVE_ABSOLUTE.match(text):
+            raise RecolectaError(
+                ErrorType.PATH_INVALID,
+                "El servidor devolvió una ruta absoluta de Windows.",
+            )
+        windows = PureWindowsPath(text)
+        return _RemotePath(
+            "local_windows",
+            windows.drive.casefold(),
+            _checked_components(windows.parts[1:]),
+        )
+    if (
+        is_smb
+        and normalized.startswith("/")
+        and _matches_configured_posix_fixture(connection, normalized)
+    ):
+        return _RemotePath(
+            "local_posix",
+            "/",
+            _split_components(normalized),
+        )
+    kind = "smb" if is_smb else "posix"
+    anchor = connection.host.casefold() if is_smb else "/"
+    return _RemotePath(kind, anchor, _split_components(normalized))
+
+
+def _matches_configured_posix_fixture(
+    connection: Connection, remote_path: str
+) -> bool:
+    remote_parts = _split_components(remote_path)
+    for configured in connection.remote_paths:
+        normalized = configured.replace("\\", "/")
+        if not normalized.startswith("/") or normalized.startswith("//"):
+            continue
+        configured_parts = _split_components(normalized)
+        if remote_parts[: len(configured_parts)] == configured_parts:
+            return True
+    return False
+
+
+def _longest_matching_root(
+    connection: Connection, remote: _RemotePath
+) -> _RemotePath | None:
+    matches: list[_RemotePath] = []
+    for configured in connection.remote_paths:
+        root = _parse_remote_path(connection, configured)
+        if root.kind != remote.kind or root.anchor != remote.anchor:
+            continue
+        if len(root.components) > len(remote.components):
+            continue
+        left = remote.components[: len(root.components)]
+        if remote.case_insensitive:
+            equal = tuple(part.casefold() for part in left) == tuple(
+                part.casefold() for part in root.components
+            )
+        else:
+            equal = left == root.components
+        if equal:
+            matches.append(root)
+    return max(matches, key=lambda item: len(item.components), default=None)
+
+
+def _validate_path_text(value: str) -> str:
+    if not value or "\x00" in value:
+        raise RecolectaError(ErrorType.PATH_INVALID, "La ruta remota no es válida.")
+    return value
+
+
+def _split_components(value: str) -> tuple[str, ...]:
+    raw = tuple(part for part in value.replace("\\", "/").split("/") if part)
+    return _checked_components(raw)
+
+
+def _checked_components(parts: tuple[str, ...]) -> tuple[str, ...]:
+    if not parts or any(part in {".", ".."} for part in parts):
         raise RecolectaError(
             ErrorType.PATH_INVALID,
             "El servidor devolvió una ruta con navegación '..' o sin nombre.",
         )
-    return components
+    return parts
+
+
+def _sanitize_remote_tree_segment(value: str, *, is_filename: bool) -> str:
+    sanitized = sanitize_windows_segment(value)
+    if sanitized == value:
+        return sanitized
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
+    if not is_filename:
+        return f"{sanitized}__{digest}"
+    path = PureWindowsPath(sanitized)
+    return f"{path.stem}__{digest}{path.suffix}"
 
 
 def resolve_destination_root(connection: Connection, portable_root: Path) -> Path:
@@ -80,17 +225,53 @@ def resolve_destination_root(connection: Connection, portable_root: Path) -> Pat
     return root.resolve(strict=False)
 
 
+def local_path_key(path: Path) -> bytes:
+    """Return a Windows-equivalent, fixed-size key for a local path."""
+    normalized = unicodedata.normalize(
+        "NFC", str(path.resolve(strict=False)).replace("/", "\\")
+    )
+    return hashlib.sha256(
+        normalized.casefold().encode("utf-8", errors="surrogatepass")
+    ).digest()
+
+
+def collision_path(candidate: Path, marker: str) -> Path:
+    """Append a stable marker while keeping the path within MAX_PATH."""
+    suffix = candidate.suffix
+    parent_length = len(str(candidate.parent)) + 1
+    available_stem = MAX_WINDOWS_PATH - parent_length - len(marker) - len(suffix)
+    if available_stem < 1:
+        raise RecolectaError(
+            ErrorType.PATH_INVALID,
+            "La ruta de destino no permite desambiguar una colisión.",
+        )
+    return candidate.with_name(
+        f"{candidate.stem[:available_stem]}{marker}{suffix}"
+    )
+
+
 def build_destination(
     connection: Connection,
     remote_file: RemoteFile,
     *,
     portable_root: Path,
     run_id: int,
+    fallback_time: datetime | None = None,
 ) -> Destination:
     """Expand a destination template and prove it remains below dest_root."""
-    components = validate_remote_path(remote_file.remote_path)
+    parsed_remote = _parse_remote_path(connection, remote_file.remote_path)
+    components = parsed_remote.components
+    template = connection.dest_template.strip()
+    remote_tree = (
+        _remote_tree_components(connection, remote_file.remote_path)
+        if "{remote_tree}" in template
+        else ()
+    )
     root = resolve_destination_root(connection, portable_root)
-    modified = (remote_file.mtime_utc or datetime.now(timezone.utc)).astimezone(
+    fallback = fallback_time or datetime.now(timezone.utc)
+    if fallback.tzinfo is None:
+        fallback = fallback.replace(tzinfo=timezone.utc)
+    modified = (remote_file.mtime_utc or fallback).astimezone(
         ZoneInfo(connection.timezone)
     )
     filename = sanitize_windows_segment(components[-1])
@@ -105,12 +286,12 @@ def build_destination(
         "dd": f"{modified.day:02d}",
         "HH": f"{modified.hour:02d}",
         "remote_dir": "/".join(remote_dirs),
+        "remote_tree": "/".join(remote_tree),
         "filename": filename,
         "basename": sanitize_windows_segment(filename_path.stem),
         "ext": filename_path.suffix,
         "run_id": str(run_id),
     }
-    template = connection.dest_template.strip()
     if "{root}" in template:
         if not template.replace("\\", "/").startswith("{root}/"):
             raise RecolectaError(

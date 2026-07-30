@@ -1,9 +1,11 @@
+import errno
 import hashlib
 import os
 import threading
+import uuid
 from collections import namedtuple
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from app.downloader import (
     DownloadEngine,
     DownloadStatus,
     cleanup_orphaned_staging,
+    estimate_download_bytes,
 )
 from app.errors import ErrorType, RecolectaError
 from app.models import ConflictMode, Connection, Protocol, VerifyMode
@@ -143,6 +146,9 @@ def test_cut_mid_download_retries_and_resumes_without_corruption(
         block_size=1024,
         sleeper=sleeps.append,
         random_value=lambda: 0.0,
+        retry_waiter=lambda event, delay: (
+            sleeps.append(delay) or event.is_set()
+        ),
     )
     outcome = engine.download_files((remote(),), run_id=11)[0]
     final = tmp_path / "downloads" / "payload.bin"
@@ -151,7 +157,7 @@ def test_cut_mid_download_retries_and_resumes_without_corruption(
     assert outcome.resumed_from == 1024
     assert outcome.sha256 == hashlib.sha256(CONTENT).hexdigest()
     assert final.read_bytes() == CONTENT
-    assert not list((tmp_path / "downloads" / ".staging").glob("*.part"))
+    assert not list((tmp_path / "downloads" / ".staging").rglob("*.part"))
     assert sleeps == [1.0]
     assert int(final.stat().st_mtime) == int(MODIFIED.timestamp())
 
@@ -173,6 +179,33 @@ def test_instant_download_keeps_positive_duration(tmp_path: Path) -> None:
     assert outcome.duration_s > 0
 
 
+def test_managed_engine_reuses_one_transport_session_across_batches(
+    tmp_path: Path,
+) -> None:
+    state: dict = {}
+    with DownloadEngine(
+        connection(),
+        portable_root=tmp_path,
+        transport_factory=factory(state),
+        block_size=1024,
+    ) as engine:
+        first = engine.download_files(
+            (remote("/entrada/first.bin"),),
+            run_id=20,
+        )
+        second = engine.download_files(
+            (remote("/entrada/second.bin"),),
+            run_id=20,
+        )
+        assert state["connects"] == 1
+        assert state.get("closes", 0) == 0
+
+    assert first[0].status == DownloadStatus.OK
+    assert second[0].status == DownloadStatus.OK
+    assert state["connects"] == 1
+    assert state["closes"] == 1
+
+
 def test_process_restart_keeps_partial_and_restarts_if_server_has_no_resume(
     tmp_path: Path,
 ) -> None:
@@ -188,8 +221,13 @@ def test_process_restart_keeps_partial_and_restarts_if_server_has_no_resume(
     staging = tmp_path / "downloads" / ".staging"
     assert failed.status == DownloadStatus.FAILED
     assert not final.exists()
-    assert len(list(staging.glob("*.part"))) == 1
-    assert list(staging.glob("*.part"))[0].stat().st_size == 1024
+    identity = "|".join(
+        ("3", "/entrada/payload.bin", MODIFIED.isoformat(), str(len(CONTENT)))
+    )
+    expected_name = f"{uuid.uuid5(uuid.NAMESPACE_URL, identity)}.part"
+    expected_part = staging / expected_name[:2] / expected_name
+    assert list(staging.rglob("*.part")) == [expected_part]
+    assert expected_part.stat().st_size == 1024
 
     second_state: dict = {}
     second = DownloadEngine(
@@ -208,20 +246,44 @@ def test_process_restart_keeps_partial_and_restarts_if_server_has_no_resume(
     assert final.read_bytes() == CONTENT
 
 
-def test_integrity_failure_never_publishes_final_name(tmp_path: Path) -> None:
+def test_partial_transfer_retries_and_never_publishes_short_file(
+    tmp_path: Path,
+) -> None:
     state: dict = {}
     engine = DownloadEngine(
         connection(retries=3),
         portable_root=tmp_path,
         transport_factory=factory(state, content=CONTENT[:-10]),
         block_size=1024,
+        sleeper=lambda delay: None,
+        random_value=lambda: 0.0,
+        retry_waiter=lambda event, delay: event.is_set(),
     )
     outcome = engine.download_files((remote(),), run_id=13)[0]
+    assert outcome.status == DownloadStatus.FAILED
+    assert outcome.error_type == ErrorType.PARTIAL_TRANSFER
+    assert outcome.attempts == 4
+    assert not (tmp_path / "downloads" / "payload.bin").exists()
+    assert len(list((tmp_path / "downloads" / ".staging").rglob("*.part"))) == 1
+
+
+def test_oversized_transfer_is_integrity_failure_without_retry(
+    tmp_path: Path,
+) -> None:
+    state: dict = {}
+    engine = DownloadEngine(
+        connection(retries=3),
+        portable_root=tmp_path,
+        transport_factory=factory(state, content=CONTENT + b"x"),
+        block_size=1024,
+    )
+
+    outcome = engine.download_files((remote(),), run_id=130)[0]
+
     assert outcome.status == DownloadStatus.FAILED
     assert outcome.error_type == ErrorType.INTEGRITY
     assert outcome.attempts == 1
     assert not (tmp_path / "downloads" / "payload.bin").exists()
-    assert len(list((tmp_path / "downloads" / ".staging").glob("*.part"))) == 1
 
 
 def test_authentication_failure_is_not_retried(tmp_path: Path) -> None:
@@ -245,6 +307,42 @@ def test_authentication_failure_is_not_retried(tmp_path: Path) -> None:
     assert outcome.status == DownloadStatus.FAILED
     assert outcome.error_type == ErrorType.AUTH
     assert outcome.attempts == 1
+    assert state["calls"] == 1
+
+
+def test_cancellation_interrupts_retry_backoff(tmp_path: Path) -> None:
+    state: dict = {}
+    cancel = threading.Event()
+    waits: list[float] = []
+
+    class TimeoutTransport(MemoryTransport):
+        def download_to(self, *args, **kwargs):
+            self.state["calls"] = self.state.get("calls", 0) + 1
+            raise TimeoutError("servidor sin respuesta")
+
+    def cancel_during_wait(
+        event: threading.Event,
+        delay: float,
+    ) -> bool:
+        waits.append(delay)
+        event.set()
+        return True
+
+    outcome = DownloadEngine(
+        connection(retries=5),
+        portable_root=tmp_path,
+        transport_factory=lambda: TimeoutTransport(CONTENT, state),
+        random_value=lambda: 0.0,
+        retry_waiter=cancel_during_wait,
+    ).download_files(
+        (remote(),),
+        run_id=132,
+        cancel_event=cancel,
+    )[0]
+
+    assert outcome.status == DownloadStatus.CANCELLED
+    assert outcome.attempts == 1
+    assert waits == [1.0]
     assert state["calls"] == 1
 
 
@@ -289,6 +387,272 @@ def test_disk_preflight_aborts_before_connecting(tmp_path: Path) -> None:
     assert not (tmp_path / "downloads").exists()
 
 
+def test_unknown_size_discards_stale_legacy_partial_and_restarts(
+    tmp_path: Path,
+) -> None:
+    source = remote(size=None)
+    staging = tmp_path / "downloads" / ".staging"
+    staging.mkdir(parents=True)
+    identity = "|".join(
+        ("3", source.remote_path, MODIFIED.isoformat(), "None")
+    )
+    part_name = f"{uuid.uuid5(uuid.NAMESPACE_URL, identity)}.part"
+    legacy = staging / part_name
+    legacy.write_bytes(b"contenido obsoleto que no pertenece al remoto")
+    state: dict = {}
+
+    outcome = DownloadEngine(
+        connection(retries=0),
+        portable_root=tmp_path,
+        transport_factory=factory(state),
+        block_size=1024,
+    ).download_files((source,), run_id=151)[0]
+
+    assert outcome.status == DownloadStatus.OK
+    assert outcome.resumed_from == 0
+    assert state["offsets"] == [0]
+    assert not legacy.exists()
+    assert (tmp_path / "downloads" / "payload.bin").read_bytes() == CONTENT
+
+
+def test_unknown_size_preflight_requires_configured_floor_plus_reserve(
+    tmp_path: Path,
+) -> None:
+    Usage = namedtuple("Usage", "total used free")
+    state: dict = {}
+    engine = DownloadEngine(
+        connection(),
+        portable_root=tmp_path,
+        transport_factory=factory(state),
+        unknown_size_reserve_bytes=1024,
+        disk_usage=lambda path: Usage(10_000, 8_976, 1024),
+    )
+
+    with pytest.raises(RecolectaError) as raised:
+        engine.download_files((remote(size=None),), run_id=152)
+
+    assert raised.value.error_type == ErrorType.DISK_SPACE
+    assert "requeridos 1126" in str(raised.value)
+    assert state == {}
+    assert not (tmp_path / "downloads").exists()
+
+
+def test_unknown_size_preflight_is_bounded_by_active_slots(
+    tmp_path: Path,
+) -> None:
+    Usage = namedtuple("Usage", "total used free")
+    state: dict = {}
+    probes: list[Path] = []
+
+    def disk_usage(path: Path):
+        probes.append(path)
+        return Usage(10_000, 7_748, 2_252)
+
+    sources = tuple(
+        remote(f"/entrada/payload-{index}.bin", size=None)
+        for index in range(10)
+    )
+    outcomes = DownloadEngine(
+        connection(max_parallel_files=2),
+        portable_root=tmp_path,
+        transport_factory=factory(state),
+        block_size=1024,
+        unknown_size_reserve_bytes=1024,
+        disk_space_check_interval_bytes=1024,
+        disk_usage=disk_usage,
+    ).download_files(sources, run_id=155)
+
+    assert len(outcomes) == len(sources)
+    assert all(outcome.status == DownloadStatus.OK for outcome in outcomes)
+    assert probes
+    for source in sources:
+        local = tmp_path / "downloads" / Path(source.remote_path).name
+        assert local.read_bytes() == CONTENT
+
+
+def test_unknown_size_stream_stops_before_consuming_disk_reserve(
+    tmp_path: Path,
+) -> None:
+    Usage = namedtuple("Usage", "total used free")
+    state: dict = {}
+    free_samples = iter((10_000, 2_251))
+    probes: list[int] = []
+
+    def disk_usage(path: Path):
+        free = next(free_samples)
+        probes.append(free)
+        return Usage(10_000, 10_000 - free, free)
+
+    outcome = DownloadEngine(
+        connection(retries=3),
+        portable_root=tmp_path,
+        transport_factory=factory(state),
+        block_size=1024,
+        unknown_size_reserve_bytes=2048,
+        disk_space_check_interval_bytes=2048,
+        disk_usage=disk_usage,
+    ).download_files(
+        (remote(size=None),),
+        run_id=156,
+        check_disk_space=False,
+    )[0]
+
+    partials = list((tmp_path / "downloads" / ".staging").rglob("*.part"))
+    assert outcome.status == DownloadStatus.FAILED
+    assert outcome.error_type == ErrorType.DISK_SPACE
+    assert outcome.attempts == 1
+    assert outcome.bytes_done == 2048
+    assert probes == [10_000, 2_251]
+    assert state["calls"] == 1
+    assert not (tmp_path / "downloads" / "payload.bin").exists()
+    assert len(partials) == 1
+    assert partials[0].read_bytes() == CONTENT[:2048]
+
+
+def test_unknown_size_retry_restarts_and_preserves_binary_content(
+    tmp_path: Path,
+) -> None:
+    Usage = namedtuple("Usage", "total used free")
+    state: dict = {}
+    outcome = DownloadEngine(
+        connection(retries=1),
+        portable_root=tmp_path,
+        transport_factory=factory(state, fail_first=True),
+        block_size=1024,
+        unknown_size_reserve_bytes=1024,
+        disk_space_check_interval_bytes=1024,
+        disk_usage=lambda path: Usage(100_000, 0, 100_000),
+        retry_waiter=lambda event, delay: event.is_set(),
+    ).download_files((remote(size=None),), run_id=158)[0]
+
+    assert outcome.status == DownloadStatus.OK
+    assert outcome.attempts == 2
+    assert outcome.resumed_from == 0
+    assert state["calls"] == 2
+    assert state["offsets"] == [0]
+    assert (tmp_path / "downloads" / "payload.bin").read_bytes() == CONTENT
+
+
+@pytest.mark.parametrize(
+    ("mtime_utc", "timestamp_reliable"),
+    (
+        (None, True),
+        (MODIFIED, False),
+    ),
+)
+def test_known_size_without_trustworthy_timestamp_restarts_partial(
+    mtime_utc: datetime | None,
+    timestamp_reliable: bool,
+    tmp_path: Path,
+) -> None:
+    source = RemoteFile(
+        "/entrada/payload.bin",
+        len(CONTENT),
+        mtime_utc,
+        timestamp_reliable=timestamp_reliable,
+    )
+    staging = tmp_path / "downloads" / ".staging"
+    identity = "|".join(
+        (
+            "3",
+            source.remote_path,
+            mtime_utc.isoformat() if mtime_utc else "",
+            str(len(CONTENT)),
+        )
+    )
+    part_name = f"{uuid.uuid5(uuid.NAMESPACE_URL, identity)}.part"
+    partial = staging / part_name[:2] / part_name
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b"\xff" * 1024)
+    state: dict = {}
+
+    assert (
+        estimate_download_bytes(
+            tmp_path / "downloads",
+            source,
+            connection=connection(),
+        )
+        == len(CONTENT)
+    )
+
+    outcome = DownloadEngine(
+        connection(retries=0),
+        portable_root=tmp_path,
+        transport_factory=factory(state),
+        block_size=1024,
+    ).download_files((source,), run_id=157)[0]
+
+    assert outcome.status == DownloadStatus.OK
+    assert outcome.resumed_from == 0
+    assert state["offsets"] == [0]
+    assert (tmp_path / "downloads" / "payload.bin").read_bytes() == CONTENT
+
+
+@pytest.mark.parametrize("layout", ("sharded", "legacy"))
+def test_disk_preflight_counts_only_known_partial_remainder(
+    layout: str,
+    tmp_path: Path,
+) -> None:
+    Usage = namedtuple("Usage", "total used free")
+    source = remote()
+    staging = tmp_path / "downloads" / ".staging"
+    identity = "|".join(
+        ("3", source.remote_path, MODIFIED.isoformat(), str(len(CONTENT)))
+    )
+    part_name = f"{uuid.uuid5(uuid.NAMESPACE_URL, identity)}.part"
+    part = (
+        staging / part_name[:2] / part_name
+        if layout == "sharded"
+        else staging / part_name
+    )
+    part.parent.mkdir(parents=True)
+    part.write_bytes(CONTENT[:-1024])
+    state: dict = {}
+    remaining_with_reserve = int(1024 * 1.10)
+
+    outcome = DownloadEngine(
+        connection(retries=0),
+        portable_root=tmp_path,
+        transport_factory=factory(state),
+        block_size=1024,
+        disk_usage=lambda path: Usage(
+            100_000,
+            100_000 - remaining_with_reserve,
+            remaining_with_reserve,
+        ),
+    ).download_files((source,), run_id=153)[0]
+
+    assert outcome.status == DownloadStatus.OK
+    assert outcome.resumed_from == len(CONTENT) - 1024
+    assert state["offsets"] == [len(CONTENT) - 1024]
+    assert (tmp_path / "downloads" / "payload.bin").read_bytes() == CONTENT
+
+
+def test_mtime_failure_preserves_complete_partial_without_publishing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fail_metadata_update(*args, **kwargs) -> None:
+        raise OSError(errno.EIO, "fallo simulado al guardar metadata")
+
+    monkeypatch.setattr("app.downloader.os.utime", fail_metadata_update)
+    state: dict = {}
+    outcome = DownloadEngine(
+        connection(retries=0),
+        portable_root=tmp_path,
+        transport_factory=factory(state),
+        block_size=1024,
+    ).download_files((remote(),), run_id=154)[0]
+
+    final = tmp_path / "downloads" / "payload.bin"
+    partials = list((tmp_path / "downloads" / ".staging").rglob("*.part"))
+    assert outcome.status == DownloadStatus.FAILED
+    assert outcome.error_type == ErrorType.DISK_WRITE
+    assert not final.exists()
+    assert len(partials) == 1
+    assert partials[0].read_bytes() == CONTENT
+
+
 def test_malicious_remote_path_is_failed_without_any_write(tmp_path: Path) -> None:
     state: dict = {}
     engine = DownloadEngine(
@@ -323,21 +687,234 @@ def test_skip_conflict_does_not_open_transport(tmp_path: Path) -> None:
     assert state == {}
 
 
-def test_cleanup_removes_only_unreferenced_partials(tmp_path: Path) -> None:
-    staging = tmp_path / ".staging"
-    staging.mkdir()
-    active = staging / "active.part"
-    orphan = staging / "orphan.part"
-    unrelated = staging / "keep.txt"
-    active.write_bytes(b"a")
-    orphan.write_bytes(b"b")
-    unrelated.write_bytes(b"c")
-    removed = cleanup_orphaned_staging(
-        staging, active_part_names={active.name}
+def test_legacy_flat_partial_is_migrated_and_resumed(tmp_path: Path) -> None:
+    source = remote()
+    staging = tmp_path / "downloads" / ".staging"
+    staging.mkdir(parents=True)
+    identity = "|".join(
+        ("3", source.remote_path, MODIFIED.isoformat(), str(len(CONTENT)))
     )
-    assert removed == (orphan,)
+    part_name = f"{uuid.uuid5(uuid.NAMESPACE_URL, identity)}.part"
+    legacy = staging / part_name
+    legacy.write_bytes(CONTENT[:1024])
+    state: dict = {}
+
+    outcome = DownloadEngine(
+        connection(retries=0),
+        portable_root=tmp_path,
+        transport_factory=factory(state),
+        block_size=1024,
+    ).download_files((source,), run_id=18)[0]
+
+    assert outcome.status == DownloadStatus.OK
+    assert outcome.resumed_from == 1024
+    assert state["offsets"] == [1024]
+    assert not legacy.exists()
+    assert (tmp_path / "downloads" / "payload.bin").read_bytes() == CONTENT
+
+
+def test_failed_legacy_migration_reuses_flat_partial(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = remote()
+    staging = tmp_path / "downloads" / ".staging"
+    staging.mkdir(parents=True)
+    identity = "|".join(
+        ("3", source.remote_path, MODIFIED.isoformat(), str(len(CONTENT)))
+    )
+    part_name = f"{uuid.uuid5(uuid.NAMESPACE_URL, identity)}.part"
+    legacy = staging / part_name
+    legacy.write_bytes(CONTENT[:1024])
+    sharded = staging / part_name[:2] / part_name
+    real_replace = os.replace
+    migrations: list[tuple[Path, Path]] = []
+
+    def replace_with_failed_migration(source_path, destination_path) -> None:
+        source_candidate = Path(source_path)
+        destination_candidate = Path(destination_path)
+        if source_candidate == legacy and destination_candidate == sharded:
+            migrations.append((source_candidate, destination_candidate))
+            raise PermissionError("migración bloqueada")
+        real_replace(source_path, destination_path)
+
+    monkeypatch.setattr("app.downloader.os.replace", replace_with_failed_migration)
+    state: dict = {}
+    outcome = DownloadEngine(
+        connection(retries=0),
+        portable_root=tmp_path,
+        transport_factory=factory(state),
+        block_size=1024,
+    ).download_files((source,), run_id=19)[0]
+
+    assert outcome.status == DownloadStatus.OK
+    assert outcome.resumed_from == 1024
+    assert migrations == [(legacy, sharded)]
+    assert not legacy.exists()
+    assert not sharded.exists()
+
+
+def test_existing_shard_is_preferred_over_legacy_partial(tmp_path: Path) -> None:
+    source = remote()
+    staging = tmp_path / "downloads" / ".staging"
+    identity = "|".join(
+        ("3", source.remote_path, MODIFIED.isoformat(), str(len(CONTENT)))
+    )
+    part_name = f"{uuid.uuid5(uuid.NAMESPACE_URL, identity)}.part"
+    legacy = staging / part_name
+    sharded = staging / part_name[:2] / part_name
+    sharded.parent.mkdir(parents=True)
+    legacy.write_bytes(b"legacy incompleto")
+    sharded.write_bytes(CONTENT[:1024])
+    state: dict = {}
+
+    outcome = DownloadEngine(
+        connection(retries=0),
+        portable_root=tmp_path,
+        transport_factory=factory(state),
+        block_size=1024,
+    ).download_files((source,), run_id=20)[0]
+
+    assert outcome.status == DownloadStatus.OK
+    assert outcome.resumed_from == 1024
+    assert legacy.read_bytes() == b"legacy incompleto"
+    assert (tmp_path / "downloads" / "payload.bin").read_bytes() == CONTENT
+
+
+def test_disk_preflight_does_not_migrate_legacy_partial(tmp_path: Path) -> None:
+    Usage = namedtuple("Usage", "total used free")
+    source = remote()
+    staging = tmp_path / "downloads" / ".staging"
+    staging.mkdir(parents=True)
+    identity = "|".join(
+        ("3", source.remote_path, MODIFIED.isoformat(), str(len(CONTENT)))
+    )
+    part_name = f"{uuid.uuid5(uuid.NAMESPACE_URL, identity)}.part"
+    legacy = staging / part_name
+    legacy.write_bytes(CONTENT[:1024])
+    sharded = staging / part_name[:2] / part_name
+
+    engine = DownloadEngine(
+        connection(),
+        portable_root=tmp_path,
+        transport_factory=factory({}),
+        disk_usage=lambda path: Usage(100, 100, 0),
+    )
+    with pytest.raises(RecolectaError) as raised:
+        engine.download_files((source,), run_id=21)
+
+    assert raised.value.error_type == ErrorType.DISK_SPACE
+    assert legacy.exists()
+    assert not sharded.exists()
+
+
+def test_cleanup_is_recursive_bounded_and_retention_aware(
+    tmp_path: Path,
+) -> None:
+    staging = tmp_path / ".staging"
+    first_shard = staging / "aa"
+    empty_shard = staging / "bb"
+    nested = staging / "cc" / "deep"
+    first_shard.mkdir(parents=True)
+    empty_shard.mkdir()
+    nested.mkdir(parents=True)
+    active = first_shard / "active.part"
+    old = first_shard / "old.part"
+    recent = first_shard / "recent.part"
+    empty = empty_shard / "empty.part"
+    deep_old = nested / "deep-old.part"
+    legacy_old = staging / "legacy-old.part"
+    unrelated = first_shard / "keep.txt"
+    active.write_bytes(b"a")
+    old.write_bytes(b"bbb")
+    recent.write_bytes(b"recent")
+    empty.write_bytes(b"")
+    deep_old.write_bytes(b"dd")
+    legacy_old.write_bytes(b"llll")
+    unrelated.write_bytes(b"c")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    old_timestamp = (cutoff - timedelta(days=1)).timestamp()
+    for candidate in (active, old, deep_old, legacy_old):
+        os.utime(candidate, (old_timestamp, old_timestamp))
+
+    result = cleanup_orphaned_staging(
+        staging,
+        active_part_names={active.name},
+        cutoff=cutoff,
+    )
+
+    assert result.files_examined == 6
+    assert result.files_removed == 4
+    assert result.bytes_removed == 9
+    assert result.errors == 0
+    assert result.shards_removed == 1
     assert active.exists()
+    assert recent.exists()
     assert unrelated.exists()
+    assert not old.exists()
+    assert not empty.exists()
+    assert not deep_old.exists()
+    assert not legacy_old.exists()
+    assert not empty_shard.exists()
+
+
+def test_cleanup_without_cutoff_keeps_nonempty_partial(tmp_path: Path) -> None:
+    staging = tmp_path / ".staging"
+    shard = staging / "01"
+    shard.mkdir(parents=True)
+    nonempty = shard / "old.part"
+    empty = shard / "empty.part"
+    nonempty.write_bytes(b"keep")
+    empty.write_bytes(b"")
+
+    result = cleanup_orphaned_staging(staging, active_part_names=set())
+
+    assert result.files_examined == 2
+    assert result.files_removed == 1
+    assert result.bytes_removed == 0
+    assert nonempty.exists()
+    assert not empty.exists()
+
+
+def test_cleanup_reports_inaccessible_or_unsafe_root(tmp_path: Path) -> None:
+    not_a_directory = tmp_path / ".staging"
+    not_a_directory.write_bytes(b"file")
+
+    result = cleanup_orphaned_staging(
+        not_a_directory,
+        active_part_names=set(),
+        cutoff=datetime.now(timezone.utc),
+    )
+
+    assert result.errors == 1
+    assert result.files_examined == 0
+
+
+def test_cleanup_does_not_follow_directory_symlinks(tmp_path: Path) -> None:
+    staging = tmp_path / ".staging"
+    outside = tmp_path / "outside"
+    staging.mkdir()
+    outside.mkdir()
+    external_partial = outside / "external.part"
+    external_partial.write_bytes(b"external")
+    old_timestamp = (
+        datetime.now(timezone.utc) - timedelta(days=30)
+    ).timestamp()
+    os.utime(external_partial, (old_timestamp, old_timestamp))
+    try:
+        os.symlink(outside, staging / "aa", target_is_directory=True)
+    except OSError:
+        pytest.skip("El entorno no permite crear symlinks de directorio.")
+
+    result = cleanup_orphaned_staging(
+        staging,
+        active_part_names=set(),
+        cutoff=datetime.now(timezone.utc) - timedelta(days=7),
+    )
+
+    assert result.files_examined == 0
+    assert result.files_removed == 0
+    assert external_partial.exists()
 
 
 def test_sha256_and_outcome_are_persisted_in_run_files(tmp_path: Path) -> None:

@@ -60,9 +60,8 @@ class ConnectionCreate(BaseModel):
     timezone: str = "America/Bogota"
     schedule_time: str | None = None
     dest_root: str = "downloads"
-    dest_template: str = (
-        r"{client}\{connection}\{yyyy}\{MM}\{dd}\{filename}"
-    )
+    dest_template: str = r"{remote_tree}"
+    full_local_reconciliation: bool = False
     on_conflict: ConflictMode = ConflictMode.SKIP
     verify_mode: VerifyMode = VerifyMode.SIZE
     max_parallel_files: int = Field(default=2, ge=1)
@@ -103,6 +102,7 @@ class ConnectionPatch(BaseModel):
     schedule_time: str | None = None
     dest_root: str | None = None
     dest_template: str | None = None
+    full_local_reconciliation: bool | None = None
     on_conflict: ConflictMode | None = None
     verify_mode: VerifyMode | None = None
     max_parallel_files: int | None = Field(default=None, ge=1)

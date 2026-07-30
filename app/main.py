@@ -9,6 +9,7 @@ import sys
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import uvicorn
@@ -21,8 +22,10 @@ from app.alerts import AlertManager, AlertRepository
 from app.api.routes import create_router
 from app.config import AppConfig
 from app.db import ConnectionRepository, Database, RunRepository
+from app.downloader import cleanup_orphaned_staging
 from app.exports import ExportService
 from app.logging_setup import configure_logging
+from app.naming import local_path_key, resolve_destination_root
 from app.orchestrator import RunCoordinator
 from app.platform.secretstore import create_secret_store
 from app.platform.single_instance import SingleInstance
@@ -64,6 +67,12 @@ def build_runtime(config: AppConfig) -> RuntimeComponents:
     runs = RunRepository(database)
     recovered_runs, recovered_files = runs.recover_interrupted()
     settings = SettingsStore(database)
+    scheduler_settings = SchedulerSettings.load(settings)
+    _cleanup_runtime_staging(
+        connections,
+        portable_root=config.paths.root,
+        catchup_max_days=scheduler_settings.catchup_max_days,
+    )
     global_parallelism = int(settings.get("concurrency.global", 4))
     throttle = ThrottleManager(global_parallelism=global_parallelism)
     progress = ProgressRegistry(persist_progress=runs.update_file_progress)
@@ -109,7 +118,7 @@ def build_runtime(config: AppConfig) -> RuntimeComponents:
         runs,
         retention_callback=lambda days: retention.purge(days=days),
     )
-    scheduler.configure(SchedulerSettings.load(settings))
+    scheduler.configure(scheduler_settings)
     return RuntimeComponents(
         database,
         connections,
@@ -126,6 +135,69 @@ def build_runtime(config: AppConfig) -> RuntimeComponents:
         recovered_runs,
         recovered_files,
     )
+
+
+def _cleanup_runtime_staging(
+    connections: ConnectionRepository,
+    *,
+    portable_root: Path,
+    catchup_max_days: int,
+    now: datetime | None = None,
+) -> None:
+    """Clean every configured destination once without blocking startup."""
+    retention_days = max(7, catchup_max_days + 1)
+    current_time = now or datetime.now(timezone.utc)
+    cutoff = current_time - timedelta(days=retention_days)
+    try:
+        configured_connections = connections.list()
+    except Exception:
+        logger.warning(
+            "No fue posible enumerar destinos para limpiar staging; "
+            "el arranque continuará.",
+            exc_info=True,
+        )
+        return
+
+    visited: set[bytes] = set()
+    for connection in configured_connections:
+        try:
+            destination_root = resolve_destination_root(
+                connection,
+                portable_root,
+            )
+            root_key = local_path_key(destination_root)
+            if root_key in visited:
+                continue
+            visited.add(root_key)
+            result = cleanup_orphaned_staging(
+                destination_root / ".staging",
+                active_part_names=set(),
+                cutoff=cutoff,
+            )
+        except Exception:
+            logger.warning(
+                "No fue posible limpiar staging en el destino %r; "
+                "el arranque continuará.",
+                connection.dest_root,
+                exc_info=True,
+            )
+            continue
+        if result.errors:
+            logger.warning(
+                "La limpieza de staging en %s terminó con %s errores; "
+                "el arranque continuará.",
+                destination_root,
+                result.errors,
+            )
+        if result.files_removed or result.shards_removed:
+            logger.info(
+                "Staging limpiado en %s: %s parciales y %s bytes; "
+                "%s shards vacíos.",
+                destination_root,
+                result.files_removed,
+                result.bytes_removed,
+                result.shards_removed,
+            )
 
 
 def create_app(config: AppConfig, runtime: RuntimeComponents | None = None) -> FastAPI:

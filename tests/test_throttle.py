@@ -1,3 +1,5 @@
+import threading
+
 from app.throttle import ThrottleManager, TokenBucket
 
 
@@ -51,3 +53,24 @@ def test_host_spacing_is_injected_and_deterministic() -> None:
     with manager.transfer_slot("example.TEST", minimum_spacing_s=2):
         pass
     assert clock.sleeps == [2]
+
+
+def test_token_bucket_wait_is_cancel_aware() -> None:
+    bucket = TokenBucket(1, capacity_bytes=1)
+    assert bucket.consume(1) is True
+    cancel = threading.Event()
+    cancel.set()
+
+    assert bucket.consume(1, cancel_event=cancel) is False
+
+
+def test_transfer_slot_does_not_block_after_cancellation() -> None:
+    manager = ThrottleManager(global_parallelism=1)
+    cancel = threading.Event()
+    cancel.set()
+
+    with manager.transfer_slot(
+        "example.test",
+        cancel_event=cancel,
+    ) as acquired:
+        assert acquired is False

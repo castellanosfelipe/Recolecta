@@ -214,6 +214,105 @@ def test_valid_empty_listing_is_success_with_no_files_result(
     assert all(transport.closed for transport in transports)
 
 
+def test_cancellation_closes_partially_consumed_remote_listing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 27, 12, tzinfo=timezone.utc)
+    paths = AppPaths.from_root(tmp_path).ensure()
+    database = Database(paths.database)
+    database.initialize()
+    connections = ConnectionRepository(
+        database,
+        FernetSecretStore(Fernet.generate_key()),
+    )
+    saved = connections.create(
+        Connection(
+            name="Listado cancelable",
+            protocol=Protocol.SFTP,
+            host="example.test",
+            remote_paths=("/entrada",),
+            dest_root="downloads",
+            window_mode=WindowMode.ROLLING_HOURS,
+            window_hours=24,
+            quiet_period_s=0,
+        )
+    )
+    state = {"iterator_closed": False, "transport_closed": False}
+    coordinator_holder: list[RunCoordinator] = []
+
+    class CancellableListingTransport(Transport):
+        def connect(self):
+            return None
+
+        def close(self):
+            state["transport_closed"] = True
+
+        def iter_files(self, remote_paths, *, recursive, max_depth):
+            del remote_paths, recursive, max_depth
+            self._reset_listing_warnings()
+
+            def stream():
+                try:
+                    yield RemoteFile(
+                        "/entrada/primero.bin",
+                        1,
+                        now - timedelta(hours=1),
+                    )
+                    with database.connect() as connection:
+                        run_id = int(
+                            connection.execute(
+                                """
+                                SELECT id FROM runs
+                                WHERE status = 'running'
+                                ORDER BY id DESC LIMIT 1
+                                """
+                            ).fetchone()["id"]
+                        )
+                    assert coordinator_holder[0].cancel(run_id) is True
+                    yield RemoteFile(
+                        "/entrada/segundo.bin",
+                        1,
+                        now - timedelta(hours=1),
+                    )
+                    raise AssertionError(
+                        "La cancelación no debe seguir consumiendo el listado."
+                    )
+                finally:
+                    state["iterator_closed"] = True
+
+            return stream()
+
+        def stat(self, remote_path):
+            raise AssertionError
+
+        def download_to(self, *args, **kwargs):
+            raise AssertionError
+
+    transport = CancellableListingTransport()
+    monkeypatch.setattr(
+        orchestrator_module,
+        "create_transport",
+        lambda connection, secret, known_hosts: transport,
+    )
+    coordinator = RunCoordinator(
+        database,
+        connections,
+        paths,
+        now=lambda: now,
+    )
+    coordinator_holder.append(coordinator)
+
+    execution = coordinator.execute_connection(saved.id, trigger="manual")
+
+    assert execution.status == "cancelled"
+    assert execution.plan.files_found_count == 0
+    assert state == {
+        "iterator_closed": True,
+        "transport_closed": True,
+    }
+
+
 def test_coordinator_persists_and_redacts_listing_failure(
     monkeypatch, tmp_path: Path
 ) -> None:

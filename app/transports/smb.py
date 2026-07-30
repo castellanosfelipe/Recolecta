@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Callable
 
 from app.models import Connection
-from app.transports.base import ListingResult, RemoteFile, TransferResult, Transport
+from app.transports.base import (
+    DirectoryWorkQueue,
+    RemoteFile,
+    TransferResult,
+    Transport,
+)
 
 
 _UNC_SHARE = re.compile(r"^(\\\\[^\\]+\\[^\\]+)")
@@ -41,28 +48,46 @@ class SmbTransport(Transport):
         finally:
             self._connected_shares.clear()
 
-    def list_files(
+    def iter_files(
         self,
         remote_paths: tuple[str, ...],
         *,
         recursive: bool,
         max_depth: int,
-    ) -> ListingResult:
-        files: list[RemoteFile] = []
-        for configured in remote_paths:
-            root = self._resolve(configured)
-            self._ensure_credentials(root)
-            if root.is_file() or root.is_symlink():
-                files.append(_path_to_remote_file(root))
-                continue
-            self._walk(
-                root,
-                recursive=recursive,
-                max_depth=max_depth,
-                depth=0,
-                output=files,
-            )
-        return ListingResult(tuple(files))
+    ) -> Iterator[RemoteFile]:
+        self._reset_listing_warnings()
+        return self._iter_roots(
+            remote_paths,
+            recursive=recursive,
+            max_depth=max_depth,
+        )
+
+    def _iter_roots(
+        self,
+        remote_paths: tuple[str, ...],
+        *,
+        recursive: bool,
+        max_depth: int,
+    ) -> Iterator[RemoteFile]:
+        roots = ((str(self._resolve(configured)), 0) for configured in remote_paths)
+        with DirectoryWorkQueue(roots) as directories:
+            while True:
+                work = directories.pop()
+                if work is None:
+                    return
+                raw_path, depth = work
+                root = Path(raw_path)
+                self._ensure_credentials(root)
+                if root.is_file() or root.is_symlink():
+                    yield _path_to_remote_file(root)
+                    continue
+                yield from self._walk(
+                    root,
+                    recursive=recursive,
+                    max_depth=max_depth,
+                    depth=depth,
+                    directories=directories,
+                )
 
     def stat(self, remote_path: str) -> RemoteFile:
         path = self._resolve(remote_path)
@@ -104,24 +129,20 @@ class SmbTransport(Transport):
         recursive: bool,
         max_depth: int,
         depth: int,
-        output: list[RemoteFile],
-    ) -> None:
-        for entry in directory.iterdir():
-            if entry.is_symlink():
-                output.append(_path_to_remote_file(entry))
-                continue
-            if entry.is_dir():
-                if recursive and depth < max_depth:
-                    self._walk(
-                        entry,
-                        recursive=recursive,
-                        max_depth=max_depth,
-                        depth=depth + 1,
-                        output=output,
-                    )
-                continue
-            if entry.is_file():
-                output.append(_path_to_remote_file(entry))
+        directories: DirectoryWorkQueue,
+    ) -> Iterator[RemoteFile]:
+        with os.scandir(directory) as entries:
+            for directory_entry in entries:
+                entry = Path(directory_entry.path)
+                if directory_entry.is_symlink():
+                    yield _path_to_remote_file(entry)
+                    continue
+                if directory_entry.is_dir(follow_symlinks=False):
+                    if recursive and depth < max_depth:
+                        directories.add(str(entry), depth + 1)
+                    continue
+                if directory_entry.is_file(follow_symlinks=False):
+                    yield _path_to_remote_file(entry)
 
     def _resolve(self, remote_path: str) -> Path:
         value = remote_path.strip()

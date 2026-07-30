@@ -110,6 +110,7 @@ def test_stability_backup_imports_files_and_reports_unsupported_sources(
     assert paused.name == "FTP sin secreto"
     assert paused.remote_paths == ("/entrada", "/salida")
     assert paused.enabled is False
+    assert paused.full_local_reconciliation is False
     assert paused.has_secret is False
     assert with_secret.name == "SFTP con secreto"
     assert with_secret.enabled is False
@@ -138,6 +139,7 @@ def test_import_is_idempotent_and_recolecta_schedule_round_trips(
                 "remote_paths": ["/cierres"],
                 "schedule_time": "23:45",
                 "timezone": "America/Bogota",
+                "full_local_reconciliation": "true",
                 "enabled": True,
             },
             {
@@ -173,6 +175,8 @@ def test_import_is_idempotent_and_recolecta_schedule_round_trips(
     assert first.to_dict()["created_count"] == 1
     assert first.to_dict()["error_count"] == 4
     assert first.created[0].schedule_time == "23:45"
+    assert first.created[0].full_local_reconciliation is True
+    assert first.created[0].dest_template == r"{remote_tree}"
     assert first.created[0].enabled is False
     assert second.to_dict()["created_count"] == 0
     assert second.to_dict()["skipped_count"] == 1

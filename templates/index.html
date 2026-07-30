@@ -244,9 +244,12 @@
         <label class="span-2">Destino local<input name="dest_root" value="downloads" required></label>
         <label>Ventana<select name="window_mode"><option value="calendar_day">Día calendario anterior</option><option value="rolling_hours">Últimas horas</option><option value="since_last_run">Desde última corrida</option></select></label>
         <label>Horas de ventana<input name="window_hours" type="number" min="1" value="24"></label>
+        <label class="check check-with-help"><input name="recursive" type="checkbox"><span>Incluir subcarpetas<small>Recorre el árbol remoto hasta la profundidad indicada.</small></span></label>
+        <label>Profundidad máxima<input name="max_depth" type="number" min="0" value="3"><small>0 revisa solo la ruta configurada.</small></label>
         <label>Archivos paralelos<input name="max_parallel_files" type="number" min="1" value="2"></label>
         <label>Reintentos<input name="retries" type="number" min="0" value="3"></label>
       </div>
+      <label class="check check-with-help"><input name="full_local_reconciliation" type="checkbox"><span>Comparación completa<small>Compara todo el árbol, repara archivos ausentes o diferentes y conserva los extras locales. Puede tardar en orígenes grandes.</small></span></label>
       <label class="check"><input name="enabled" type="checkbox" checked> Conexión activa</label>
       <p id="connection-validation-status" class="validation-status" role="status" aria-live="polite">Prueba la conexión y sus rutas antes de guardar.</p>
       <div class="dialog-actions">

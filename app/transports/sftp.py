@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import posixpath
 import stat as stat_module
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Callable
@@ -11,7 +12,12 @@ from typing import BinaryIO, Callable
 import paramiko
 
 from app.models import AuthType, Connection
-from app.transports.base import ListingResult, RemoteFile, TransferResult, Transport
+from app.transports.base import (
+    DirectoryWorkQueue,
+    RemoteFile,
+    TransferResult,
+    Transport,
+)
 
 
 class SftpTransport(Transport):
@@ -81,25 +87,45 @@ class SftpTransport(Transport):
             except Exception:
                 pass
 
-    def list_files(
+    def iter_files(
         self,
         remote_paths: tuple[str, ...],
         *,
         recursive: bool,
         max_depth: int,
-    ) -> ListingResult:
+    ) -> Iterator[RemoteFile]:
         sftp = self._require_client()
-        files: list[RemoteFile] = []
-        for root in remote_paths:
-            self._walk(
-                sftp,
-                _normalize(root),
-                recursive=recursive,
-                max_depth=max_depth,
-                depth=0,
-                output=files,
-            )
-        return ListingResult(tuple(files))
+        self._reset_listing_warnings()
+        return self._iter_roots(
+            sftp,
+            remote_paths,
+            recursive=recursive,
+            max_depth=max_depth,
+        )
+
+    def _iter_roots(
+        self,
+        sftp: paramiko.SFTPClient,
+        remote_paths: tuple[str, ...],
+        *,
+        recursive: bool,
+        max_depth: int,
+    ) -> Iterator[RemoteFile]:
+        roots = ((_normalize(root), 0) for root in remote_paths)
+        with DirectoryWorkQueue(roots) as directories:
+            while True:
+                work = directories.pop()
+                if work is None:
+                    return
+                path, depth = work
+                yield from self._walk(
+                    sftp,
+                    path,
+                    recursive=recursive,
+                    max_depth=max_depth,
+                    depth=depth,
+                    directories=directories,
+                )
 
     def stat(self, remote_path: str) -> RemoteFile:
         sftp = self._require_client()
@@ -152,30 +178,29 @@ class SftpTransport(Transport):
         recursive: bool,
         max_depth: int,
         depth: int,
-        output: list[RemoteFile],
-    ) -> None:
-        for attributes in sftp.listdir_attr(path):
+        directories: DirectoryWorkQueue,
+    ) -> Iterator[RemoteFile]:
+        listdir_iter = getattr(sftp, "listdir_iter", None)
+        attributes_list = (
+            listdir_iter(path)
+            if callable(listdir_iter)
+            else iter(sftp.listdir_attr(path))
+        )
+        for attributes in attributes_list:
             name = attributes.filename
             if name in {".", ".."}:
                 continue
             remote_path = posixpath.join(path.rstrip("/"), name) or "/"
             mode = attributes.st_mode or 0
             if stat_module.S_ISLNK(mode):
-                output.append(_attributes_to_file(remote_path, attributes))
+                yield _attributes_to_file(remote_path, attributes)
                 continue
             if stat_module.S_ISDIR(mode):
                 if recursive and depth < max_depth:
-                    self._walk(
-                        sftp,
-                        remote_path,
-                        recursive=recursive,
-                        max_depth=max_depth,
-                        depth=depth + 1,
-                        output=output,
-                    )
+                    directories.add(remote_path, depth + 1)
                 continue
             if stat_module.S_ISREG(mode) or mode == 0:
-                output.append(_attributes_to_file(remote_path, attributes))
+                yield _attributes_to_file(remote_path, attributes)
 
     def _require_client(self) -> paramiko.SFTPClient:
         if self._sftp is None:

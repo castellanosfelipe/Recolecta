@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Callable
+from typing import Any, Callable
 
 
 class TokenBucket:
@@ -32,7 +32,12 @@ class TokenBucket:
         self._updated_at = clock()
         self._lock = threading.Lock()
 
-    def consume(self, amount: int) -> None:
+    def consume(
+        self,
+        amount: int,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
         if amount < 0:
             raise ValueError("No se pueden consumir bytes negativos.")
         remaining = float(amount)
@@ -54,8 +59,13 @@ class TokenBucket:
                         wait = (request - self._tokens) / self.rate
                 if wait <= 0:
                     break
-                self._sleeper(wait)
+                if cancel_event is not None:
+                    if cancel_event.wait(wait):
+                        return False
+                else:
+                    self._sleeper(wait)
             remaining -= request
+        return True
 
 
 class ThrottleManager:
@@ -80,24 +90,41 @@ class ThrottleManager:
 
     @contextmanager
     def transfer_slot(
-        self, host: str, *, minimum_spacing_s: float = 0.0
-    ) -> Iterator[None]:
+        self,
+        host: str,
+        *,
+        minimum_spacing_s: float = 0.0,
+        cancel_event: threading.Event | None = None,
+    ) -> Iterator[bool]:
         """Acquire host launch lock, spacing, then global semaphore."""
         key = host.casefold()
         with self._state_lock:
             host_lock = self._host_locks.setdefault(key, threading.Lock())
-        with host_lock:
+        if not _acquire_interruptibly(host_lock, cancel_event):
+            yield False
+            return
+        try:
             with self._state_lock:
                 previous = self._last_started.get(key)
             if previous is not None and minimum_spacing_s > 0:
                 elapsed = self._clock() - previous
                 if elapsed < minimum_spacing_s:
-                    self._sleeper(minimum_spacing_s - elapsed)
+                    wait = minimum_spacing_s - elapsed
+                    if cancel_event is not None:
+                        if cancel_event.wait(wait):
+                            yield False
+                            return
+                    else:
+                        self._sleeper(wait)
             with self._state_lock:
                 self._last_started[key] = self._clock()
-        self._global.acquire()
+        finally:
+            host_lock.release()
+        if not _acquire_interruptibly(self._global, cancel_event):
+            yield False
+            return
         try:
-            yield
+            yield True
         finally:
             self._global.release()
 
@@ -118,3 +145,16 @@ class ThrottleManager:
                 )
                 self._buckets[key] = bucket
             return bucket
+
+
+def _acquire_interruptibly(
+    lock: Any,
+    cancel_event: threading.Event | None,
+) -> bool:
+    if cancel_event is None:
+        lock.acquire()
+        return True
+    while not cancel_event.is_set():
+        if lock.acquire(timeout=0.1):
+            return True
+    return False

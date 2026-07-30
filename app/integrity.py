@@ -62,7 +62,16 @@ class StreamingVerifier:
         return self._hasher.hexdigest() if self._hasher is not None else None
 
     def verify_size(self, *, actual: int, expected: int | None) -> None:
-        if expected is not None and actual != expected:
+        if expected is not None and actual < expected:
+            raise RecolectaError(
+                ErrorType.PARTIAL_TRANSFER,
+                (
+                    f"La transferencia terminó en {actual} bytes; "
+                    f"se esperaban {expected}."
+                ),
+                retryable=True,
+            )
+        if expected is not None and actual > expected:
             raise RecolectaError(
                 ErrorType.INTEGRITY,
                 f"El tamaño final es {actual} bytes; se esperaban {expected}.",

@@ -54,7 +54,7 @@ Ventana, quiet period, globs, tamaños, symlinks y deduplicación se aplican en 
 
 ## D-014 · Jerarquía temporal FTP con degradación explícita
 
-FTP consulta `MDTM` por archivo, usa el dato `modify` de `MLSD` si `MDTM` no está disponible y cae a `LIST` únicamente cuando el servidor no implementa MLSD. Los resultados de `LIST` se conservan para operación, pero producen advertencias y un plan parcial por su precisión limitada.
+FTP usa `modify` de `MLSD` durante listados —UTC según RFC 3659— y reserva `MDTM` para `stat` de un archivo individual. Esto evita un comando adicional por cada documento y permite inventarios de millones. Si el servidor no implementa MLSD, cae a `LIST`; esos resultados se conservan para operación, pero producen advertencias y un plan parcial por su precisión limitada.
 
 ## D-015 · Adaptadores de metadatos sin lectura de contenido
 
@@ -62,7 +62,15 @@ SFTP usa `listdir_attr` y TOFU en `data/known_hosts`; WebDAV usa `PROPFIND` con 
 
 ## D-016 · Staging determinista por identidad remota
 
-El `.part` usa un UUIDv5 derivado de conexión, ruta remota, mtime y tamaño. Sigue teniendo un nombre opaco, pero puede localizarse tras reiniciar sin persistir un nombre aleatorio adicional. Un cambio real del archivo remoto produce otro staging y evita mezclar contenidos.
+El `.part` usa un UUIDv5 derivado de conexión, ruta remota, mtime y tamaño.
+Sigue teniendo un nombre opaco, pero puede localizarse tras reiniciar sin
+persistir un nombre aleatorio adicional. Un cambio real del archivo remoto
+produce otro staging y evita mezclar contenidos. Para no concentrar millones
+de entradas en un directorio, el mismo UUID se ubica en
+`.staging/<dos primeros hex>/<uuid>.part`; el cálculo de identidad no cambió.
+Después del pre-flight, el formato plano legado se migra con `os.replace`. Si
+no puede migrarse se reutiliza en su lugar original y, si ambas rutas existen,
+prevalece el shard.
 
 ## D-017 · Publicación atómica después de integridad
 
@@ -74,7 +82,13 @@ Con SHA-256, un proceso reiniciado lee una vez el parcial existente para reconst
 
 ## D-019 · Reinicio controlado cuando resume no está disponible
 
-FTP intenta `REST`, SFTP hace `seek` y WebDAV exige `206` para un `Range`. Si el servidor rechaza la operación o responde `200`, el transporte trunca el staging, reinicia los contadores/hash y registra `resume_supported=false`.
+FTP intenta `REST`, SFTP hace `seek` y WebDAV exige `206` para un `Range`. En
+WebDAV, un `206` solo es válido si `Content-Range` está bien formado y comienza
+exactamente en el offset solicitado; una respuesta ambigua se rechaza antes de
+modificar el parcial. Si el servidor responde `200`, el transporte trunca el
+staging, reinicia los contadores/hash y registra `resume_supported=false`.
+WebDAV solicita `Accept-Encoding: identity` y consume bytes crudos para impedir
+que una descompresión HTTP transparente cambie el contenido publicado.
 
 ## D-020 · Saneamiento y truncación resistente a colisiones
 
@@ -94,7 +108,7 @@ Una ventana se considera atendida únicamente si existe una corrida `ok` con los
 
 ## D-024 · Recuperación conservadora de estados interrumpidos
 
-Al arrancar, las corridas `running` pasan a `failed/interrupted` y sus archivos `downloading` vuelven a `pending`. El staging UUIDv5 permanece, por lo que la nueva corrida de catch-up puede reanudar los bytes sin presentar la corrida antigua como exitosa.
+Al arrancar, las corridas `running` se terminalizan como `failed/interrupted`; sus archivos `pending` o `downloading` también quedan terminalizados como `failed/interrupted` dentro de la corrida original y no vuelven a `pending`. El archivo `.part` determinista permanece, por lo que una corrida nueva —manual, programada o de catch-up— puede reutilizarlo y reanudar los bytes sin presentar la corrida antigua como exitosa.
 
 ## D-025 · Mutex global y delegación HTTP local
 
@@ -304,3 +318,99 @@ estado y obtiene una etiqueta accionable desde `error_type`, con una causa
 genérica solo para códigos desconocidos. API y exports preservan `status` y
 pueden añadir `result_status` y `status_label`, sin migrar ni reinterpretar el
 historial.
+
+## D-050 · Árbol remoto, reconciliación unidireccional y cola acotada
+
+El destino predeterminado usa `{remote_tree}` y conserva todos los componentes
+de la ruta remota bajo `dest_root`. En rutas POSIX se elimina únicamente el
+separador inicial; en UNC se valida el host configurado y el árbol empieza en
+el recurso compartido. Cada asignación se reserva de forma persistente por
+conexión, alcance de plantilla y ruta remota. Si el saneamiento de Windows
+hiciera coincidir dos rutas diferentes, se añade un sufijo hash estable en vez
+de permitir que una publicación reemplace a la otra.
+
+Cada conexión puede activar `full_local_reconciliation`. En ese modo se
+recorre todo el árbol de sus raíces, se omiten ventana e historial exitoso y
+se compara cada archivo remoto con su destino. Se conserva quiet period,
+globs, tamaños y la prohibición de seguir symlinks. Un archivo regular local
+se considera equivalente por tamaño —si el remoto lo conoce— y por `mtime`
+con tolerancia de dos segundos —si está disponible—. Los ausentes o diferentes
+se descargan, los equivalentes se omiten y los archivos locales extra no se
+borran ni modifican. Es deliberadamente una reconciliación
+**remoto → local**, no una sincronización bidireccional.
+
+El historial exitoso deja de ser una restricción única global: sigue sirviendo
+para deduplicar la ventana normal, pero no puede impedir reparar un destino
+eliminado o alterado. La unicidad se aplica dentro de cada corrida y una tabla
+de reservas mantiene estable el destino entre corridas.
+
+Los transportes producen metadatos incrementalmente y sus directorios
+pendientes usan una cola temporal respaldada por disco. El orquestador
+clasifica en lotes de hasta 500; `run_files` conserva toda la cola accionable
+y una muestra máxima de 500 decisiones no accionables, mientras `runs`
+mantiene sus totales exactos. Así una reconciliación diaria sin cambios no
+duplica millones de filas de auditoría. Los trabajadores reclaman lotes no
+mayores de 64 ni de dos veces el paralelismo configurado, reutilizan una
+sesión remota por worker y el progreso conserva solo archivos activos más
+contadores agregados. Dry-run, resultados y detalle exponen como máximo 500
+elementos de muestra, junto con totales reales e indicadores de truncamiento.
+Por ello el uso de memoria no crece linealmente con listados de millones de
+documentos.
+
+Una secuencia suficientemente larga de fallos sistémicos equivalentes
+—autenticación, DNS, permisos, protocolo, conexión, timeout, TLS o transferencia
+parcial— abre un cortacircuitos. El lote ya ejecutado se persiste y el resto de
+la cola se terminaliza con la misma causa mediante una sola actualización; un
+éxito o un error distinto reinicia la secuencia. Así no se crean millones de
+sesiones ni parciales cuando el origen completo requiere intervención.
+
+La durabilidad de la cola conserva planificación y evidencia, pero no se
+interpreta como continuación exacta de la misma corrida tras un crash. Al
+arrancar, esa corrida se cierra como `failed/interrupted`; una ejecución nueva
+redescubre el remoto y puede reutilizar el `.part` determinista.
+
+Todo contenido se trata como bytes opacos desde el transporte hasta
+`os.replace`. No se decodifica texto, no se normalizan saltos de línea y no se
+recodifica ningún documento. Tamaño y, cuando se solicita, SHA-256 verifican
+la secuencia binaria publicada.
+
+## D-051 · Retención conservadora y acotada del staging
+
+El arranque limpia `.staging` una vez por raíz de destino distinta y no sigue
+symlinks. Un `.part` vacío no aporta reanudación y puede eliminarse de
+inmediato; uno con contenido solo es huérfano eliminable cuando su `mtime` es
+anterior a `max(7 días, catchup.max_days + 1 día)`. Así una suspensión larga o
+una ventana todavía recuperable no pierde bytes ya transferidos. Los
+parciales activos o recientes y los archivos ajenos a `.part` se conservan,
+y los shards que quedan vacíos se retiran.
+
+El recorrido no construye una lista de rutas: devuelve únicamente contadores
+de parciales examinados/eliminados, bytes liberados, shards retirados y
+errores. Una raíz inaccesible o un fallo individual genera una advertencia y
+no bloquea el resto de destinos ni el inicio del servicio.
+
+## D-052 · Reserva conservadora, metadatos y cancelación cooperativa
+
+Un archivo con tamaño remoto conocido reserva únicamente los bytes pendientes
+después de descontar un parcial válido, tanto en staging sharded como legado.
+El parcial solo se considera válido cuando tamaño, `mtime` y confiabilidad del
+timestamp identifican la versión remota; tamaño por sí solo no permite mezclar
+un prefijo viejo con un objeto nuevo.
+
+Si el tamaño es desconocido se reservan 64 MiB por worker que puede estar
+activo, no por cada elemento del inventario, y el parcial anterior se descarta.
+Durante el stream se comprueba el espacio antes de escribir ventanas acotadas,
+incluyendo el margen de los workers simultáneos. Esto mantiene acotado el
+pre-flight para millones de documentos sin permitir que un objeto mayor a
+64 MiB agote el volumen.
+
+Una transferencia menor al tamaño anunciado se clasifica como
+`partial_transfer` y puede reintentarse; una mayor es `integrity` y no se
+publica. El `mtime` remoto se aplica al `.part` después de `fsync` y antes de
+`os.replace`, de modo que un fallo de metadatos conserva el parcial y nunca
+deja un archivo definitivo que aparenta estar completo.
+
+La cancelación interrumpe descubrimiento, adquisición de cupos, espera entre
+solicitudes, token bucket y backoff mediante el mismo evento cooperativo. Una
+lectura de red ya iniciada depende del timeout del transporte, pero no se
+extrae otro lote ni se inicia otro intento después de recibir la cancelación.

@@ -316,6 +316,8 @@ def test_history_files_dashboard_settings_and_csv(tmp_path: Path) -> None:
     assert detail.json()["result_status"] == "no_files"
     assert detail.json()["status_label"] == "Archivos no existentes"
     assert detail.json()["files"] == []
+    assert detail.json()["files_returned"] == 0
+    assert detail.json()["files_truncated"] is False
     assert dashboard.json()["connections"][0]["last_status"] == "ok"
     assert dashboard.json()["connections"][0]["last_result_status"] == (
         "no_files"
@@ -331,6 +333,52 @@ def test_history_files_dashboard_settings_and_csv(tmp_path: Path) -> None:
     assert exported.text.startswith("id,run_id,connection_name")
     assert rejected_secret.status_code == 422
     assert "no-guardar" not in rejected_secret.text
+
+
+def test_run_detail_returns_at_most_500_files_and_reports_truncation(
+    tmp_path: Path,
+) -> None:
+    client, connections, runs = api(tmp_path)
+    saved = connections.create(
+        Connection(
+            name="Cola masiva",
+            host="example.test",
+            remote_paths=("/in",),
+        )
+    )
+    started = datetime(2026, 7, 27, 3, tzinfo=timezone.utc)
+    run_id = runs.start_run(
+        connection_id=saved.id,
+        trigger="manual",
+        window_start_utc=started - timedelta(days=1),
+        window_end_utc=started,
+        started_at=started,
+    )
+    for index in range(501):
+        runs.add_file(
+            run_id=run_id,
+            connection_id=saved.id,
+            remote_file=RemoteFile(
+                f"/in/documento-{index:04d}.bin",
+                index,
+                started,
+            ),
+            status="duplicate",
+        )
+    runs.finish_run(run_id, status="ok")
+
+    with client:
+        detail = client.get(f"/api/runs/{run_id}")
+        second_page = client.get(
+            f"/api/files?run_id={run_id}&limit=1&offset=500"
+        )
+
+    payload = detail.json()
+    assert payload["files_found"] == 501
+    assert payload["files_returned"] == 500
+    assert payload["files_truncated"] is True
+    assert len(payload["files"]) == 500
+    assert len(second_page.json()["items"]) == 1
 
 
 def test_run_filters_use_visual_results_without_hiding_canonical_status(

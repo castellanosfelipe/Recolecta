@@ -75,11 +75,19 @@ def test_connection_import_schedule_and_dialog_close_controls_are_exposed(
     with TestClient(app) as client:
         page = client.get("/").text
         script = client.get("/static/app.js").text
+        styles = client.get("/static/app.css").text
 
     assert 'id="connection-import-button"' in page
     assert 'id="connection-import-file"' in page
     assert 'name="schedule_time" type="time"' in page
     assert 'name="remote_paths" rows="2" required' in page
+    assert 'name="recursive" type="checkbox"' in page
+    assert 'name="max_depth" type="number" min="0" value="3"' in page
+    assert 'name="full_local_reconciliation" type="checkbox"' in page
+    assert "Comparación completa" in page
+    assert "repara archivos ausentes o diferentes" in page
+    assert "conserva los extras locales" in page
+    assert "Puede tardar en orígenes grandes." in page
     assert 'id="connection-test-button" type="button"' in page
     assert (
         'id="connection-save-button" type="submit" '
@@ -127,6 +135,18 @@ def test_connection_import_schedule_and_dialog_close_controls_are_exposed(
         in script
     )
     assert "La importación se completó, pero no se pudo actualizar la vista" in script
+    assert 'data-full-local-reconciliation="${item.id}"' in script
+    assert "Comparar todo el árbol" in script
+    assert "Repara ausentes o diferentes; conserva extras locales" in script
+    assert "no elimina archivos locales extra" in script
+    assert "toggleFullLocalReconciliation" in script
+    assert 'body: { full_local_reconciliation: enabled }' in script
+    assert "input.checked = previous" in script
+    assert "Comparación completa habilitada." in script
+    assert "payload.recursive = form.elements.recursive.checked" in script
+    assert "payload.full_local_reconciliation" in script
+    assert ".reconciliation-action" in styles
+    assert ".check-with-help" in styles
 
 
 def test_dashboard_exposes_descriptive_domain_specific_statuses(

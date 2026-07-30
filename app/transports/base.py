@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sqlite3
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import BinaryIO, Callable
@@ -63,8 +65,87 @@ class TransferResult:
     resume_supported: bool = True
 
 
+class DirectoryWorkQueue:
+    """Disk-backed traversal queue that does not retain huge trees in RAM."""
+
+    def __init__(self, roots: Iterable[tuple[str, int]]) -> None:
+        self._database = sqlite3.connect("")
+        self._database.execute("PRAGMA temp_store = FILE")
+        self._database.execute(
+            """
+            CREATE TABLE directory_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL UNIQUE,
+                depth INTEGER NOT NULL
+            )
+            """
+        )
+        self._cursor_id = 0
+        self.add_many(roots)
+
+    def __enter__(self) -> "DirectoryWorkQueue":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def add(self, path: str, depth: int) -> None:
+        self._database.execute(
+            "INSERT OR IGNORE INTO directory_queue(path, depth) VALUES (?, ?)",
+            (path, max(0, depth)),
+        )
+
+    def add_many(self, items: Iterable[tuple[str, int]]) -> None:
+        self._database.executemany(
+            """
+            INSERT OR IGNORE INTO directory_queue(path, depth)
+            VALUES (?, ?)
+            """,
+            ((path, max(0, depth)) for path, depth in items),
+        )
+
+    def pop(self) -> tuple[str, int] | None:
+        row = self._database.execute(
+            """
+            SELECT id, path, depth
+            FROM directory_queue
+            WHERE id > ?
+            ORDER BY id
+            LIMIT 1
+            """,
+            (self._cursor_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        self._cursor_id = int(row[0])
+        return str(row[1]), int(row[2])
+
+    def close(self) -> None:
+        self._database.close()
+
+
 class Transport(ABC):
     """Synchronous listing/stat interface shared by every protocol."""
+
+    @property
+    def last_listing_warnings(self) -> tuple[str, ...]:
+        """Return aggregated warnings from the most recent listing."""
+        return getattr(self, "_last_listing_warnings", ())
+
+    def _reset_listing_warnings(self) -> None:
+        self._last_listing_warnings: tuple[str, ...] = ()
+
+    def _add_listing_warning(self, warning: str) -> None:
+        if warning not in self.last_listing_warnings:
+            self._last_listing_warnings = (
+                *self.last_listing_warnings,
+                warning,
+            )
 
     def __enter__(self) -> "Transport":
         self.connect()
@@ -86,7 +167,34 @@ class Transport(ABC):
     def close(self) -> None:
         """Close the protocol session without raising during cleanup."""
 
-    @abstractmethod
+    def iter_files(
+        self,
+        remote_paths: tuple[str, ...],
+        *,
+        recursive: bool,
+        max_depth: int,
+    ) -> Iterator[RemoteFile]:
+        """Iterate files without requiring a protocol-wide inventory.
+
+        The fallback keeps third-party and test transports that still
+        implement only ``list_files`` compatible. Production adapters
+        override this method with a genuinely incremental implementation.
+        """
+        self._reset_listing_warnings()
+        legacy_listing = type(self).list_files
+        if legacy_listing is Transport.list_files:
+            raise NotImplementedError(
+                "El transporte debe implementar iter_files o list_files."
+            )
+        result = legacy_listing(
+            self,
+            remote_paths,
+            recursive=recursive,
+            max_depth=max_depth,
+        )
+        self._last_listing_warnings = result.warnings
+        return iter(result.files)
+
     def list_files(
         self,
         remote_paths: tuple[str, ...],
@@ -94,7 +202,15 @@ class Transport(ABC):
         recursive: bool,
         max_depth: int,
     ) -> ListingResult:
-        """List files below one or more configured roots."""
+        """Materialize an incremental listing for legacy callers."""
+        files = tuple(
+            self.iter_files(
+                remote_paths,
+                recursive=recursive,
+                max_depth=max_depth,
+            )
+        )
+        return ListingResult(files, self.last_listing_warnings)
 
     @abstractmethod
     def stat(self, remote_path: str) -> RemoteFile:

@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from cryptography.fernet import Fernet
+import pytest
 
 from app.connection_validation import ConnectionValidationResult
 from app.db import ConnectionRepository, Database
@@ -12,6 +13,7 @@ from app.orchestrator import (
     PlanStatus,
     RunCoordinator,
     TimeWindow,
+    _listing_iterator,
     dry_run,
     plan_listing,
 )
@@ -191,6 +193,59 @@ def test_dry_run_only_lists_and_closes_transport() -> None:
     assert len(plan.files_to_download) == 1
     assert transport.list_calls == 1
     assert transport.closed
+
+
+def test_listing_iterator_closes_generator_before_transport_on_error() -> None:
+    events: list[str] = []
+
+    class OrderedTransport(Transport):
+        def connect(self) -> None:
+            events.append("transport_connected")
+
+        def close(self) -> None:
+            events.append("transport_closed")
+
+        def iter_files(self, remote_paths, *, recursive, max_depth):
+            del remote_paths, recursive, max_depth
+
+            def stream():
+                try:
+                    yield remote(
+                        "uno.csv",
+                        when=datetime(
+                            2026,
+                            7,
+                            27,
+                            tzinfo=timezone.utc,
+                        ),
+                    )
+                finally:
+                    events.append("iterator_closed")
+
+            return stream()
+
+        def stat(self, remote_path):
+            raise AssertionError
+
+        def download_to(self, *args, **kwargs):
+            raise AssertionError
+
+    transport = OrderedTransport()
+    with pytest.raises(RuntimeError, match="fallo de planificación"):
+        with _listing_iterator(
+            transport,
+            ("/entrada",),
+            recursive=False,
+            max_depth=0,
+        ) as discovered:
+            next(discovered)
+            raise RuntimeError("fallo de planificación")
+
+    assert events == [
+        "transport_connected",
+        "iterator_closed",
+        "transport_closed",
+    ]
 
 
 def test_dry_run_loads_successful_identities_from_database(tmp_path: Path) -> None:

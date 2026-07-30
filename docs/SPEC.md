@@ -47,7 +47,7 @@ Escenarios que debe resolver:
 |---|---|
 | Corrida nocturna normal | Descarga los archivos de la ventana configurada, sin duplicar los ya traídos. |
 | El equipo estaba apagado a la hora programada | Al encender, detecta la corrida perdida y la ejecuta (catch-up con ventana de gracia). |
-| Reinicio de Windows | El servicio arranca solo, sin intervención humana, y retoma corridas pendientes. |
+| Reinicio de Windows | El servicio arranca solo, cierra como interrumpida la corrida anterior y una nueva ejecución redescubre el trabajo pendiente y puede reanudar sus `.part`. |
 | Caída de red a mitad de descarga | Reintenta con backoff y **reanuda** el archivo parcial, no lo reinicia desde cero. |
 | Un archivo aún se está escribiendo en el servidor | Lo omite en esta corrida y lo toma en la siguiente (quiet period). |
 | El operador quiere saber qué pasó | Dashboard local + export CSV/JSONL descargable por corrida y global. |
@@ -160,11 +160,15 @@ Scheduler (APScheduler BackgroundScheduler, tz configurable)
    ├─ Catch-up al arranque (corridas perdidas)
    └─ Housekeeping (purga de historial, verificación de espacio)
         │
-RunOrchestrator ── por conexión: Lister → Planner → DownloadPool
-        │              │            │             │
-        │              │            │             └─ N workers, progreso por bloque
-        │              │            └─ ventana temporal, filtros, dedupe, orden
+RunOrchestrator ── por conexión: Lister incremental → Planner por lotes
+        │              │                                │
+        │              │                                └─ ventana o comparación local, filtros, dedupe
         │              └─ FTP/FTPS · SFTP · WebDAV(S) · SMB/UNC
+        │
+Cola persistente SQLite (`run_files`) → reclamo acotado → DownloadPool
+        │                                      │
+        │                                      └─ N workers, progreso por bloque
+        └─ fases, totales y destinos reservados sin cargar el listado completo en RAM
         │
 Throttle (lock por host · spacing · rate limit · concurrencia global · bandwidth cap)
         │
@@ -202,10 +206,11 @@ CREATE TABLE connections (
     window_hours INTEGER NOT NULL DEFAULT 24,
     window_overlap_min INTEGER NOT NULL DEFAULT 15,
     quiet_period_s INTEGER NOT NULL DEFAULT 120,
+    full_local_reconciliation INTEGER NOT NULL DEFAULT 0,
     timezone TEXT NOT NULL DEFAULT 'America/Bogota',
     schedule_time TEXT,                         -- HH:MM; NULL hereda agenda global
     dest_root TEXT NOT NULL,
-    dest_template TEXT NOT NULL DEFAULT '{client}\{connection}\{yyyy}\{MM}\{dd}\{filename}',
+    dest_template TEXT NOT NULL DEFAULT '{remote_tree}',
     on_conflict TEXT NOT NULL DEFAULT 'skip',     -- skip|overwrite|keep_both
     verify_mode TEXT NOT NULL DEFAULT 'size',     -- size|sha256
     max_parallel_files INTEGER NOT NULL DEFAULT 2,
@@ -224,7 +229,10 @@ CREATE TABLE runs (
     window_start_utc TEXT NOT NULL, window_end_utc TEXT NOT NULL,
     started_at TEXT NOT NULL, finished_at TEXT,
     status TEXT NOT NULL,                   -- running|ok|partial|failed|cancelled
+    scan_mode TEXT NOT NULL DEFAULT 'window', -- window|full_local_reconciliation
+    phase TEXT NOT NULL DEFAULT 'discovering', -- discovering|downloading|finished
     files_found INTEGER DEFAULT 0, files_downloaded INTEGER DEFAULT 0,
+    files_planned INTEGER DEFAULT 0, planned_bytes INTEGER DEFAULT 0,
     files_skipped INTEGER DEFAULT 0, files_failed INTEGER DEFAULT 0,
     bytes_downloaded INTEGER DEFAULT 0,
     error_type TEXT, error_msg TEXT NOT NULL DEFAULT ''
@@ -236,18 +244,33 @@ CREATE TABLE run_files (
     run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     connection_id INTEGER NOT NULL,
     remote_path TEXT NOT NULL, local_path TEXT,
+    identity_key TEXT NOT NULL, plan_status TEXT, reason TEXT NOT NULL DEFAULT '',
     size_bytes INTEGER, bytes_done INTEGER NOT NULL DEFAULT 0,
-    mtime_utc TEXT, sha256 TEXT,
+    mtime_utc TEXT,
+    timestamp_reliable INTEGER NOT NULL DEFAULT 0,
+    timestamp_source TEXT NOT NULL DEFAULT '',
+    sha256 TEXT,
     status TEXT NOT NULL,   -- pending|downloading|ok|skipped|duplicate|failed
     attempts INTEGER NOT NULL DEFAULT 0,
     error_type TEXT, error_msg TEXT NOT NULL DEFAULT '',
     started_at TEXT, finished_at TEXT, duration_s REAL
 );
 CREATE INDEX idx_run_files_run ON run_files(run_id, status);
--- Clave de idempotencia: identidad lógica del archivo remoto
-CREATE UNIQUE INDEX idx_file_identity
-    ON run_files(connection_id, remote_path, mtime_utc, size_bytes)
-    WHERE status = 'ok';
+CREATE INDEX idx_file_identity_lookup
+    ON run_files(connection_id, remote_path, mtime_utc, size_bytes, status);
+CREATE UNIQUE INDEX idx_run_file_identity
+    ON run_files(run_id, identity_key) WHERE identity_key <> '';
+CREATE INDEX idx_run_files_queue ON run_files(run_id, status, id);
+
+CREATE TABLE destination_reservations (
+    connection_id INTEGER NOT NULL,
+    mapping_scope TEXT NOT NULL,
+    remote_path TEXT NOT NULL,
+    local_path TEXT NOT NULL,
+    local_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (connection_id, mapping_scope, remote_path)
+);
 ```
 
 `settings` y `alerts_log` como en el proyecto previo.
@@ -285,14 +308,25 @@ pueden añadir `result_status` y `status_label` para consumo humano.
 ### RF-1 · Gestión de conexiones
 
 - CRUD completo desde el dashboard, con **"Probar conexión y rutas"** en el
-  editor y **"Simular corrida" (dry-run)** para una conexión guardada: muestra
-  el plan completo sin descargar un solo byte.
+  editor y **"Simular corrida" (dry-run)** para una conexión guardada: calcula
+  los totales y muestra una muestra acotada del plan sin descargar un solo byte.
+- Cada tarjeta y el editor exponen **Comparación completa con carpeta local**.
+  El cambio se persiste por conexión y la interfaz confirma o revierte el
+  checkbox según la respuesta del backend.
 - El editor mantiene **Guardar conexión** bloqueado hasta validar el borrador
   actual: credencial, todas las rutas remotas y capacidad de escritura y
   renombrado en el destino local. Cualquier cambio posterior exige repetir la
   prueba; el backend aplica la misma regla antes de persistir cambios de
   conectividad o rutas. Si se configuró una acción de movimiento remoto,
   también comprueba que su carpeta de destino sea accesible.
+- La validación remota llama cada raíz de forma independiente y consume como
+  máximo 101 metadatos: conserva una muestra de 100 y usa el elemento adicional
+  exclusivamente para detectar truncamiento. Debe cerrar el iterador antes de
+  cerrar el transporte, también ante errores, y nunca descargar contenido.
+  `remote_files_found` representa el tamaño de la muestra de las raíces de
+  origen y no incluye una carpeta usada únicamente como destino de movimiento;
+  `remote_files_found_is_exact=false` y una advertencia por raíz indican que no
+  es un inventario total. Las raíces válidas y vacías se aceptan.
 - Puertos por defecto: FTP/FTPS 21, SFTP 22, WEBDAV 80, WEBDAVS 443, SMB 445.
 - **Importación del backup de StabilityMonitor** (`monitor-backup.json`), formato exacto en §16.1:
   - Acepta solo los protocolos de archivos: `FTP`, `FTPS`, `SFTP`, `WEBDAV`, `WEBDAVS`, `SMB`.
@@ -316,10 +350,11 @@ Esta es la regla de negocio más delicada del sistema. Impleméntala con tests e
     **Este es el modo recomendado por defecto para producción**; `calendar_day` es el que pide la lectura literal
     del requisito y debe seguir siendo el default de la UI.
 - **Normaliza todos los timestamps a UTC antes de comparar.** Fuentes por protocolo:
-  - FTP/FTPS: usa `MDTM` (RFC 3659, devuelve UTC). **No confíes en el `LIST`**: da hora local del servidor,
-    sin zona, con precisión de minutos, y para archivos de más de 6 meses omite la hora y da el año.
-    Si `MDTM` no está soportado, usa `MLSD` (`modify=` en UTC); si tampoco, cae a `LIST` y **marca la corrida
-    como `partial` con advertencia explícita de precisión temporal**.
+  - FTP/FTPS: en listados usa `MLSD` (`modify=` en UTC, RFC 3659) de forma incremental y reserva `MDTM`
+    para `stat` individual; así evita una orden adicional por cada archivo. **No confíes en el `LIST`**:
+    da hora local del servidor, sin zona, con precisión de minutos, y para archivos de más de 6 meses omite
+    la hora y da el año. Si `MLSD` no está soportado, cae a `LIST` y **marca la corrida como `partial` con
+    advertencia explícita de precisión temporal**.
   - SFTP: `st_mtime` de `sftp.listdir_attr()` (epoch UTC).
   - WebDAV: `PROPFIND` con `Depth: 1`, propiedad `getlastmodified` (RFC 1123, GMT).
   - SMB/UNC: `Path.stat().st_mtime` (epoch local → convertir).
@@ -329,29 +364,88 @@ Esta es la regla de negocio más delicada del sistema. Impleméntala con tests e
   exclusión de directorios, sin seguir symlinks.
 - **Deduplicación:** un archivo con la misma `(remote_path, mtime_utc, size)` ya descargado con éxito se marca
   `duplicate` y no se vuelve a bajar, sin importar cuántas veces se dispare la corrida.
+- **Comparación completa local opcional:** cuando
+  `full_local_reconciliation=true`, el listado recorre de forma recursiva todo
+  el árbol de cada raíz remota e ignora tanto la ventana temporal como el
+  historial exitoso. Conserva globs, límites de tamaño, quiet period y la regla
+  de no seguir symlinks. Un archivo local es equivalente únicamente si es un
+  archivo regular, coincide su tamaño cuando el remoto lo anuncia y su `mtime`
+  coincide dentro de una tolerancia de dos segundos cuando está disponible.
+  Los ausentes y diferentes se encolan para descarga; los equivalentes se
+  registran como presentes. Es una reconciliación unidireccional
+  **remoto → local**: nunca elimina, mueve ni modifica archivos locales extra.
+  Este modo rechaza plantillas con cualquier variante de `{run_id}`, porque
+  una ruta distinta por corrida impediría comparar de forma estable contra el
+  destino local.
 
 ### RF-3 · Motor de descarga
 
-- **Atomicidad obligatoria:** descarga a `<dest>\.staging\<uuid>.part` y al terminar `os.replace()` al destino final.
-  Nunca puede quedar un archivo incompleto con nombre definitivo. Limpia `.staging` huérfano al arrancar.
+- **Atomicidad obligatoria:** descarga a
+  `<dest>\.staging\<2-hex>\<uuid>.part` y al terminar usa `os.replace()` hacia
+  el destino final. El UUIDv5 sigue derivándose de la misma identidad remota;
+  el shard evita concentrar millones de entradas en un único directorio.
+  Después del pre-flight, un parcial legado
+  `<dest>\.staging\<uuid>.part` se migra atómicamente al shard. Si la
+  migración falla se reutiliza el legado, y si existen ambos se prefiere el
+  shard. Nunca puede quedar un archivo incompleto con nombre definitivo.
+- **Limpieza conservadora de staging:** al arrancar recorre, sin seguir
+  symlinks, `.staging` una vez por `dest_root` único. Elimina parciales vacíos
+  de inmediato y parciales con datos solo si son anteriores a
+  `max(7 días, catchup.max_days + 1 día)`. Conserva archivos activos,
+  recientes y ajenos a `.part`, elimina shards vacíos y emite únicamente
+  contadores agregados de archivos, bytes y errores. Una raíz inaccesible
+  produce una advertencia y no bloquea el arranque.
+- **Contenido opaco:** la transferencia, el staging, la reanudación, el hash y
+  la publicación operan con bytes. Recolecta no decodifica, recodifica,
+  normaliza saltos de línea ni transforma documentos; el archivo publicado
+  conserva exactamente la secuencia de bytes recibida.
 - **Reanudación:** ante corte, retoma desde el offset ya escrito:
   - FTP/FTPS: `retrbinary(..., rest=offset)` (comando `REST`); si el servidor no lo soporta, reinicia y regístralo.
   - SFTP: `open()` + `seek(offset)` + lectura por bloques.
-  - WebDAV: header `Range: bytes=offset-`; valida `206 Partial Content`, si devuelve `200` reinicia.
+  - WebDAV: solicita `Accept-Encoding: identity`, lee el cuerpo HTTP crudo y
+    envía `Range: bytes=offset-`. Solo acepta `206 Partial Content` cuando
+    `Content-Range` es válido y comienza en el offset exacto; si devuelve
+    `200`, reinicia desde cero, y si el rango es ambiguo rechaza la respuesta
+    sin tocar el parcial.
+  - Un parcial solo es reutilizable si tamaño, `mtime` y confiabilidad del
+    timestamp identifican la versión remota. Tamaño por sí solo no basta.
 - **Verificación de integridad:** siempre compara tamaño final contra el anunciado (`SIZE`, `st_size`,
   `getcontentlength`/`Content-Length`). Con `verify_mode='sha256'`, calcula el hash en streaming durante la
   descarga (sin segunda lectura del disco) y guárdalo en `run_files.sha256`.
+  Una respuesta más corta se clasifica como `partial_transfer` reintentable;
+  una más larga es `integrity`. Antes de publicar, aplica el `mtime` remoto al
+  `.part`; si ese paso falla, conserva el parcial y no crea el archivo final.
 - **Reintentos:** hasta `retries` con backoff exponencial + jitter, respetando la política de cortesía.
   Clasifica el error antes de reintentar: `auth` y `permission` no se reintentan, `tcp_timeout` sí.
 - **Concurrencia y cortesía** (hereda `throttle.py`, orden de adquisición: lock por host → spacing → rate limit → semáforo global):
   - `max_parallel_files` por conexión (default 2, jamás abrir 20 sesiones contra un FTP corporativo).
   - Una sola sesión de control por host cuando el protocolo lo exija.
   - `bandwidth_limit_kbps` opcional por conexión, implementado como token bucket sobre el callback de bloques.
-- **Pre-flight de espacio en disco:** antes de arrancar, suma el tamaño planificado y compáralo contra el espacio
-  libre del volumen destino. Si `libre < total + 10%`, aborta con `error_type='disk_space'` y alerta, sin descargar nada.
+  - La cancelación interrumpe de forma cooperativa la espera de locks,
+    spacing, token bucket y backoff; no reclama otro lote ni inicia otro
+    intento después de recibirse.
+- **Pre-flight de espacio en disco:** antes de arrancar calcula el crecimiento
+  local neto y el staging simultáneo (`min(tamaño_remoto, tamaño_local)` por
+  reemplazo activo), añade la reserva configurada y compáralo con el espacio
+  libre. Revalida cada lote; si no alcanza, aborta con
+  `error_type='disk_space'` sin publicar archivos incompletos.
+  Para tamaño conocido descuenta un parcial confiable sharded o legado. Para
+  tamaño desconocido reserva 64 MiB solo por worker activo y comprueba el
+  espacio incrementalmente durante el stream, antes de escribir cada ventana
+  acotada. Un parcial sin identidad remota confiable se reinicia desde cero.
+- **Cola para gran volumen:** cada transporte entrega metadatos de forma
+  incremental; el orquestador planifica e inserta en SQLite en lotes de hasta
+  500 entradas. `run_files` conserva todas las descargas accionables y hasta
+  500 decisiones omitidas como muestra; los totales exactos quedan en
+  `runs`. Los trabajadores reclaman lotes acotados —como máximo 64 y nunca
+  más de dos veces el paralelismo configurado— y reutilizan una sesión por
+  worker. El proceso no conserva millones de rutas, futuros ni resultados
+  terminales en memoria.
 - **Seguridad de rutas:** sanitiza todo nombre proveniente del servidor. Rechaza `..`, rutas absolutas y separadores
   embebidos; resuelve la ruta final y verifica con `Path.resolve().is_relative_to(dest_root)` que no se escapa del destino.
-  Un servidor comprometido o mal configurado no puede escribir fuera de la carpeta de descargas.
+  Un servidor comprometido o mal configurado no puede escribir fuera de la
+  carpeta de descargas. Una ruta inválida se registra como `path_invalid` de
+  ese archivo, mientras el resto del listado válido continúa.
 
 ### RF-4 · Programación, catch-up y disparo manual
 
@@ -361,7 +455,9 @@ Esta es la regla de negocio más delicada del sistema. Impleméntala con tests e
   en vez de descartarse en silencio.
 - **Catch-up al arranque:** si al iniciar existe una ventana programada del día sin corrida `ok` asociada,
   ejecútala inmediatamente (o tras `startup_delay_s`, default 60 s, para no competir con el arranque de Windows).
-  Configurable: `catchup.enabled`, `catchup.max_days` (default 3).
+  Configurable: `catchup.enabled`, `catchup.max_days` (default 3). En
+  comparación completa se colapsan todas las ventanas pendientes a una sola
+  reconciliación reciente.
 - **Ejecución manual** desde el dashboard (por conexión o todas), con selector de fecha para re-descargar
   una ventana histórica.
 - **CLI** sobre el mismo ejecutable, útil para operación y diagnóstico:
@@ -373,8 +469,12 @@ Esta es la regla de negocio más delicada del sistema. Impleméntala con tests e
 
 Según §4.3, ambos modos, con `docs/USER_GUIDE.md` explicando cuál elegir. Además:
 
-- Recuperación de corridas colgadas: al arrancar, toda corrida en estado `running` se cierra como `failed`
-  con `error_type='interrupted'`, y sus archivos `downloading` vuelven a `pending` para reanudarse.
+- Recuperación de corridas colgadas: al arrancar, toda corrida en estado
+  `running` y sus filas pendientes se cierran como `failed` con
+  `error_type='interrupted'`, recalculando sus agregados. La siguiente
+  ejecución vuelve a descubrir el remoto y puede reanudar el staging
+  determinista. No se presenta la corrida interrumpida como si hubiera
+  continuado o terminado correctamente.
 - Detección de suspensión/reanudación del equipo (salto de reloj) sin duplicar corridas.
 - Recomendación operativa documentada: `powercfg /change standby-timeout-ac 0` y desactivar hibernación
   en el equipo que hace las descargas.
@@ -386,6 +486,11 @@ Según §4.3, ambos modos, con `docs/USER_GUIDE.md` explicando cuál elegir. Ade
 - Endpoint `GET /api/runs/current` devuelve: corridas activas, archivo actual por worker,
   `bytes_done/size_bytes`, velocidad instantánea y promedio, ETA por archivo y ETA global,
   contadores `descargados / omitidos / fallidos / pendientes`.
+- Para listados masivos, el progreso conserva en memoria solo los archivos
+  activos y contadores agregados. Dry-run, respuesta de ejecución y detalle
+  devuelven como máximo 500 elementos de muestra, junto con los totales reales
+  y un indicador `items_truncated`/`files_truncated`; limitar la presentación
+  no limita la cola ni la descarga.
 - Dashboard con polling adaptativo: **1 s con corrida activa, 10 s en reposo** (coherente con la decisión
   D-027 del proyecto previo de preferir polling sobre SSE; documenta SSE como alternativa evaluada y descartada
   por complejidad en bundle congelado).
@@ -398,8 +503,11 @@ Según §4.3, ambos modos, con `docs/USER_GUIDE.md` explicando cuál elegir. Ade
 - **Log estructurado por corrida:** `logs/runs/<YYYY-MM-DD>_<conn-slug>_<run_id>.jsonl`, una línea JSON por evento
   (`run_started`, `file_planned`, `file_started`, `file_progress` cada 10 %, `file_done`, `file_failed`, `run_finished`).
   JSONL porque es apendable, resistente a corte de energía y grepeable sin parser.
-- Historial completo en `run_files`: cada archivo con ruta remota, ruta local, tamaño, mtime, hash, estado,
-  intentos, causa de error, duración y velocidad.
+- Historial completo de toda descarga accionable en `run_files`: ruta remota,
+  ruta local, tamaño, mtime, hash, estado, intentos, causa, duración y
+  velocidad. Las decisiones no accionables conservan totales exactos en
+  `runs` y una muestra de hasta 500 filas para evitar crecimiento de millones
+  de registros idénticos por corrida.
 - **Nunca registres credenciales.** Filtro de logging que enmascara `password`, `secret`, `passphrase` y
   las credenciales embebidas en URLs.
 
@@ -421,7 +529,11 @@ Requisito explícito del cliente: *"mantener los logs de todo lo que se descarga
 ### RF-9 · Organización del destino local
 
 - Plantilla configurable con tokens: `{root}`, `{client}`, `{connection}`, `{protocol}`, `{yyyy}`, `{MM}`, `{dd}`,
-  `{HH}`, `{remote_dir}`, `{filename}`, `{basename}`, `{ext}`, `{run_id}`.
+  `{HH}`, `{remote_tree}`, `{remote_dir}`, `{filename}`, `{basename}`, `{ext}`, `{run_id}`.
+- La plantilla predeterminada es `{remote_tree}`. Conserva bajo `dest_root`
+  la jerarquía completa informada por el remoto —sin su separador inicial y,
+  para SMB, desde el nombre del recurso compartido—, por lo que dos archivos
+  homónimos en carpetas distintas no se aplanan ni se sobrescriben.
 - **Saneamiento Windows obligatorio** (`naming.py`): caracteres inválidos `<>:"/\|?*` y control, nombres reservados
   (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`), puntos y espacios finales, y **límite MAX_PATH de 260**:
   usa el prefijo `\\?\` para rutas largas o trunca el nombre preservando la extensión, dejando registro en el log.
@@ -464,7 +576,7 @@ Requisito explícito del cliente: *"mantener los logs de todo lo que se descarga
 |---|---|
 | Arranque | Dashboard respondiendo `/healthz` en < 5 s desde el lanzamiento del `.exe`. |
 | Memoria | < 250 MB en reposo; streaming por bloques de 64 KB, **jamás cargar un archivo completo en RAM**. |
-| Volumen | 5.000 archivos / 50 GB en una corrida sin degradación ni crecimiento descontrolado de memoria. |
+| Volumen | Listados de millones de documentos mediante descubrimiento incremental y cola SQLite, sin crecimiento de memoria proporcional al número total; el volumen en bytes queda limitado por disco, red y política de cortesía. |
 | Robustez | Corte de energía a mitad de descarga → al reiniciar no hay archivos corruptos en el destino. |
 | Tamaño del bundle | < 120 MB (sin drivers de BD, a diferencia del proyecto previo). |
 | Observabilidad | Toda descarga trazable a: quién la disparó, qué ventana cubrió, cuánto tardó, con qué resultado. |
@@ -582,7 +694,13 @@ que `tzdata` no quedó incluido — un fallo que de otro modo aparece recién a 
 - **Integración:** `pyftpdlib` levantando un FTP y un FTPS reales en `127.0.0.1` con archivos de mtime controlado;
   WebDAV con `httpx.MockTransport`; SFTP con paramiko mockeado. Casos obligatorios:
   corte a mitad de descarga → reanudación correcta; archivo escribiéndose → omitido por quiet period;
-  archivo repetido → marcado `duplicate`; servidor que devuelve `../../evil.txt` → rechazado.
+  archivo repetido → marcado `duplicate`; servidor que devuelve `../../evil.txt` → rechazado;
+  árboles remotos con homónimos → destinos distintos; comparación completa con archivo ausente,
+  diferente, equivalente y extra local; contenido binario no UTF-8 → mismos bytes en destino.
+- **Escala:** un listado sintético grande verifica que descubrimiento,
+  consultas de identidad, inserciones y reclamos ocurren en lotes acotados,
+  que la muestra visible se trunca con sus totales y que el número de archivos
+  activos en memoria no crece con la cola.
 - **Reloj inyectable** en scheduler y throttle: nada de `sleep()` real en los tests.
 - **Test del script de instalación** (patrón heredado de `test_install_script.py`): verifica por regex que
   `install.ps1` conserva `RestartCount`, `MultipleInstances IgnoreNew`, `ExecutionTimeLimit 0` y `StartWhenAvailable`.
@@ -639,6 +757,18 @@ Escríbelos en `docs/ACCEPTANCE.md` como checklist verificable:
     **Sin archivos nuevos** y **Descarga completada**.
 17. Una corrida `failed` con cero archivos conserva el fallo y muestra la causa
     específica de `error_type`; nunca se reclasifica como `no_files`.
+18. Dos archivos remotos con el mismo nombre en carpetas distintas conservan
+    su árbol relativo bajo `dest_root` y ambos llegan al destino.
+19. Con **Comparación completa con carpeta local** activa, un archivo ausente
+    o diferente se descarga aunque quede fuera de la ventana o figure en el
+    historial exitoso; uno equivalente no se vuelve a transferir.
+20. La comparación completa no elimina ni modifica archivos locales que no
+    existen en el remoto y sigue respetando filtros, quiet period y symlinks.
+21. Un listado masivo se descubre, persiste y consume por lotes acotados; las
+    respuestas visibles indican cuándo contienen solo una muestra y conservan
+    los contadores reales.
+22. Un archivo con bytes no válidos como texto conserva exactamente su
+    contenido después de descargarlo; no existe una etapa de codificación.
 
 ---
 

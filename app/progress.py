@@ -60,6 +60,13 @@ class _RunProgress:
     started_mono: float
     cancel_requested: bool
     files: dict[int, _FileProgress]
+    bounded: bool
+    phase: str
+    files_total: int
+    files_completed: int
+    total_size_bytes: int
+    completed_bytes: int
+    terminal_statuses: dict[str, int]
 
 
 class ProgressRegistry:
@@ -90,6 +97,10 @@ class ProgressRegistry:
         connection_name: str,
         trigger: str,
         files: Iterable[tuple[int, RemoteFile]],
+        bounded: bool = False,
+        phase: str = "downloading",
+        total_files: int | None = None,
+        total_size_bytes: int | None = None,
     ) -> None:
         now = self._monotonic()
         progress_files = {
@@ -122,7 +133,69 @@ class ProgressRegistry:
                 started_mono=now,
                 cancel_requested=False,
                 files=progress_files,
+                bounded=bounded,
+                phase=phase,
+                files_total=(
+                    max(0, total_files)
+                    if total_files is not None
+                    else len(progress_files)
+                ),
+                files_completed=0,
+                total_size_bytes=(
+                    max(0, total_size_bytes)
+                    if total_size_bytes is not None
+                    else sum(
+                        item.size_bytes or 0
+                        for item in progress_files.values()
+                    )
+                ),
+                completed_bytes=0,
+                terminal_statuses={},
             )
+
+    def set_totals(
+        self,
+        run_id: int,
+        *,
+        files_total: int,
+        total_size_bytes: int,
+        phase: str = "downloading",
+    ) -> None:
+        """Publish aggregate discovery totals without retaining every file."""
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                return
+            run.files_total = max(0, files_total)
+            run.total_size_bytes = max(0, total_size_bytes)
+            run.phase = phase
+
+    def add_files(
+        self,
+        run_id: int,
+        files: Iterable[tuple[int, RemoteFile]],
+    ) -> None:
+        """Register only the currently claimed queue batch."""
+        now = self._monotonic()
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                return
+            for file_id, remote_file in files:
+                run.files[file_id] = _FileProgress(
+                    run_file_id=file_id,
+                    remote_path=remote_file.remote_path,
+                    size_bytes=remote_file.size_bytes,
+                    bytes_done=0,
+                    status="pending",
+                    worker=None,
+                    started_mono=None,
+                    updated_mono=now,
+                    previous_bytes=0,
+                    previous_mono=now,
+                    instant_bps=0.0,
+                    last_persisted_mono=now,
+                )
 
     def update_file(
         self,
@@ -181,6 +254,14 @@ class ProgressRegistry:
             file.status = outcome.status.value
             if outcome.remote_file.size_bytes is not None:
                 file.size_bytes = outcome.remote_file.size_bytes
+            if run.bounded:
+                run.files_completed += 1
+                run.completed_bytes += max(0, outcome.bytes_done)
+                status = outcome.status.value
+                run.terminal_statuses[status] = (
+                    run.terminal_statuses.get(status, 0) + 1
+                )
+                run.files.pop(run_file_id, None)
 
     def mark_cancel_requested(self, run_id: int) -> bool:
         with self._lock:
@@ -209,10 +290,11 @@ class ProgressRegistry:
     def _run_snapshot(run: _RunProgress, now: float) -> dict[str, Any]:
         files = [file.snapshot(now) for file in run.files.values()]
         files.sort(key=lambda item: item["run_file_id"])
-        total_known = sum(
+        active_total_known = sum(
             item["size_bytes"] for item in files if item["size_bytes"] is not None
         )
-        bytes_done = sum(item["bytes_done"] for item in files)
+        active_bytes_done = sum(item["bytes_done"] for item in files)
+        bytes_done = run.completed_bytes + active_bytes_done
         average_bps = sum(item["average_bps"] for item in files)
         known_bytes_done = sum(
             item["bytes_done"]
@@ -224,26 +306,43 @@ class ProgressRegistry:
             for item in files
             if item["size_bytes"] is not None
         )
-        statuses: dict[str, int] = {}
+        statuses: dict[str, int] = dict(run.terminal_statuses)
         for item in files:
             statuses[item["status"]] = statuses.get(item["status"], 0) + 1
+        total_known = (
+            run.total_size_bytes
+            if run.bounded
+            else active_total_known
+        )
+        completed = (
+            run.files_completed
+            if run.bounded
+            else sum(
+                statuses.get(status, 0)
+                for status in ("ok", "skipped", "failed", "cancelled")
+            )
+        )
         return {
             "run_id": run.run_id,
             "connection_id": run.connection_id,
             "connection_name": run.connection_name,
             "trigger": run.trigger,
+            "phase": run.phase,
             "started_at": run.started_at,
             "cancel_requested": run.cancel_requested,
-            "files_total": len(files),
-            "files_completed": sum(
-                statuses.get(status, 0)
-                for status in ("ok", "skipped", "failed", "cancelled")
+            "files_total": (
+                run.files_total if run.bounded else len(files)
             ),
+            "files_completed": completed,
             "bytes_done": bytes_done,
             "size_bytes": total_known,
             "average_bps": round(average_bps, 2),
-            "eta_s": _eta(total_known, known_bytes_done, known_average_bps),
-            "percent": _percent(total_known, known_bytes_done),
+            "eta_s": _eta(
+                total_known,
+                run.completed_bytes + known_bytes_done,
+                known_average_bps,
+            ),
+            "percent": _percent(total_known, bytes_done),
             "statuses": statuses,
             "files": files,
         }

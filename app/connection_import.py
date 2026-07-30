@@ -55,7 +55,9 @@ INTEGER_FIELDS = frozenset(
 OPTIONAL_INTEGER_FIELDS = frozenset(
     {"port", "min_size_bytes", "max_size_bytes", "bandwidth_limit_kbps"}
 )
-BOOLEAN_FIELDS = frozenset({"recursive", "enabled"})
+BOOLEAN_FIELDS = frozenset(
+    {"recursive", "full_local_reconciliation", "enabled"}
+)
 SQLITE_INTEGER_MIN = -(2**63)
 SQLITE_INTEGER_MAX = 2**63 - 1
 

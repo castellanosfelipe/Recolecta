@@ -5,12 +5,12 @@
   <img src="docs/images/dashboard.png" alt="Dashboard principal de Recolecta con el estado de conexiones, ejecuciones y archivos descargados" width="800"/>
 
   <p>
-    <img src="https://img.shields.io/badge/version-0.1.2-blue" alt="Versión 0.1.2"/>
+    <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="Versión 0.2.0"/>
     <img src="https://img.shields.io/badge/status-active-2ea44f" alt="Estado activo"/>
     <img src="https://img.shields.io/badge/license-MIT-orange" alt="Licencia MIT"/>
     <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4" alt="Compatible con Windows 10 y Windows 11"/>
-    <img src="https://img.shields.io/badge/tests-225%20passing-2ea44f" alt="225 pruebas aprobadas"/>
-    <img src="https://img.shields.io/badge/coverage-85.54%25-2ea44f" alt="Cobertura de pruebas 85.54 por ciento"/>
+    <img src="https://img.shields.io/badge/tests-308%20passing-2ea44f" alt="308 pruebas aprobadas"/>
+    <img src="https://img.shields.io/badge/coverage-86.23%25-2ea44f" alt="Cobertura de pruebas 86.23 por ciento"/>
   </p>
 
   <p>
@@ -71,7 +71,7 @@ constantemente cada servidor.
 El repositorio todavía no incluye un video o GIF verificable. La
 [captura del dashboard](#-capturas-de-pantalla) muestra la experiencia actual,
 y la aplicación completa puede probarse desde la
-[release v0.1.2](https://github.com/castellanosfelipe/Recolecta/releases/tag/v0.1.2).
+[última release](https://github.com/castellanosfelipe/Recolecta/releases/latest).
 
 ## ✨ Características principales
 
@@ -81,6 +81,10 @@ y la aplicación completa puede probarse desde la
 | 🗓️ **Automatización con recuperación** | Permite una hora distinta por conexión —o la hora global— y recupera ventanas perdidas mediante catch-up sin duplicar entregas correctas. |
 | 🔄 **Migración controlada** | Importa backups JSON de StabilityMonitor como borradores en pausa, protege las credenciales incluidas e informa protocolos SQL/Oracle omitidos sin abortar el resto. |
 | ✅ **Transferencias confiables** | Usa staging, reanudación, reintentos y validación por tamaño o SHA-256 antes de publicar cada archivo. |
+| 🌳 **Árbol remoto preservado** | Replica bajo el destino local la misma jerarquía de carpetas del origen, con reservas estables ante colisiones de nombres en Windows. |
+| 🔎 **Comparación completa por conexión** | Detecta y descarga archivos locales ausentes o diferentes sin borrar archivos extra; puede activarse de forma independiente para cada origen. |
+| 🧱 **Escala para millones** | Descubre, persiste y consume una cola por lotes acotados, con trabajadores limitados y un cortacircuitos ante fallos sistémicos consecutivos, sin cargar el inventario completo en memoria. |
+| 🧬 **Bytes opacos de extremo a extremo** | No decodifica, recodifica ni normaliza documentos: conserva exactamente los bytes recibidos durante staging, reanudación y publicación. |
 | 🔐 **Credenciales protegidas** | Almacena secretos mediante DPAPI de usuario o de máquina y evita exponerlos en API, logs y exportaciones. |
 | 📊 **Control y trazabilidad local** | Presenta progreso, velocidad, ETA, historial, alertas y archivos procesados desde un dashboard sin recursos externos. |
 | 📦 **Operación realmente offline** | Ofrece instalador autoextraíble, paquete portable y build reproducible con dependencias verificadas por SHA-256. |
@@ -225,7 +229,7 @@ flowchart LR
 - [x] Importación idempotente de conexiones desde StabilityMonitor con reporte de omisiones.
 - [x] Dashboard local, alertas, exportaciones y bundle de soporte.
 - [x] Instalador offline y paquete portable publicados en GitHub Releases.
-- [x] Suite de 225 pruebas con compuerta de cobertura mínima del 85 %.
+- [x] Suite de 308 pruebas con compuerta de cobertura mínima del 85 %.
 
 ### 🔄 En progreso
 

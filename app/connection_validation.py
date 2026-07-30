@@ -21,6 +21,7 @@ from app.transports.base import RemoteFile, Transport
 
 
 TransportFactory = Callable[..., Transport]
+REMOTE_VALIDATION_SAMPLE_LIMIT_PER_ROOT = 100
 
 
 @dataclass(frozen=True)
@@ -29,8 +30,13 @@ class ConnectionValidationResult:
 
     local_path: str
     remote_paths: tuple[str, ...]
+    # Number of file metadata records sampled, not an unbounded inventory.
     remote_files_found: int
     warnings: tuple[str, ...]
+    remote_files_found_is_exact: bool = True
+    remote_files_sample_limit_per_root: int = (
+        REMOTE_VALIDATION_SAMPLE_LIMIT_PER_ROOT
+    )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -38,6 +44,10 @@ class ConnectionValidationResult:
             "local_path": self.local_path,
             "remote_paths": list(self.remote_paths),
             "remote_files_found": self.remote_files_found,
+            "remote_files_found_is_exact": self.remote_files_found_is_exact,
+            "remote_files_sample_limit_per_root": (
+                self.remote_files_sample_limit_per_root
+            ),
             "warnings": list(self.warnings),
         }
 
@@ -50,7 +60,14 @@ def validate_connection_paths(
     known_hosts: Path,
     transport_factory: TransportFactory = create_transport,
 ) -> ConnectionValidationResult:
-    """Authenticate, list every remote root, and prove local write access."""
+    """Authenticate, sample every remote root, and prove local write access.
+
+    Remote validation consumes at most
+    ``REMOTE_VALIDATION_SAMPLE_LIMIT_PER_ROOT + 1`` metadata records per root.
+    The extra record only detects truncation; ``remote_files_found`` reports
+    the retained sample and is exact only when
+    ``remote_files_found_is_exact`` is true.
+    """
     normalized = connection.normalized()
     if not normalized.remote_paths:
         raise ValueError("Ingrese al menos una ruta remota para validarla.")
@@ -67,28 +84,51 @@ def validate_connection_paths(
         )
         try:
             transport.connect()
-            listing = transport.list_files(
-                normalized.remote_paths,
-                recursive=False,
-                max_depth=0,
-            )
-            warnings = list(listing.warnings)
+            warnings: list[str] = []
+            remote_files_found = 0
+            remote_files_found_is_exact = True
+            for remote_path in normalized.remote_paths:
+                sampled, truncated = _sample_remote_root(
+                    transport,
+                    remote_path,
+                )
+                remote_files_found += sampled
+                remote_files_found_is_exact = (
+                    remote_files_found_is_exact and not truncated
+                )
+                _extend_unique(
+                    warnings,
+                    transport.last_listing_warnings,
+                )
+                if truncated:
+                    _extend_unique(
+                        warnings,
+                        (_truncated_sample_warning(remote_path),),
+                    )
             if (
                 normalized.post_action == PostAction.MOVE_REMOTE
                 and normalized.post_action_path
                 and normalized.post_action_path
                 not in normalized.remote_paths
             ):
-                move_listing = transport.list_files(
-                    (normalized.post_action_path,),
-                    recursive=False,
-                    max_depth=0,
+                _, move_truncated = _sample_remote_root(
+                    transport,
+                    normalized.post_action_path,
                 )
-                warnings.extend(
-                    warning
-                    for warning in move_listing.warnings
-                    if warning not in warnings
+                _extend_unique(
+                    warnings,
+                    transport.last_listing_warnings,
                 )
+                if move_truncated:
+                    _extend_unique(
+                        warnings,
+                        (
+                            _truncated_sample_warning(
+                                normalized.post_action_path,
+                                counted=False,
+                            ),
+                        ),
+                    )
         finally:
             transport.close()
     except Exception as exc:
@@ -97,8 +137,72 @@ def validate_connection_paths(
     return ConnectionValidationResult(
         local_path=str(local_path),
         remote_paths=normalized.remote_paths,
-        remote_files_found=len(listing.files),
+        remote_files_found=remote_files_found,
         warnings=tuple(warnings),
+        remote_files_found_is_exact=remote_files_found_is_exact,
+    )
+
+
+def _sample_remote_root(
+    transport: Transport,
+    remote_path: str,
+) -> tuple[int, bool]:
+    """Validate one root with a bounded metadata-only sample.
+
+    Iterators are explicitly closed even when listing raises, so transports
+    can release protocol data streams and disk-backed traversal state before
+    their session is closed.
+    """
+    discovered = transport.iter_files(
+        (remote_path,),
+        recursive=False,
+        max_depth=0,
+    )
+    sampled = 0
+    truncated = False
+    try:
+        while sampled < REMOTE_VALIDATION_SAMPLE_LIMIT_PER_ROOT:
+            try:
+                next(discovered)
+            except StopIteration:
+                return sampled, False
+            sampled += 1
+        try:
+            next(discovered)
+        except StopIteration:
+            return sampled, False
+        truncated = True
+    finally:
+        close_iterator = getattr(discovered, "close", None)
+        if callable(close_iterator):
+            close_iterator()
+    return sampled, truncated
+
+
+def _extend_unique(target: list[str], values: tuple[str, ...]) -> None:
+    for value in values:
+        if value not in target:
+            target.append(value)
+
+
+def _truncated_sample_warning(
+    remote_path: str,
+    *,
+    counted: bool = True,
+) -> str:
+    limit = REMOTE_VALIDATION_SAMPLE_LIMIT_PER_ROOT
+    count_explanation = (
+        "remote_files_found no representa el total exacto."
+        if counted
+        else (
+            "Esta carpeta de movimiento no forma parte de "
+            "remote_files_found."
+        )
+    )
+    return (
+        f"La ruta remota {remote_path!r} contiene más de {limit} archivos "
+        f"en su nivel inicial; se validó una muestra de {limit}. "
+        f"{count_explanation}"
     )
 
 

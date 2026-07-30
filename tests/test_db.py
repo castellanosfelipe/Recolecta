@@ -65,6 +65,69 @@ def test_database_uses_wal_foreign_keys_and_sequential_migrations(
     } <= tables
 
 
+def test_migration_from_release_schema_preserves_connections(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "legacy-v3.db")
+    with database.connect() as legacy:
+        legacy.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        for version in (1, 2, 3):
+            for statement in MIGRATIONS[version]:
+                legacy.execute(statement)
+            legacy.execute(
+                """
+                INSERT INTO schema_migrations(version, applied_at)
+                VALUES (?, '2026-07-29T00:00:00+00:00')
+                """,
+                (version,),
+            )
+        legacy.execute(
+            """
+            INSERT INTO connections(
+                name, protocol, host, port, dest_root, dest_template,
+                created_at, updated_at
+            ) VALUES (
+                'Legada', 'SFTP', 'legacy.test', 22, 'downloads',
+                ?,
+                '2026-07-29T00:00:00+00:00',
+                '2026-07-29T00:00:00+00:00'
+            )
+            """,
+            (r"{client}\{connection}\{yyyy}\{MM}\{dd}\{filename}",),
+        )
+
+    database.initialize()
+
+    with database.connect() as upgraded:
+        connection = upgraded.execute(
+            "SELECT * FROM connections WHERE name = 'Legada'"
+        ).fetchone()
+        reservation_columns = {
+            row["name"]: row["type"]
+            for row in upgraded.execute(
+                "PRAGMA table_info(destination_reservations)"
+            )
+        }
+        run_file_columns = {
+            row["name"]: row["type"]
+            for row in upgraded.execute("PRAGMA table_info(run_files)")
+        }
+    assert database.schema_version() == max(MIGRATIONS)
+    assert connection["full_local_reconciliation"] == 0
+    assert connection["dest_template"] == "{remote_tree}"
+    assert reservation_columns["candidate_key"] == "BLOB"
+    assert reservation_columns["local_key"] == "BLOB"
+    assert run_file_columns["timestamp_reliable"] == "INTEGER"
+    assert run_file_columns["timestamp_source"] == "TEXT"
+
+
 def test_create_read_list_update_and_delete_connection(
     repository: ConnectionRepository,
 ) -> None:
@@ -153,45 +216,124 @@ def test_foreign_keys_cascade_runs_and_files(
         assert db.execute("SELECT COUNT(*) FROM run_files").fetchone()[0] == 0
 
 
-def test_successful_file_identity_is_unique(
+def test_file_identity_is_unique_per_run_but_can_be_repaired_later(
     database: Database, repository: ConnectionRepository
 ) -> None:
     created = repository.create(connection())
-    with database.connect() as db:
-        run_id = db.execute(
-            """
-            INSERT INTO runs(
-                connection_id, trigger, window_start_utc, window_end_utc,
-                started_at, status
-            ) VALUES (?, 'manual', '2026-01-01', '2026-01-02', '2026-01-02', 'ok')
-            """,
-            (created.id,),
-        ).lastrowid
-        values = (
-            run_id,
-            created.id,
-            "/entrada/a.csv",
-            100,
-            "2026-01-01T12:00:00+00:00",
-            "ok",
+    runs = RunRepository(database)
+    window_start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    window_end = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    source = RemoteFile(
+        "/entrada/a.csv",
+        100,
+        datetime(2026, 1, 1, 12, tzinfo=timezone.utc),
+    )
+    first_run = runs.start_run(
+        connection_id=created.id,
+        trigger="manual",
+        window_start_utc=window_start,
+        window_end_utc=window_end,
+    )
+    runs.add_file(
+        run_id=first_run,
+        connection_id=created.id,
+        remote_file=source,
+        status="ok",
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        runs.add_file(
+            run_id=first_run,
+            connection_id=created.id,
+            remote_file=source,
+            status="ok",
         )
-        db.execute(
-            """
-            INSERT INTO run_files(
-                run_id, connection_id, remote_path, size_bytes, mtime_utc, status
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            values,
-        )
-        with pytest.raises(sqlite3.IntegrityError):
-            db.execute(
-                """
-                INSERT INTO run_files(
-                    run_id, connection_id, remote_path, size_bytes, mtime_utc, status
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                values,
-            )
+
+    repair_run = runs.start_run(
+        connection_id=created.id,
+        trigger="manual",
+        window_start_utc=window_start,
+        window_end_utc=window_end,
+        scan_mode="full_local_reconciliation",
+    )
+    repair_file = runs.add_file(
+        run_id=repair_run,
+        connection_id=created.id,
+        remote_file=source,
+        status="ok",
+    )
+    assert repair_file > 0
+
+
+def test_run_queue_preserves_remote_timestamp_reliability(
+    database: Database,
+    repository: ConnectionRepository,
+) -> None:
+    created = repository.create(connection())
+    runs = RunRepository(database)
+    run_id = runs.start_run(
+        connection_id=created.id,
+        trigger="manual",
+        window_start_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        window_end_utc=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    source = RemoteFile(
+        "/entrada/list.csv",
+        100,
+        datetime(2026, 1, 1, 12, tzinfo=timezone.utc),
+        timestamp_reliable=False,
+        timestamp_source="LIST",
+    )
+
+    runs.add_file(
+        run_id=run_id,
+        connection_id=created.id,
+        remote_file=source,
+    )
+    claimed = runs.claim_pending_batch(run_id, limit=1)
+
+    assert len(claimed) == 1
+    assert claimed[0]["timestamp_reliable"] == 0
+    assert claimed[0]["timestamp_source"] == "LIST"
+
+
+def test_destination_reservations_follow_dynamic_candidates_without_collisions(
+    database: Database,
+    repository: ConnectionRepository,
+    tmp_path: Path,
+) -> None:
+    created = repository.create(connection())
+    runs = RunRepository(database)
+    first = (tmp_path / "downloads" / "2026" / "01" / "report.csv").resolve()
+    second = (tmp_path / "downloads" / "2026" / "02" / "report.csv").resolve()
+
+    assert runs.reserve_destination(
+        connection_id=created.id,
+        mapping_scope="same-template",
+        remote_path="/entrada/report.csv",
+        candidate=first,
+    ) == first
+    assert runs.reserve_destination(
+        connection_id=created.id,
+        mapping_scope="same-template",
+        remote_path="/entrada/report.csv",
+        candidate=second,
+    ) == second
+    assert runs.reserve_destination(
+        connection_id=created.id,
+        mapping_scope="changed-and-restored-template",
+        remote_path="/entrada/report.csv",
+        candidate=first,
+    ) == first
+
+    collision = runs.reserve_destination(
+        connection_id=created.id,
+        mapping_scope="same-template",
+        remote_path="/otra/report.csv",
+        candidate=first,
+    )
+    assert collision != first
+    assert collision.parent == first.parent
+    assert collision.suffix == first.suffix
 
 
 def test_repository_orders_by_name(repository: ConnectionRepository) -> None:
@@ -200,7 +342,7 @@ def test_repository_orders_by_name(repository: ConnectionRepository) -> None:
     assert [item.name for item in repository.list()] == ["alpha", "Zulu"]
 
 
-def test_recovery_fails_running_runs_and_returns_downloads_to_pending(
+def test_recovery_terminalizes_running_runs_and_keeps_staging_reusable(
     database: Database, repository: ConnectionRepository
 ) -> None:
     saved = repository.create(connection())
@@ -234,5 +376,9 @@ def test_recovery_fails_running_runs_and_returns_downloads_to_pending(
         ).fetchone()
     assert run["status"] == "failed"
     assert run["error_type"] == "interrupted"
-    assert file["status"] == "pending"
+    assert run["phase"] == "finished"
+    assert run["files_found"] == 1
+    assert run["files_failed"] == 1
+    assert file["status"] == "failed"
     assert file["error_type"] == "interrupted"
+    assert file["finished_at"]

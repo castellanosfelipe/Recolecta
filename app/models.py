@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
+from string import Formatter
 from typing import Any, ClassVar
 
 
@@ -91,6 +92,7 @@ class Connection:
             "schedule_time",
             "dest_root",
             "dest_template",
+            "full_local_reconciliation",
             "on_conflict",
             "verify_mode",
             "max_parallel_files",
@@ -128,9 +130,8 @@ class Connection:
     timezone: str = "America/Bogota"
     schedule_time: str | None = None
     dest_root: str = "downloads"
-    dest_template: str = (
-        r"{client}\{connection}\{yyyy}\{MM}\{dd}\{filename}"
-    )
+    dest_template: str = r"{remote_tree}"
+    full_local_reconciliation: bool = False
     on_conflict: ConflictMode = ConflictMode.SKIP
     verify_mode: VerifyMode = VerifyMode.SIZE
     max_parallel_files: int = 2
@@ -198,6 +199,15 @@ class Connection:
             raise ValueError("La carpeta de destino es obligatoria.")
         if not self.dest_template:
             raise ValueError("La plantilla de destino es obligatoria.")
+        if (
+            self.full_local_reconciliation
+            and _template_references_field(self.dest_template, "run_id")
+        ):
+            raise ValueError(
+                "La comparación completa no admite {run_id} en la "
+                "plantilla de destino porque impediría comparar una ruta "
+                "local estable."
+            )
         if self.max_depth < 0:
             raise ValueError("La profundidad máxima no puede ser negativa.")
         if self.window_hours <= 0:
@@ -256,6 +266,18 @@ class Connection:
     @property
     def destination_path(self) -> Path:
         return Path(self.dest_root)
+
+
+def _template_references_field(template: str, expected: str) -> bool:
+    """Detect a format field, including conversions and nested format specs."""
+    for _, field_name, format_spec, _ in Formatter().parse(template):
+        if field_name is not None:
+            base_name = field_name.split(".", 1)[0].split("[", 1)[0]
+            if base_name == expected:
+                return True
+        if format_spec and _template_references_field(format_spec, expected):
+            return True
+    return False
 
 
 def _normalize_schedule_time(value: str | None) -> str | None:
