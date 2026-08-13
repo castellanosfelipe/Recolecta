@@ -1,283 +1,268 @@
 <div align="center">
   <h1>Recolecta</h1>
-  <p><strong>Automatiza la recepción de archivos remotos, verifica cada entrega y conserva una trazabilidad completa desde Windows.</strong></p>
+  <p><strong>Automatiza la recepción de archivos remotos, verifica cada transferencia y conserva evidencia de cada ejecución en Windows.</strong></p>
 
-  <img src="docs/images/dashboard.png" alt="Dashboard principal de Recolecta con el estado de conexiones, ejecuciones y archivos descargados" width="800"/>
+  <p>FTP · FTPS · SFTP · WebDAV(S) · SMB</p>
 
   <p>
-    <img src="https://img.shields.io/badge/version-0.2.2-blue" alt="Versión 0.2.2"/>
-    <img src="https://img.shields.io/badge/status-active-2ea44f" alt="Estado activo"/>
-    <img src="https://img.shields.io/badge/license-MIT-orange" alt="Licencia MIT"/>
-    <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4" alt="Compatible con Windows 10 y Windows 11"/>
-    <img src="https://img.shields.io/badge/tests-308%20passing-2ea44f" alt="308 pruebas aprobadas"/>
-    <img src="https://img.shields.io/badge/coverage-86.23%25-2ea44f" alt="Cobertura de pruebas 86.23 por ciento"/>
+    <a href="https://github.com/castellanosfelipe/Recolecta/releases/latest"><img src="https://img.shields.io/github/v/release/castellanosfelipe/Recolecta?label=release&color=0969da" alt="Release más reciente"/></a>
+    <a href="https://github.com/castellanosfelipe/Recolecta/actions/workflows/build-windows.yml"><img src="https://github.com/castellanosfelipe/Recolecta/actions/workflows/build-windows.yml/badge.svg" alt="Estado del build de Windows"/></a>
+    <img src="https://img.shields.io/badge/Windows-10%20%7C%2011%20Pro-0078d4" alt="Compatible con Windows 10 y Windows 11 Pro"/>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-orange" alt="Licencia MIT"/></a>
   </p>
 
   <p>
-    <a href="https://github.com/castellanosfelipe/Recolecta/releases/latest"><strong>Descargar la última versión</strong></a>
+    <a href="https://github.com/castellanosfelipe/Recolecta/releases/latest/download/Recolecta-Setup.exe"><strong>⬇️ Descargar instalador para Windows x64</strong></a>
+    ·
+    <a href="https://github.com/castellanosfelipe/Recolecta/releases/latest">Ver release, portable y hashes</a>
     ·
     <a href="docs/USER_GUIDE.md">Guía de usuario</a>
-    ·
-    <a href="docs/OPERATIONS.md">Guía de operaciones</a>
   </p>
+
+  <img src="docs/images/dashboard.png" alt="Dashboard de Recolecta con conexiones, ejecuciones y archivos descargados" width="850"/>
 </div>
 
-## 📋 Tabla de Contenidos
+## Por qué Recolecta
 
-- [¿Qué es Recolecta?](#-qué-es-recolecta)
-- [Demo en vivo](#-demo-en-vivo)
-- [Características principales](#-características-principales)
-- [Capturas de pantalla](#-capturas-de-pantalla)
-- [Instalación rápida](#-instalación-rápida)
-- [Cómo usar](#-cómo-usar)
-- [Arquitectura](#️-arquitectura)
-- [Roadmap](#️-roadmap)
-- [Contribuir](#-contribuir)
-- [Licencia](#-licencia)
+Los equipos operativos suelen depender de descargas manuales, scripts aislados
+y revisiones posteriores para saber si un archivo llegó completo. Recolecta
+convierte ese trabajo en un flujo programado, visible y recuperable:
 
-## 🎯 ¿Qué es Recolecta?
+- centraliza conexiones FTP, FTPS, SFTP, WebDAV(S) y SMB;
+- valida credenciales, rutas remotas y escritura local antes de guardar;
+- mantiene el árbol de carpetas con la plantilla predeterminada y nunca
+  recodifica los documentos;
+- programa cada conexión de forma independiente y recupera ventanas perdidas;
+- registra progreso, archivos, errores y resultados con estados accionables;
+- funciona localmente y el paquete instalado no necesita Python ni Internet.
 
-Recolecta es una aplicación local para Windows que reúne automáticamente
-archivos provenientes de FTP, FTPS, SFTP, WebDAV(S) y SMB. Sustituye tareas
-manuales y scripts dispersos por un proceso programado, verificable y visible
-desde un dashboard, incluso en equipos sin acceso a internet.
+Está pensada para operaciones, back office, datos e IT que necesitan mover
+grandes inventarios de documentos sin perder control sobre lo recibido.
 
-### El problema que resuelve
+## Instala y activa tu primera conexión
 
-Los equipos operativos suelen depender de descargas repetitivas, credenciales
-distribuidas y revisiones manuales para saber si un archivo llegó completo.
-Cuando algo falla, reconstruir qué ocurrió consume tiempo y retrasa procesos
-posteriores.
+### Requisitos
 
-### La solución
+- Windows 10 u 11 Pro de 64 bits.
+- Puerto local `8091` disponible, o uno alternativo indicado al instalar.
+- Acceso de red a los servidores que se quieran consultar.
 
-Recolecta programa cada origen, reanuda transferencias interrumpidas, valida
-la integridad antes de publicar un archivo y registra cada resultado. Así, el
-equipo puede detectar excepciones y actuar sobre ellas sin supervisar
-constantemente cada servidor.
+### Instalación en un comando
 
-### ¿Para quién es?
-
-| Audiencia | Beneficio clave |
-|-----------|-----------------|
-| **Operaciones y back office** | Recibe archivos recurrentes sin ejecutar descargas manuales y ve rápidamente qué requiere atención. |
-| **Equipos de datos e IT** | Centraliza conexiones heterogéneas con integridad, reintentos, límites de carga y trazabilidad técnica. |
-| **Responsables de producto y soporte** | Obtiene evidencia operativa, reportes exportables y señales claras para medir confiabilidad y resolver incidentes. |
-
-## 🎬 Demo en vivo
-
-<!-- TODO: agregar demo.gif del flujo principal: crear una conexión, ejecutar una prueba y observar la descarga en vivo -->
-
-El repositorio todavía no incluye un video o GIF verificable. La
-[captura del dashboard](#-capturas-de-pantalla) muestra la experiencia actual,
-y la aplicación completa puede probarse desde la
-[última release](https://github.com/castellanosfelipe/Recolecta/releases/latest).
-
-## ✨ Características principales
-
-| Feature | Descripción |
-|---------|-------------|
-| 🔌 **Conexiones multiprotocolo** | Reúne archivos desde FTP, FTPS, SFTP, WebDAV, WebDAVS y SMB sin cambiar de herramienta. |
-| 🗓️ **Automatización con recuperación** | Permite una hora distinta por conexión —o la hora global— y recupera ventanas perdidas mediante catch-up sin duplicar entregas correctas. |
-| 🔄 **Migración controlada** | Importa backups JSON de StabilityMonitor como borradores en pausa, protege las credenciales incluidas e informa protocolos SQL/Oracle omitidos sin abortar el resto. |
-| ✅ **Transferencias confiables** | Usa staging, reanudación, reintentos y validación por tamaño o SHA-256 antes de publicar cada archivo. |
-| 🌳 **Árbol remoto preservado** | Replica bajo el destino local la misma jerarquía de carpetas del origen, con reservas estables ante colisiones de nombres en Windows. |
-| 🔎 **Comparación completa por conexión** | Detecta y descarga archivos locales ausentes o diferentes sin borrar archivos extra; puede activarse de forma independiente para cada origen. |
-| 🧱 **Escala para millones** | Descubre, persiste y consume una cola por lotes acotados, con trabajadores limitados y un cortacircuitos ante fallos sistémicos consecutivos, sin cargar el inventario completo en memoria. |
-| 🧬 **Bytes opacos de extremo a extremo** | No decodifica, recodifica ni normaliza documentos: conserva exactamente los bytes recibidos durante staging, reanudación y publicación. |
-| 🔐 **Credenciales protegidas** | Almacena secretos mediante DPAPI de usuario o de máquina y evita exponerlos en API, logs y exportaciones. |
-| 📊 **Control y trazabilidad local** | Presenta progreso, velocidad, ETA, historial, alertas y archivos procesados desde un dashboard sin recursos externos. |
-| 📦 **Operación realmente offline** | Ofrece instalador autoextraíble, paquete portable y build reproducible con dependencias verificadas por SHA-256. |
-
-## 📸 Capturas de pantalla
-
-### Dashboard operativo
-
-<div align="center">
-  <img src="docs/images/dashboard.png" alt="Vista de resumen de Recolecta con navegación, métricas operativas, conexiones y accesos al proyecto" width="750"/>
-  <p><em>El resumen concentra estado, actividad reciente y excepciones para que el usuario sepa dónde actuar sin revisar logs manualmente.</em></p>
-</div>
-
-## 🚀 Instalación rápida
-
-### Prerrequisitos
-
-- Windows 10 u 11 de 64 bits.
-- Puerto local `8091` disponible.
-- No se requiere Python ni conexión a internet en el equipo destino.
-
-### Pasos
-
-1. Descarga `Recolecta-Setup.exe` y `SHA256SUMS.txt` desde la
-   [última release](https://github.com/castellanosfelipe/Recolecta/releases/latest).
-2. Verifica el instalador:
-
-```powershell
-Get-FileHash .\Recolecta-Setup.exe -Algorithm SHA256
-Get-Content .\SHA256SUMS.txt
-```
-
-3. Ejecuta el Setup:
+Descarga
+[`Recolecta-Setup.exe`](https://github.com/castellanosfelipe/Recolecta/releases/latest/download/Recolecta-Setup.exe)
+y ejecútalo desde PowerShell:
 
 ```powershell
 .\Recolecta-Setup.exe
 ```
 
-El instalador copia la aplicación en `%LOCALAPPDATA%\Recolecta`, registra su
-inicio para el usuario actual, conserva los datos durante actualizaciones y
-abre `http://127.0.0.1:8091`.
+El Setup instala Recolecta en `%LOCALAPPDATA%\Recolecta`, registra su inicio
+para el usuario actual y abre el dashboard en <http://127.0.0.1:8091>.
 
-✅ Si todo está correcto, verás la confirmación **“Recolecta quedó instalada”**
-y el dashboard se abrirá en el navegador.
+> [!IMPORTANT]
+> El instalador todavía no está firmado digitalmente y Windows puede mostrar
+> una advertencia de SmartScreen. Descárgalo solo desde este repositorio y
+> verifica su SHA-256 antes de ejecutarlo.
 
-<details>
-<summary><strong>Alternativa portable</strong></summary>
-
-Descarga `Recolecta-win64.zip`, verifica su hash, extráelo en una carpeta
-permanente y ejecuta:
+Descarga también
+[`SHA256SUMS.txt`](https://github.com/castellanosfelipe/Recolecta/releases/latest/download/SHA256SUMS.txt)
+y exige una coincidencia antes de ejecutar el Setup:
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1
+$expected = (Select-String -Path .\SHA256SUMS.txt -Pattern '\*Recolecta-Setup\.exe$').Line.Split(' ')[0]
+$actual = (Get-FileHash .\Recolecta-Setup.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -ne $expected) { throw "El SHA-256 del instalador no coincide." }
+"SHA-256 verificado: $actual"
+```
+
+### Primera conexión
+
+1. Abre **Conexiones → Nueva conexión**.
+2. Elige el protocolo y completa servidor, credencial, rutas remotas y destino
+   local.
+3. Define una hora diaria propia o conserva la agenda global.
+4. Pulsa **Probar conexión y rutas**. Recolecta autentica, toma una muestra
+   acotada de cada raíz remota y prueba crear, renombrar y eliminar un temporal
+   local; esta validación no descarga ni recorre el árbol completo.
+5. Guarda la conexión y usa **Simular corrida** para revisar qué se procesará.
+6. Selecciona **Ejecutar ahora** o deja que trabaje la agenda.
+
+Una conexión no puede guardarse ni activarse con rutas o credenciales sin
+validar. Si cambias un dato de conectividad, deberás probarla otra vez.
+
+## Capacidades clave
+
+| Resultado | Cómo lo consigue |
+|-----------|------------------|
+| **Automatización independiente** | Hora diaria por conexión, zona horaria IANA, agenda global opcional y catch-up de ventanas perdidas. |
+| **Transferencias seguras ante interrupciones** | Escribe en staging, reintenta fallos transitorios y solo reanuda con tamaño y fecha remotos confiables; de lo contrario reinicia sin mezclar versiones. Antes de publicar comprueba el tamaño anunciado y puede calcular y registrar el SHA-256 local. |
+| **Estructura remota preservada** | Con la plantilla predeterminada `{remote_tree}`, reproduce la jerarquía lógica del origen, sanea nombres incompatibles con Windows y bloquea escapes del destino. No sigue symlinks. |
+| **Comparación completa** | Compara existencia, tamaño y fecha, descarga ausentes o diferentes y conserva extras locales. No compara contenido byte a byte ni contra un hash remoto. |
+| **Cola persistente y memoria acotada** | Descubre y persiste metadatos por lotes, consume una cola SQLite con trabajadores limitados y corta fallos sistémicos repetidos. El rendimiento depende del servidor y del disco local. |
+| **Recursos bajo control** | Tope agregado e individual de ancho de banda, comprobación incremental de espacio y cancelación durante esperas o backoff. |
+| **Contenido sin alteraciones** | Trata cada documento como bytes opacos: no lo decodifica, recodifica ni normaliza durante la descarga. |
+| **Seguridad local** | Secretos protegidos con DPAPI, TLS verificado por defecto y credenciales excluidas de API, logs y exportaciones. |
+| **Trazabilidad accionable** | Progreso, velocidad, ETA, historial por archivo, alertas, CSV, reportes HTML y bundle de soporte. |
+| **Migración controlada** | Importa backups JSON de Recolecta o StabilityMonitor; cada conexión nace en pausa y las fuentes no compatibles, como SQL Server u Oracle, se informan sin abortar el resto. |
+| **Distribución offline** | Setup autoextraíble y ZIP portable construidos con dependencias inventariadas y verificadas por SHA-256. |
+
+## Estados que explican qué ocurrió
+
+| Estado visible | Significado |
+|----------------|-------------|
+| **Archivos no existentes** | El servidor no contenía archivos aplicables; no se trata como fallo. |
+| **Sin archivos nuevos** | Había elementos, pero ninguno necesitaba descargarse. |
+| **Descarga completada** | Uno o más archivos se publicaron correctamente. |
+| **Resultado parcial** | Parte del lote terminó y otra parte requiere atención. |
+| **Fallida** | La ejecución no pudo completarse y muestra una causa específica, como autenticación, TLS, ruta, red o espacio. |
+
+## Cómo funciona
+
+```mermaid
+flowchart LR
+    Sources["FTP · FTPS · SFTP<br/>WebDAV(S) · SMB"] --> Discovery["Descubrimiento incremental"]
+    Scheduler["Agenda por conexión<br/>y catch-up"] --> Discovery
+    Discovery --> Queue["Cola persistente<br/>SQLite"]
+    Queue --> Transfer["Workers acotados<br/>staging y reanudación"]
+    Transfer --> Validate["Tamaño anunciado<br/>SHA-256 local opcional"]
+    Validate --> Files["Destino local<br/>publicación atómica"]
+    Transfer --> Audit["Historial, estados<br/>alertas y exportaciones"]
+    Audit --> UI["Dashboard local"]
+```
+
+La comparación completa es unidireccional: **remoto → local**. Ignora la
+ventana y el historial para revisar todo el árbol mediante metadatos; puede
+reparar archivos ausentes o diferentes, pero no elimina contenido local
+adicional. En inventarios grandes, simula primero y confirma el espacio libre.
+
+## Instalación portable y operación avanzada
+
+<details>
+<summary><strong>Usar el paquete portable</strong></summary>
+
+Descarga
+[`Recolecta-win64.zip`](https://github.com/castellanosfelipe/Recolecta/releases/latest/download/Recolecta-win64.zip),
+extráelo en una carpeta permanente, entra en la carpeta `Recolecta` incluida
+en el ZIP y ejecuta:
+
+```powershell
+Set-Location .\Recolecta
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 </details>
 
-## 💡 Cómo usar
+<details>
+<summary><strong>Ejecutar como SYSTEM al iniciar Windows</strong></summary>
 
-### Caso de uso básico
-
-1. Abre `http://127.0.0.1:8091`.
-2. Selecciona **Conexiones → Nueva conexión**.
-3. Define protocolo, servidor, credencial, rutas remotas, destino local y,
-   si lo necesitas, una hora diaria propia para esa conexión.
-4. Pulsa **Probar conexión y rutas** para validar credencial, orígenes remotos
-   y escritura en el destino local.
-5. Guarda la conexión y usa **Ejecutar ahora** o deja que la agenda trabaje.
-
-El dashboard mostrará progreso, resultado e historial de cada archivo.
-
-También puedes usar **Conexiones → Importar JSON** con un
-`monitor-backup.json` de StabilityMonitor. Recolecta importa FTP, FTPS, SFTP,
-WebDAV(S) y SMB; las fuentes SQL/Oracle se informan como omitidas. Todas las
-conexiones importadas quedan en pausa hasta probar sus credenciales y rutas;
-si alguna no trae secreto, debes ingresarlo antes de activarla.
-
-### Casos de uso avanzados
-
-#### Validar una conexión sin descargar
-
-```powershell
-& "$env:LOCALAPPDATA\Recolecta\Recolecta.exe" `
-  --run-now `
-  --connection 3 `
-  --dry-run
-```
-
-#### Recuperar una fecha específica
-
-```powershell
-& "$env:LOCALAPPDATA\Recolecta\Recolecta.exe" `
-  --run-now `
-  --connection 3 `
-  --date 2026-07-26
-```
-
-#### Operar sin una sesión iniciada
+Los modos usuario y `SYSTEM` no deben coexistir. Si vas a cambiar de modo,
+ejecuta primero `uninstall.ps1` desde la instalación actual. Los secretos
+cifrados para un usuario no migran al alcance de máquina: deberás ingresarlos
+y validar de nuevo las conexiones.
 
 Desde el paquete portable, abre PowerShell como administrador y ejecuta:
 
 ```powershell
-.\install-service.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-service.ps1
 ```
 
-Este modo registra `Recolecta-Service` como `SYSTEM`, utiliza DPAPI de máquina
-y mantiene el dashboard local sin mostrar bandeja ni notificaciones de
-escritorio.
+Este modo usa `%PROGRAMDATA%\Recolecta`, DPAPI de máquina y no muestra icono
+de bandeja ni notificaciones de escritorio.
 
-## 🏗️ Arquitectura
+</details>
 
-```mermaid
-flowchart LR
-    Sources["FTP · FTPS · SFTP<br/>WebDAV(S) · SMB"] --> Engine["Planificación y descarga<br/>staging · reanudación · integridad"]
-    Scheduler["Agenda y catch-up<br/>zona horaria IANA"] --> Engine
-    Engine --> Files["Destino local<br/>publicación atómica"]
-    Engine --> Audit["SQLite WAL + JSONL<br/>historial y alertas"]
-    Audit --> API["API local<br/>127.0.0.1:8091"]
-    API --> UI["Dashboard<br/>HTML · CSS · JavaScript"]
-    Audit --> Exports["CSV · HTML · ZIP<br/>evidencia de soporte"]
-```
-
-### Stack tecnológico
-
-| Capa | Tecnología | Propósito |
-|------|------------|-----------|
-| **Experiencia local** | HTML, CSS, JavaScript y Chart.js | Dashboard responsivo, progreso en vivo y visualización sin CDN. |
-| **API y proceso residente** | Python 3.12, FastAPI y Uvicorn | Orquesta la aplicación y expone operaciones únicamente en la máquina local por defecto. |
-| **Agenda** | APScheduler, tzlocal y tzdata | Ejecuta ventanas por zona horaria, catch-up y tareas de retención. |
-| **Transferencias** | Paramiko, HTTPX, smbprotocol y adaptadores FTP/FTPS | Unifica conexión, listado, reanudación y descarga para cada protocolo. |
-| **Persistencia y auditoría** | SQLite WAL y logs JSONL | Conserva configuración, corridas, archivos, alertas y evidencia operativa. |
-| **Seguridad Windows** | DPAPI, pywin32 y Basic Auth opcional | Protege credenciales y permite operación interactiva o como `SYSTEM`. |
-| **Distribución** | PyInstaller, PowerShell y GitHub Actions | Produce Setup y ZIP offline con hashes y smoke tests reproducibles. |
-
-## 🗺️ Roadmap
-
-### ✅ Completado
-
-- [x] Descarga y validación mediante FTP, FTPS, SFTP, WebDAV(S) y SMB.
-- [x] Agenda independiente por conexión y zona horaria, catch-up, reintentos y control de duplicados.
-- [x] Importación idempotente de conexiones desde StabilityMonitor con reporte de omisiones.
-- [x] Dashboard local, alertas, exportaciones y bundle de soporte.
-- [x] Instalador offline y paquete portable publicados en GitHub Releases.
-- [x] Suite de 308 pruebas con compuerta de cobertura mínima del 85 %.
-
-### 🔄 En progreso
-
-- [ ] Validación de instalación, reinicio y recuperación en una VM Windows limpia sin internet ni Python.
-- [ ] Evidencia separada de los modos usuario y `SYSTEM` después de reiniciar Windows.
-
-### 🔮 Próximamente
-
-- [ ] Firma de código para el instalador y los ejecutables de release.
-- [ ] Pruebas de integración ampliadas contra servidores reales SFTP, SMB y WebDAV.
-- [ ] Demo GIF del recorrido crear conexión → probar → descargar → auditar.
-
-## 🤝 Contribuir
-
-Las contribuciones son bienvenidas, especialmente cuando incluyen un caso de
-uso reproducible y pruebas. Antes de abrir un pull request:
-
-1. Crea un issue en
-   [GitHub Issues](https://github.com/castellanosfelipe/Recolecta/issues)
-   para describir el problema o resultado esperado.
-2. Trabaja en una rama enfocada y evita mezclar cambios no relacionados.
-3. Ejecuta la validación offline:
+<details>
+<summary><strong>Simular o ejecutar desde la terminal</strong></summary>
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\build.ps1
+# Simular una conexión sin descargar
+& "$env:LOCALAPPDATA\Recolecta\Recolecta.exe" --run-now --connection 3 --dry-run
+
+# Ejecutar una fecha concreta
+& "$env:LOCALAPPDATA\Recolecta\Recolecta.exe" --run-now --connection 3 --date 2026-08-13
 ```
 
-4. Confirma que las pruebas, la cobertura, el autodiagnóstico congelado y
-   ambos smoke tests estén en verde.
+Estos comandos delegan en la API local y no deben usarse si activaste Basic
+Auth para el dashboard; en ese caso ejecuta o simula desde la interfaz.
 
-La especificación, decisiones y criterios verificables están en
-[`docs/`](docs/).
+</details>
 
-## 📄 Licencia
+La [guía de usuario](docs/USER_GUIDE.md) cubre configuración, importación,
+estados y solución de problemas. La [guía de operaciones](docs/OPERATIONS.md)
+explica recuperación, rotación de credenciales, respaldos y soporte.
 
-**MIT License** — consulta [`LICENSE`](./LICENSE) para más detalles.
+## Seguridad y alcance
+
+- El dashboard escucha en `127.0.0.1` de forma predeterminada.
+- FTPS explícito (`AUTH TLS`) y WebDAVS verifican certificado y nombre del host
+  por defecto. WebDAVS no degrada a HTTP. El modo sin verificación debe
+  reservarse para una LAN interna controlada; FTP y WebDAV no usan TLS.
+- SFTP aplica TOFU: registra una clave nueva en el primer uso y rechaza cambios
+  posteriores. SMB admite SMB2/3, exige firma y no admite SMB1; no fuerza el
+  cifrado de sesión.
+- Los secretos se cifran con DPAPI para el usuario o la máquina que ejecuta
+  Recolecta; no se exportan junto con la configuración.
+- Las acciones remotas destructivas no forman parte del flujo de descarga.
+
+## Estado del proyecto
+
+| Evidencia de v0.2.2 | Resultado |
+|---------------------|-----------|
+| Suite automatizada | 374 pruebas aprobadas; 1 omisión esperada por permisos de symlink en Windows. |
+| Cobertura | 86,82 %, por encima de la compuerta obligatoria del 85 %. |
+| Protocolos | FTP/FTPS, SFTP y WebDAV con smokes locales reales; SMB cubierto por pruebas del cliente, timeout, binarios y reanudación. |
+| Paquete portable | Autodiagnóstico congelado, dashboard y recursos estáticos aprobados. |
+| Instalador | Extracción aislada y autodiagnóstico aprobados sin alterar tareas durante el smoke. |
+| Release | [`v0.2.2`](https://github.com/castellanosfelipe/Recolecta/releases/tag/v0.2.2), con Setup, ZIP, hashes y evidencias JSON. |
+
+Pendientes conocidos: firma de código, validación posterior a reinicio en una
+VM limpia y certificación SMB contra endpoints autenticados representativos.
+
+## Construir desde el código fuente
+
+En Windows x64, clona el repositorio y ejecuta:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+El script trabaja con el inventario offline, verifica hashes, ejecuta la suite
+y su cobertura, congela la aplicación, crea el Setup y genera
+`dist\Recolecta-win64.zip`, `dist\Recolecta-Setup.exe` y `SHA256SUMS.txt`.
+
+Valida después ambos artefactos:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\acceptance_smoke.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\installer_smoke.ps1
+```
+
+Consulta también:
+
+- [Especificación funcional y técnica](docs/SPEC.md)
+- [Criterios de aceptación](docs/ACCEPTANCE.md)
+- [Decisiones de arquitectura](docs/DECISIONS.md)
+- [Guía de operaciones](docs/OPERATIONS.md)
+
+## Contribuir
+
+Las contribuciones son bienvenidas. Abre primero un
+[issue](https://github.com/castellanosfelipe/Recolecta/issues) con un caso
+reproducible o el resultado esperado; después envía una rama enfocada con sus
+pruebas. `build.ps1` debe terminar correctamente antes del pull request.
+
+## Licencia
+
+Distribuido bajo la [licencia MIT](LICENSE).
 
 ---
 
 <div align="center">
-  <p>
-    Hecho con ❤️ por
-    <a href="https://github.com/castellanosfelipe">castellanosfelipe</a>
-  </p>
+  <p>Creado por <a href="https://github.com/castellanosfelipe">castellanosfelipe</a></p>
   <p>
     <a href="https://github.com/castellanosfelipe/Recolecta">GitHub</a>
     ·
-    <a href="https://www.linkedin.com/in/bairon-felipe-peña-castellanos-ab18411b5">LinkedIn</a>
+    <a href="https://www.linkedin.com/in/bairon-felipe-pe%C3%B1a-castellanos-ab18411b5">LinkedIn</a>
   </p>
 </div>
