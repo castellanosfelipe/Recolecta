@@ -66,7 +66,7 @@ def test_protocol_default_ports(protocol: Protocol, port: int) -> None:
         ({"max_parallel_files": 0}, "trabajador"),
         ({"bandwidth_limit_kbps": 0}, "ancho de banda"),
         ({"auth_type": AuthType.KEY, "key_path": None}, "ruta de llave"),
-        ({"post_action": PostAction.MOVE_REMOTE}, "ruta de destino remota"),
+        ({"post_action": PostAction.MOVE_REMOTE}, "acciones posteriores"),
     ],
 )
 def test_invalid_connections_have_actionable_messages(changes, message: str) -> None:
@@ -78,6 +78,32 @@ def test_with_changes_blocks_internal_fields() -> None:
     connection = valid_connection().normalized()
     with pytest.raises(ValueError, match="no editables"):
         connection.with_changes({"has_secret": True})
+
+
+def test_tls_mode_is_strict_and_verified_by_default() -> None:
+    assert valid_connection().normalized().ssl_mode == "required"
+    assert ConnectionCreate(name="TLS", host="example.test").ssl_mode == "required"
+    for invalid in ("preferred", "optional", ""):
+        with pytest.raises(ValueError, match="required o insecure"):
+            valid_connection(ssl_mode=invalid).normalized()
+        with pytest.raises(ValueError):
+            ConnectionCreate(
+                name="TLS",
+                host="example.test",
+                ssl_mode=invalid,
+            )
+
+
+@pytest.mark.parametrize("post_action", ("move_remote", "delete_remote"))
+def test_api_schema_rejects_unimplemented_post_actions(post_action: str) -> None:
+    with pytest.raises(ValueError):
+        ConnectionCreate(
+            name="Origen",
+            host="example.test",
+            post_action=post_action,
+        )
+    with pytest.raises(ValueError):
+        ConnectionPatch(post_action=post_action)
 
 
 def test_public_serialization_contains_no_secret_material() -> None:

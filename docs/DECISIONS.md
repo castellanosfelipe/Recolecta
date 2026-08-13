@@ -58,7 +58,7 @@ FTP usa `modify` de `MLSD` durante listados —UTC según RFC 3659— y reserva 
 
 ## D-015 · Adaptadores de metadatos sin lectura de contenido
 
-SFTP usa `listdir_attr` y TOFU en `data/known_hosts`; WebDAV usa `PROPFIND` con `getlastmodified`; SMB usa `stat` sobre UNC y puede establecer credenciales explícitas con `WNetAddConnection2`. Ningún adaptador de Fase 2 ejecuta comandos de descarga.
+SFTP usa `listdir_attr` y TOFU en `data/known_hosts`; WebDAV usa `PROPFIND` con `getlastmodified`; SMB usa `smbprotocol`/`smbclient` para SMB2/SMB3, registra una sesión con credenciales explícitas y obtiene metadatos mediante `stat` sobre UNC. Ningún adaptador de Fase 2 ejecuta comandos de descarga.
 
 ## D-016 · Staging determinista por identidad remota
 
@@ -157,11 +157,13 @@ La ventana se calcula antes de autenticar o listar. Si ese pre-flight falla dura
 ## D-036 · Distribución portable `onedir` y compilación offline verificable
 
 El paquete oficial es PyInstaller `onedir` sin consola. `build.ps1` valida
-SHA-256, acepta únicamente CPython.org 3.12 x64 —o instala el bootstrap oficial
+SHA-256 y rechaza artefactos offline no inventariados, acepta únicamente
+CPython.org 3.12 x64 —o instala el bootstrap oficial
 vendorizado— y obliga a `pip --no-index --find-links wheelhouse`. Las pruebas
 se ejecutan antes de congelar y un autodiagnóstico del ejecutable importa
-explícitamente DPAPI, bandeja, toast, Pillow, APScheduler, cryptography y
-tzdata. Un fallo impide crear el ZIP.
+explícitamente DPAPI, bandeja, toast, Pillow, APScheduler, cryptography,
+la cadena SMB (`smbclient`, `smbprotocol`, `spnego`, `sspilib`) y tzdata.
+Un fallo impide crear el ZIP.
 
 ## D-037 · Dos tareas programadas, un modo criptográfico explícito
 

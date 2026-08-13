@@ -91,10 +91,10 @@ def test_migration_from_release_schema_preserves_connections(
         legacy.execute(
             """
             INSERT INTO connections(
-                name, protocol, host, port, dest_root, dest_template,
+                name, protocol, host, port, ssl_mode, dest_root, dest_template,
                 created_at, updated_at
             ) VALUES (
-                'Legada', 'SFTP', 'legacy.test', 22, 'downloads',
+                'Legada', 'SFTP', 'legacy.test', 22, 'preferred', 'downloads',
                 ?,
                 '2026-07-29T00:00:00+00:00',
                 '2026-07-29T00:00:00+00:00'
@@ -122,6 +122,7 @@ def test_migration_from_release_schema_preserves_connections(
     assert database.schema_version() == max(MIGRATIONS)
     assert connection["full_local_reconciliation"] == 0
     assert connection["dest_template"] == "{remote_tree}"
+    assert connection["ssl_mode"] == "required"
     assert reservation_columns["candidate_key"] == "BLOB"
     assert reservation_columns["local_key"] == "BLOB"
     assert run_file_columns["timestamp_reliable"] == "INTEGER"

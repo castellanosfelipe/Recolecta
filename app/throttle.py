@@ -75,6 +75,7 @@ class ThrottleManager:
         self,
         *,
         global_parallelism: int = 4,
+        global_bandwidth_limit_kbps: int | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -87,6 +88,8 @@ class ThrottleManager:
         self._host_locks: dict[str, threading.Lock] = {}
         self._last_started: dict[str, float] = {}
         self._buckets: dict[str, TokenBucket] = {}
+        self._global_bandwidth_bucket: TokenBucket | None = None
+        self.set_global_bandwidth_limit(global_bandwidth_limit_kbps)
 
     @contextmanager
     def transfer_slot(
@@ -131,12 +134,13 @@ class ThrottleManager:
     def bandwidth_bucket(
         self, key: str, limit_kbps: int | None
     ) -> TokenBucket | None:
+        """Return the per-connection bucket, kept separate from the global cap."""
         if limit_kbps is None:
             return None
         with self._state_lock:
             bucket = self._buckets.get(key)
-            if bucket is None:
-                rate = limit_kbps * 1024.0
+            rate = limit_kbps * 1024.0
+            if bucket is None or bucket.rate != rate:
                 bucket = TokenBucket(
                     rate,
                     capacity_bytes=rate,
@@ -145,6 +149,40 @@ class ThrottleManager:
                 )
                 self._buckets[key] = bucket
             return bucket
+
+    def set_global_bandwidth_limit(self, limit_kbps: int | None) -> None:
+        """Configure one bucket shared by every connection in this manager."""
+        if limit_kbps is not None and limit_kbps <= 0:
+            raise ValueError("El límite global de ancho de banda debe ser positivo.")
+        with self._state_lock:
+            if limit_kbps is None:
+                self._global_bandwidth_bucket = None
+                return
+            rate = limit_kbps * 1024.0
+            current = self._global_bandwidth_bucket
+            if current is not None and current.rate == rate:
+                return
+            self._global_bandwidth_bucket = TokenBucket(
+                rate,
+                capacity_bytes=rate,
+                clock=self._clock,
+                sleeper=self._sleeper,
+            )
+
+    def bandwidth_buckets(
+        self,
+        key: str,
+        connection_limit_kbps: int | None,
+    ) -> tuple[TokenBucket, ...]:
+        """Return every cap a chunk must satisfy: connection and aggregate."""
+        connection_bucket = self.bandwidth_bucket(key, connection_limit_kbps)
+        with self._state_lock:
+            global_bucket = self._global_bandwidth_bucket
+        return tuple(
+            bucket
+            for bucket in (connection_bucket, global_bucket)
+            if bucket is not None
+        )
 
 
 def _acquire_interruptibly(

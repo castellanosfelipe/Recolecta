@@ -139,8 +139,8 @@ Implicaciones que **debes** manejar en el código y documentar en `docs/USER_GUI
   y el servicio corre como `SYSTEM`, el descifrado falla. Usa `CRYPTPROTECT_LOCAL_MACHINE` + *entropy* adicional
   guardada en `data\.entropy` con ACL restringida a `SYSTEM` y `Administrators`. Prefija el token como
   `dpapi-machine:` para distinguirlo de `dpapi:` y `fernet:` (ver §10.2).
-- `SYSTEM` no ve unidades de red mapeadas ni credenciales de usuario para UNC. Para SMB usa credenciales
-  explícitas (`WNetAddConnection2` vía `pywin32`) o una cuenta de servicio de dominio.
+- `SYSTEM` no ve unidades de red mapeadas ni credenciales interactivas para UNC. Para SMB registra una sesión
+  SMB2/SMB3 explícita mediante `smbprotocol` con la credencial cifrada de la conexión, o usa una cuenta de servicio de dominio.
 
 `uninstall.ps1` detiene y desregistra la tarea, mata el proceso y **no borra datos ni descargas**.
 
@@ -196,7 +196,7 @@ CREATE TABLE connections (
     host TEXT NOT NULL, port INTEGER NOT NULL,
     username TEXT NOT NULL DEFAULT '', secret_encrypted TEXT,
     auth_type TEXT NOT NULL DEFAULT 'password',   -- password|key
-    key_path TEXT, ssl_mode TEXT NOT NULL DEFAULT 'preferred',
+    key_path TEXT, ssl_mode TEXT NOT NULL DEFAULT 'required',
     remote_paths_json TEXT NOT NULL DEFAULT '[]', -- carpetas origen
     recursive INTEGER NOT NULL DEFAULT 0, max_depth INTEGER NOT NULL DEFAULT 3,
     include_globs_json TEXT NOT NULL DEFAULT '[]',
@@ -216,7 +216,7 @@ CREATE TABLE connections (
     max_parallel_files INTEGER NOT NULL DEFAULT 2,
     bandwidth_limit_kbps INTEGER,
     timeout_s REAL NOT NULL DEFAULT 30, retries INTEGER NOT NULL DEFAULT 3,
-    post_action TEXT NOT NULL DEFAULT 'none',     -- none|move_remote|delete_remote
+    post_action TEXT NOT NULL DEFAULT 'none',     -- solo none; otros valores reservados
     post_action_path TEXT,
     enabled INTEGER NOT NULL DEFAULT 1, notes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -357,7 +357,7 @@ Esta es la regla de negocio más delicada del sistema. Impleméntala con tests e
     advertencia explícita de precisión temporal**.
   - SFTP: `st_mtime` de `sftp.listdir_attr()` (epoch UTC).
   - WebDAV: `PROPFIND` con `Depth: 1`, propiedad `getlastmodified` (RFC 1123, GMT).
-  - SMB/UNC: `Path.stat().st_mtime` (epoch local → convertir).
+  - SMB/UNC: `smbclient.stat().st_mtime` mediante SMB2/SMB3 (epoch → UTC); `Path.stat()` queda limitado a rutas locales de desarrollo y pruebas.
 - **Quiet period:** omite archivos cuyo `mtime` sea más reciente que `quiet_period_s` (default 120 s) — probablemente
   aún se están escribiendo. Opcionalmente valida estabilidad de tamaño entre dos listados separados 5 s.
 - Filtros: globs de inclusión/exclusión (`*.csv`, `!tmp_*`), tamaño mínimo/máximo, recursión con `max_depth`,
@@ -546,7 +546,7 @@ Requisito explícito del cliente: *"mantener los logs de todo lo que se descarga
   con keyfile en `dev`/CI. Tokens con prefijo de esquema: `dpapi:`, `dpapi-machine:`, `fernet:`.
   Una base movida entre entornos debe fallar con mensaje accionable, no con un error criptográfico.
 - SFTP: host keys con **TOFU** en `data/known_hosts`; un cambio posterior de clave falla el chequeo con causa `tls`.
-- FTPS: `prot_p()` para proteger también el canal de datos; verificación de certificado solo con `ssl_mode='required'`
+- FTPS: `prot_p()` protege también el canal de datos y los certificados se verifican por defecto (`ssl_mode='required'`); `insecure` requiere una decisión explícita para una LAN controlada.
   (los certificados autofirmados son la norma en LAN).
 - Dashboard en `127.0.0.1` por defecto; `RECOLECTA_BIND_LAN=1` para exponerlo, con advertencia en log y
   Basic Auth vía `RECOLECTA_DASH_USER` / `RECOLECTA_DASH_PASS`. `/healthz` siempre sin auth.
@@ -669,19 +669,23 @@ tzlocal
 tzdata                 # imprescindible: Windows no trae la base IANA para zoneinfo
 paramiko==3.5.1        # SFTP
 httpx==0.28.1          # WebDAV/WebDAVS
+smbprotocol==1.17.0    # SMB2/SMB3; incluye el módulo smbclient
+pyspnego==0.12.1       # autenticación Negotiate usada por smbprotocol
+sspilib==0.5.0 ; sys_platform == "win32"  # SSPI nativo para pyspnego
 cryptography==44.0.2
-pywin32==308  ; sys_platform == "win32"     # DPAPI, Event Log, WNetAddConnection2
+pywin32==308  ; sys_platform == "win32"     # DPAPI y Event Log
 winotify==1.1.0 ; sys_platform == "win32"
 pystray==0.19.5 ; sys_platform == "win32"
 Pillow==11.1.0  ; sys_platform == "win32"
 ```
 
 Dev: `pytest==8.3.4`, `pyftpdlib` (servidor FTP/FTPS local para tests de integración).
-FTP/FTPS usa `ftplib` de la stdlib; SMB/UNC usa `pathlib` + `pywin32`. **No agregues drivers de bases de datos.**
+FTP/FTPS usa `ftplib` de la stdlib; SMB/UNC usa `smbprotocol`/`smbclient`, `pyspnego` y SSPI. **No agregues drivers de bases de datos.**
 
 ### 11.3 `--self-test` del ejecutable congelado
 
 Debe importar y validar: `cryptography.hazmat.*`, `win32crypt`, `paramiko`, `httpx`, `apscheduler`,
+`smbclient`, `smbprotocol`, `spnego` y `sspilib`,
 y además **resolver una zona horaria IANA** (`ZoneInfo("America/Bogota")`) para detectar en build time
 que `tzdata` no quedó incluido — un fallo que de otro modo aparece recién a las 2 AM del día siguiente.
 
@@ -808,7 +812,7 @@ Escríbelos en `docs/ACCEPTANCE.md` como checklist verificable:
       "key_path": null,
       "db_name": null,
       "sql_instance": null,
-      "ssl_mode": "preferred",
+      "ssl_mode": "required",
       "targets_json": "[\"/entrada\"]",
       "aliases_json": "[]",
       "health_query": null,

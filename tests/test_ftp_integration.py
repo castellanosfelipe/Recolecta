@@ -108,7 +108,7 @@ def test_real_ftp_and_ftps_listing_is_recursive_and_uses_utc_mdtm(
         recursive=True,
         max_depth=1,
         dest_root="downloads",
-        ssl_mode="preferred",
+        ssl_mode="insecure" if tls else "required",
     ).normalized()
     transport = FtpTransport(connection, secret="password")
     target = BytesIO(b"to")

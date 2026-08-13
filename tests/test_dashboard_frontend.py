@@ -188,6 +188,70 @@ def test_dashboard_exposes_descriptive_domain_specific_statuses(
     assert ".status.no_changes" in styles
 
 
+def test_dashboard_exposes_responsive_and_accessible_interactions(
+    tmp_path: Path,
+) -> None:
+    app = create_app(config(tmp_path))
+    with TestClient(app) as client:
+        page = client.get("/").text
+        script = client.get("/static/app.js").text
+        styles = client.get("/static/app.css").text
+
+    assert 'aria-current="page"' in page
+    assert 'id="runs-chart-summary" class="sr-only"' in page
+    assert 'aria-describedby="runs-chart-summary"' in page
+    for caption in (
+        "Historial de corridas",
+        "Archivos procesados",
+        "Conexiones configuradas",
+        "Registro de alertas recientes",
+    ):
+        assert f'<caption class="sr-only">{caption}</caption>' in page
+
+    assert 'id="simulation-dialog"' in page
+    assert 'data-close-dialog="simulation-dialog"' in page
+    assert "showSimulationResult(result)" in script
+    assert "const pendingToast = toast" in script
+    assert "pendingToast.remove()" in script
+    assert 'event.key !== "Escape"' in script
+    assert '$$("dialog[open]")' in script
+    assert "Contadores del plan" in script
+    assert "Muestra del plan" in script
+    assert "result.items_truncated" in script
+    assert "result.warnings" in script
+    assert '<caption>Muestra de ${items.length}' in script
+
+    assert 'name="ssl_mode"' in page
+    assert '<option value="required" selected>' in page
+    assert '<option value="insecure">' in page
+    assert 'protocol === "FTPS" || protocol === "WEBDAVS"' in script
+    assert 'payload.ssl_mode = form.elements.namedItem("ssl_mode").value' in script
+    assert "updateTlsModeField()" in script
+    assert "Tope agregado de ancho de banda" in page
+
+    assert 'setAttribute("aria-current", "page")' in script
+    assert 'removeAttribute("aria-current")' in script
+    assert 'setView(location.hash.slice(1) || "inicio", { focusMain: false })' in script
+    assert "dialog.scrollTop = 0" in script
+    assert 'namedItem("name").focus({ preventScroll: true })' in script
+
+    assert 'error ? "alert" : "status"' in script
+    assert 'error ? "assertive" : "polite"' in script
+    assert "toast-close" in script
+    assert 'pause("pointer")' in script
+    assert 'pause("focus")' in script
+    assert "error ? 12000 : 7000" in script
+    assert 'aria-valuetext="Progreso indeterminado;' in script
+    assert 'aria-valuenow="${file.percent ?? 0}"' not in script
+
+    assert "grid-template-columns: 238px minmax(0, 1fr)" in styles
+    assert ".chart-wrap canvas" in styles
+    assert "max-width: 100% !important" in styles
+    assert ".table-panel { width: 100%; max-width: 100%; min-width: 0;" in styles
+    assert ".progress-track > span.indeterminate" in styles
+    assert ".toast-close" in styles
+
+
 def test_support_exports_and_alert_api(tmp_path: Path) -> None:
     app = create_app(config(tmp_path))
     with TestClient(app) as client:

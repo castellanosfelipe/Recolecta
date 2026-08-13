@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import errno
 import json
 import ftplib
+import threading
 
 from cryptography.fernet import Fernet
 import pytest
@@ -9,6 +11,7 @@ import pytest
 import app.orchestrator as orchestrator_module
 from app.config import AppPaths
 from app.db import ConnectionRepository, Database
+from app.errors import ErrorType, RecolectaError
 from app.models import Connection, Protocol, VerifyMode, WindowMode
 from app.orchestrator import PlanStatus, RunCoordinator
 from app.platform.secrets_fernet import FernetSecretStore
@@ -18,6 +21,184 @@ from app.transports.base import (
     TransferResult,
     Transport,
 )
+
+
+def test_background_submission_reserves_connection_before_returning(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    paths = AppPaths.from_root(tmp_path).ensure()
+    database = Database(paths.database)
+    database.initialize()
+    connections = ConnectionRepository(
+        database, FernetSecretStore(Fernet.generate_key())
+    )
+    saved = connections.create(
+        Connection(
+            name="Reservada",
+            host="example.test",
+            remote_paths=("/entrada",),
+        )
+    )
+    coordinator = RunCoordinator(database, connections, paths)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def block_reserved(connection, *, lock, **kwargs):
+        del connection, kwargs
+        try:
+            entered.set()
+            assert release.wait(timeout=5)
+        finally:
+            lock.release()
+
+    monkeypatch.setattr(
+        coordinator,
+        "_execute_reserved_connection",
+        block_reserved,
+    )
+
+    worker = coordinator.submit_connection(saved.id, trigger="manual")
+    assert entered.wait(timeout=5)
+    with pytest.raises(RecolectaError, match="corrida activa"):
+        coordinator.submit_connection(saved.id, trigger="manual")
+    with pytest.raises(RecolectaError, match="corrida activa"):
+        coordinator.delete_connection(saved.id)
+
+    release.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert coordinator.delete_connection(saved.id) is True
+
+
+def test_background_submission_rejects_a_persisted_active_run(
+    tmp_path: Path,
+) -> None:
+    paths = AppPaths.from_root(tmp_path).ensure()
+    database = Database(paths.database)
+    database.initialize()
+    connections = ConnectionRepository(
+        database, FernetSecretStore(Fernet.generate_key())
+    )
+    saved = connections.create(
+        Connection(
+            name="Persistida",
+            host="example.test",
+            remote_paths=("/entrada",),
+        )
+    )
+    coordinator = RunCoordinator(database, connections, paths)
+    now = datetime(2026, 7, 27, 12, tzinfo=timezone.utc)
+    coordinator.runs.start_run(
+        connection_id=saved.id,
+        trigger="manual",
+        window_start_utc=now - timedelta(days=1),
+        window_end_utc=now,
+        started_at=now,
+    )
+
+    with pytest.raises(RecolectaError, match="corrida activa"):
+        coordinator.submit_connection(saved.id, trigger="manual")
+
+
+def test_run_setup_failure_terminalizes_reservation_and_progress(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    paths = AppPaths.from_root(tmp_path).ensure()
+    database = Database(paths.database)
+    database.initialize()
+    connections = ConnectionRepository(
+        database, FernetSecretStore(Fernet.generate_key())
+    )
+    saved = connections.create(
+        Connection(
+            name="Falla de log",
+            host="example.test",
+            remote_paths=("/entrada",),
+        )
+    )
+
+    class BrokenRunLogs:
+        @staticmethod
+        def create(**kwargs):
+            del kwargs
+            raise OSError(errno.EIO, "no se puede crear el log")
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "create_transport",
+        lambda connection, secret, known_hosts: object(),
+    )
+    coordinator = RunCoordinator(
+        database,
+        connections,
+        paths,
+        run_logs=BrokenRunLogs(),
+    )
+
+    with pytest.raises(OSError, match="crear el log"):
+        coordinator.execute_connection(saved.id, trigger="manual")
+
+    with database.connect() as db:
+        run = db.execute("SELECT * FROM runs").fetchone()
+    assert run["status"] == "failed"
+    assert run["error_type"] == ErrorType.DISK_WRITE.value
+    assert coordinator.runs.has_active_run(saved.id) is False
+    assert coordinator.progress.snapshot()["active"] is False
+    assert coordinator.delete_connection(saved.id) is True
+
+
+def test_preflight_failure_remains_terminal_when_run_log_is_unavailable(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    paths = AppPaths.from_root(tmp_path).ensure()
+    database = Database(paths.database)
+    database.initialize()
+    connections = ConnectionRepository(
+        database, FernetSecretStore(Fernet.generate_key())
+    )
+    saved = connections.create(
+        Connection(
+            name="Preflight",
+            host="example.test",
+            remote_paths=("/entrada",),
+        )
+    )
+
+    class BrokenRunLogs:
+        @staticmethod
+        def create(**kwargs):
+            del kwargs
+            raise OSError(errno.EIO, "no se puede crear el log")
+
+    expected = RecolectaError(
+        ErrorType.AUTH,
+        "La credencial fue rechazada.",
+        retryable=False,
+    )
+    monkeypatch.setattr(
+        orchestrator_module,
+        "create_transport",
+        lambda connection, secret, known_hosts: (_ for _ in ()).throw(expected),
+    )
+    coordinator = RunCoordinator(
+        database,
+        connections,
+        paths,
+        run_logs=BrokenRunLogs(),
+    )
+
+    with pytest.raises(RecolectaError, match="credencial fue rechazada") as raised:
+        coordinator.execute_connection(saved.id, trigger="manual")
+
+    assert raised.value is expected
+    with database.connect() as db:
+        run = db.execute("SELECT * FROM runs").fetchone()
+    assert run["status"] == "failed"
+    assert run["error_type"] == ErrorType.AUTH.value
+    assert coordinator.runs.has_active_run(saved.id) is False
 
 
 def test_coordinator_plans_downloads_persists_and_deduplicates(

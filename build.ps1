@@ -28,24 +28,44 @@ function Invoke-Checked {
 }
 
 function Test-HashManifest {
-    param([Parameter(Mandatory)][string]$Directory)
+    param(
+        [Parameter(Mandatory)][string]$Directory,
+        [Parameter(Mandatory)][string[]]$Patterns
+    )
 
     $manifest = Join-Path $Directory "SHA256SUMS.txt"
     if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
         throw "Falta el manifiesto $manifest."
     }
+    $inventory = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
     foreach ($line in Get-Content -LiteralPath $manifest) {
         if ($line -notmatch '^([0-9a-fA-F]{64}) \*(.+)$') {
             throw "Línea inválida en $manifest`: $line"
         }
         $expected = $Matches[1]
-        $file = Join-Path $Directory $Matches[2]
+        $name = $Matches[2]
+        if ([System.IO.Path]::GetFileName($name) -ne $name) {
+            throw "Ruta inválida en $manifest`: $name"
+        }
+        if (-not $inventory.Add($name)) {
+            throw "Entrada duplicada en $manifest`: $name"
+        }
+        $file = Join-Path $Directory $name
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
             throw "Falta el archivo inventariado $file."
         }
         $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
         if ($actual -ne $expected) {
             throw "SHA-256 inválido para $file."
+        }
+    }
+    foreach ($pattern in $Patterns) {
+        foreach ($payload in Get-ChildItem -LiteralPath $Directory -Filter $pattern -File) {
+            if (-not $inventory.Contains($payload.Name)) {
+                throw "Archivo offline no inventariado: $($payload.FullName)."
+            }
         }
     }
 }
@@ -98,8 +118,8 @@ function Find-Python312 {
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw "La compilación requiere Windows x64."
 }
-Test-HashManifest -Directory $wheelhouse
-Test-HashManifest -Directory (Join-Path $root "vendor")
+Test-HashManifest -Directory $wheelhouse -Patterns @("*.whl")
+Test-HashManifest -Directory (Join-Path $root "vendor") -Patterns @("*.exe")
 
 $python = Find-Python312
 $venvResolved = [System.IO.Path]::GetFullPath($venv)
@@ -162,6 +182,10 @@ $pyinstallerArgs = @(
     "--hidden-import", "cryptography.hazmat.primitives.kdf.pbkdf2",
     "--collect-submodules", "apscheduler",
     "--collect-submodules", "cryptography",
+    "--collect-submodules", "smbclient",
+    "--collect-submodules", "smbprotocol",
+    "--collect-submodules", "spnego",
+    "--collect-submodules", "sspilib",
     "--collect-submodules", "tzdata",
     (Join-Path $root "launcher.py")
 )

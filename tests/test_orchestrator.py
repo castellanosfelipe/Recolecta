@@ -248,6 +248,54 @@ def test_listing_iterator_closes_generator_before_transport_on_error() -> None:
     ]
 
 
+def test_listing_iterator_cleanup_error_does_not_mask_cancellation() -> None:
+    events: list[str] = []
+
+    class AbortOnCloseTransport(Transport):
+        def connect(self) -> None:
+            events.append("transport_connected")
+
+        def close(self) -> None:
+            events.append("transport_closed")
+
+        def iter_files(self, remote_paths, *, recursive, max_depth):
+            del remote_paths, recursive, max_depth
+
+            def stream():
+                try:
+                    yield remote(
+                        "uno.csv",
+                        when=datetime(2026, 7, 27, tzinfo=timezone.utc),
+                    )
+                finally:
+                    events.append("iterator_abort")
+                    raise OSError("426 cierre anticipado")
+
+            return stream()
+
+        def stat(self, remote_path):
+            raise AssertionError
+
+        def download_to(self, *args, **kwargs):
+            raise AssertionError
+
+    transport = AbortOnCloseTransport()
+    with _listing_iterator(
+        transport,
+        ("/entrada",),
+        recursive=False,
+        max_depth=0,
+    ) as discovered:
+        next(discovered)
+        # Equivale a salir de la enumeración porque la corrida fue cancelada.
+
+    assert events == [
+        "transport_connected",
+        "iterator_abort",
+        "transport_closed",
+    ]
+
+
 def test_dry_run_loads_successful_identities_from_database(tmp_path: Path) -> None:
     database = Database(tmp_path / "recolecta.db")
     database.initialize()

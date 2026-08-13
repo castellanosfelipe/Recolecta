@@ -21,6 +21,19 @@ jobs:
           python-version: "3.12"
           architecture: "x64"
 
+      - name: Verify release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: powershell
+        run: |
+          $source = Get-Content -LiteralPath .\app\__init__.py -Raw
+          if ($source -notmatch '__version__\s*=\s*"([^"]+)"') {
+            throw "Unable to read app.__version__."
+          }
+          $expectedTag = "v$($Matches[1])"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "Tag $env:GITHUB_REF_NAME does not match package version $expectedTag."
+          }
+
       - name: Build and test from the offline inventory
         shell: powershell
         run: .\build.ps1

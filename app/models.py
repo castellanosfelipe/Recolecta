@@ -115,7 +115,7 @@ class Connection:
     username: str = ""
     auth_type: AuthType = AuthType.PASSWORD
     key_path: str | None = None
-    ssl_mode: str = "preferred"
+    ssl_mode: str = "required"
     remote_paths: tuple[str, ...] = field(default_factory=tuple)
     recursive: bool = False
     max_depth: int = 3
@@ -169,7 +169,7 @@ class Connection:
             username=self.username.strip(),
             auth_type=auth_type,
             key_path=self.key_path.strip() if self.key_path else None,
-            ssl_mode=self.ssl_mode.strip().lower(),
+            ssl_mode=_normalize_ssl_mode(self.ssl_mode),
             remote_paths=tuple(str(path).strip() for path in self.remote_paths if str(path).strip()),
             include_globs=tuple(str(value).strip() for value in self.include_globs if str(value).strip()),
             exclude_globs=tuple(str(value).strip() for value in self.exclude_globs if str(value).strip()),
@@ -232,8 +232,11 @@ class Connection:
             raise ValueError("El tamaño mínimo no puede superar el máximo.")
         if self.auth_type == AuthType.KEY and not self.key_path:
             raise ValueError("La autenticación por llave requiere una ruta de llave.")
-        if self.post_action == PostAction.MOVE_REMOTE and not self.post_action_path:
-            raise ValueError("Mover en el servidor requiere una ruta de destino remota.")
+        if self.post_action != PostAction.NONE:
+            raise ValueError(
+                "Las acciones posteriores move_remote y delete_remote no "
+                "están disponibles todavía. Use post_action='none'."
+            )
         try:
             from zoneinfo import ZoneInfo
 
@@ -293,3 +296,13 @@ def _normalize_schedule_time(value: str | None) -> str | None:
             "La hora de la conexión debe estar entre 00:00 y 23:59."
         )
     return f"{hour:02d}:{minute:02d}"
+
+
+def _normalize_ssl_mode(value: str) -> str:
+    """Accept only explicit, security-oriented TLS verification modes."""
+    if not isinstance(value, str):
+        raise ValueError("El modo TLS debe ser required o insecure.")
+    normalized = value.strip().lower()
+    if normalized not in {"required", "insecure"}:
+        raise ValueError("El modo TLS debe ser required o insecure.")
+    return normalized

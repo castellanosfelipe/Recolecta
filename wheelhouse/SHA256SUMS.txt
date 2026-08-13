@@ -30,6 +30,7 @@ fd13b8ac126b35361175edacd41a0d97080b75dd5f4b594ecefefff969509dd3 *pyinstaller_ho
 7fae06c494ce0ebfe6bd3055c0e409def884f63af2e3705d06bd431ad9237fc7 *pyinstaller-6.21.0-py3-none-win_amd64.whl
 62985f233210dee6548c223301b6c25440852e13d59a8b81490203c3227c5ba0 *pynacl-1.6.2-cp38-abi3-win_amd64.whl
 2b11f239acc47ac2e5aca04fd7fa829800aeee22a2eb30d744572a157bd8a1ab *pyopenssl-25.1.0-py3-none-any.whl
+7237cb47985ccf5da512106ddb2731e4f9cefec00991f76c054488eb95fb1a2d *pyspnego-0.12.1-py3-none-any.whl
 a0c2229d02cf87207297c22d86ffc57c86c227517b038c0d3c59df79295ac617 *pystray-0.19.5-py2.py3-none-any.whl
 a0461110b7865f9a271aa1b51e516c9a95de9d696734a2f71e3e78f46e1d4678 *pytest_cov-7.1.0-py3-none-any.whl
 50e16d954148559c9a74109af1eaf0c945ba2d8f30f0a3d3335edde19788b6f6 *pytest-8.3.4-py3-none-any.whl
@@ -37,6 +38,8 @@ a0461110b7865f9a271aa1b51e516c9a95de9d696734a2f71e3e78f46e1d4678 *pytest_cov-7.1
 00b3e11ef09ede56c6a43c71f2d31857cf7c54b0ab6e78ac659497abd2834f47 *pywin32-308-cp312-cp312-win_amd64.whl
 29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3 *setuptools-83.0.0-py3-none-any.whl
 4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 *six-1.17.0-py2.py3-none-any.whl
+bd1abff5417f5af83ca516a64ab8e5acece3dbdcf58d4e5e23e47f5165a77349 *smbprotocol-1.17.0-py3-none-any.whl
+ca2a21a4e90db563c2cec639c66b3a29ea53129a0c55ff1e4154a02937f6bd45 *sspilib-0.5.0-cp311-abi3-win_amd64.whl
 dfb6d332576f136ec740296c7e8bb8c8a7125044e7c6da30744718880cdd059d *starlette-0.45.3-py3-none-any.whl
 481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8 *typing_extensions-4.16.0-py3-none-any.whl
 4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7 *typing_inspection-0.4.2-py3-none-any.whl

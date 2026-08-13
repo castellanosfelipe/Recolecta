@@ -1,17 +1,19 @@
 import ftplib
 import gzip
 import os
+import ssl
 import stat
-import sys
 from dataclasses import replace
 from datetime import datetime, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import paramiko
 import pytest
 
+from app.errors import ErrorType, RecolectaError
 from app.models import Connection, Protocol
 from app.transports import create_transport
 from app.transports.ftp import FtpTransport
@@ -67,6 +69,58 @@ class FakeFtp:
 
     def retrlines(self, command, callback):
         callback("-rw-r--r-- 1 owner group 42 Jul 26 03:04 legacy.csv")
+
+
+@pytest.mark.parametrize(
+    ("ssl_mode", "verify_mode", "check_hostname"),
+    (
+        ("required", ssl.CERT_REQUIRED, True),
+        ("insecure", ssl.CERT_NONE, False),
+    ),
+)
+def test_ftps_certificate_verification_is_explicit(
+    monkeypatch,
+    ssl_mode: str,
+    verify_mode: ssl.VerifyMode,
+    check_hostname: bool,
+) -> None:
+    class FakeContext:
+        def __init__(self) -> None:
+            self.check_hostname = True
+            self.verify_mode = ssl.CERT_REQUIRED
+
+    class FakeTls:
+        def __init__(self, *, context) -> None:
+            self.context = context
+
+        def connect(self, host, port, timeout):
+            return None
+
+        def login(self, username, secret):
+            return None
+
+        def set_pasv(self, passive):
+            return None
+
+        def prot_p(self):
+            return None
+
+        def quit(self):
+            return None
+
+    context = FakeContext()
+    monkeypatch.setattr(ssl, "create_default_context", lambda: context)
+    monkeypatch.setattr(ftplib, "FTP_TLS", FakeTls)
+    transport = FtpTransport(
+        connection(Protocol.FTPS, ssl_mode=ssl_mode),
+        secret="x",
+    )
+
+    transport.connect()
+    transport.close()
+
+    assert context.verify_mode == verify_mode
+    assert context.check_hostname is check_hostname
 
 
 def test_ftp_uses_streamed_mlsd_modify_metadata() -> None:
@@ -413,6 +467,35 @@ def test_sftp_connect_enables_tofu_and_disables_ambient_credentials(
     assert ssh.arguments["look_for_keys"] is False
     assert ssh.arguments["allow_agent"] is False
     assert ssh.arguments["password"] == "password"
+    assert ssh.arguments["channel_timeout"] == 30.0
+
+
+def test_sftp_applies_channel_timeout_to_injected_client(tmp_path: Path) -> None:
+    class Channel:
+        timeout = None
+
+        def settimeout(self, value):
+            self.timeout = value
+
+    class TimedSftp(FakeSftp):
+        def __init__(self) -> None:
+            super().__init__()
+            self.channel = Channel()
+
+        def get_channel(self):
+            return self.channel
+
+    client = TimedSftp()
+    transport = SftpTransport(
+        connection(Protocol.SFTP, timeout_s=7.5),
+        secret="x",
+        known_hosts=tmp_path / "known_hosts",
+        sftp_client=client,
+    )
+
+    transport.connect()
+
+    assert client.channel.timeout == 7.5
 
 
 def test_sftp_closes_owned_client_when_authentication_fails(
@@ -536,6 +619,94 @@ def test_webdav_propfind_lists_recursively_and_never_uses_get() -> None:
         2026, 7, 26, 3, 4, 5, tzinfo=timezone.utc
     )
     assert all(method == "PROPFIND" for method, _, _ in calls)
+    client.close()
+
+
+@pytest.mark.parametrize(
+    ("ssl_mode", "verify"),
+    (("required", True), ("insecure", False)),
+)
+def test_webdavs_certificate_verification_is_explicit(
+    monkeypatch,
+    ssl_mode: str,
+    verify: bool,
+) -> None:
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    transport = WebDavTransport(
+        connection(Protocol.WEBDAVS, ssl_mode=ssl_mode),
+        secret="x",
+    )
+
+    transport.connect()
+    transport.close()
+
+    assert captured["verify"] is verify
+    assert captured["follow_redirects"] is True
+    assert captured["event_hooks"]["request"]
+
+
+def test_webdavs_rejects_http_endpoint_and_downgrade() -> None:
+    with pytest.raises(ValueError, match="requiere https"):
+        WebDavTransport(
+            connection(
+                Protocol.WEBDAVS,
+                host="http://example.test/dav",
+            ),
+            secret="x",
+        )
+
+    transport = WebDavTransport(
+        connection(
+            Protocol.WEBDAVS,
+            host="https://example.test/dav",
+        ),
+        secret="x",
+        client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200))),
+    )
+    with pytest.raises(RecolectaError) as captured:
+        transport._validate_request_scheme(
+            httpx.Request("GET", "http://example.test/dav/root")
+        )
+    assert captured.value.error_type == ErrorType.TLS
+    transport._client.close()
+
+
+def test_webdav_preserves_endpoint_base_path_and_strips_it_from_href() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/dav/root"
+        return httpx.Response(
+            207,
+            content=_dav_multistatus(
+                [
+                    ("/dav/root/", True, None),
+                    ("/dav/root/a.csv", False, 10),
+                ]
+            ),
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    transport = WebDavTransport(
+        connection(
+            Protocol.WEBDAV,
+            host="http://example.test/dav",
+        ),
+        secret="x",
+        client=client,
+    )
+
+    with transport:
+        result = transport.list_files(("/root",), recursive=False, max_depth=0)
+
+    assert result.files[0].remote_path == "/root/a.csv"
     client.close()
 
 
@@ -786,42 +957,220 @@ def test_smb_download_resumes_from_offset(tmp_path: Path) -> None:
     assert result.resumed_from == 3
 
 
-def test_smb_builds_netresource_for_explicit_credentials(
-    monkeypatch,
-) -> None:
-    if sys.platform != "win32":
-        return
-    import win32netcon
-    import win32wnet
+def test_smb_applies_connection_and_operation_timeouts(monkeypatch) -> None:
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.receive_calls: list[tuple[object, bool, float | None, bool]] = []
+            self.connect_calls: list[float] = []
+            self.transport = SimpleNamespace(connected=False)
 
-    captured = {}
+        def connect(self, *, timeout):
+            self.connect_calls.append(timeout)
+            self.transport.connected = True
 
-    def record(resource, password, username, flags):
-        captured.update(
-            remote=resource.lpRemoteName,
-            resource_type=resource.dwType,
-            password=password,
-            username=username,
-            flags=flags,
-        )
+        def receive(
+            self,
+            request,
+            wait=True,
+            timeout=None,
+            resolve_symlinks=True,
+        ):
+            self.receive_calls.append(
+                (request, wait, timeout, resolve_symlinks)
+            )
+            return "response"
 
-    monkeypatch.setattr(win32wnet, "WNetAddConnection2", record)
+    class FakeClient:
+        def __init__(self) -> None:
+            self.connection = FakeConnection()
+            self.registered = None
+            self.reset = None
+
+        def register_session(self, host, **kwargs):
+            self.registered = (host, kwargs)
+            return SimpleNamespace(connection=self.connection)
+
+        def reset_connection_cache(self, **kwargs):
+            self.reset = kwargs
+
     transport = SmbTransport(
         connection(
             Protocol.SMB,
             host="server",
             username=r"DOMAIN\operator",
+            remote_paths=(r"\\server\share",),
+            timeout_s=7.5,
         ),
         secret="password",
     )
-    transport._ensure_credentials(Path(r"\\server\share\folder"))
-    assert captured == {
-        "remote": r"\\server\share",
-        "resource_type": win32netcon.RESOURCETYPE_DISK,
-        "password": "password",
+    client = FakeClient()
+    transport._smb_client = client
+    monkeypatch.setattr(
+        "app.transports.smb._new_protocol_connection",
+        lambda smbclient, host, port: client.connection,
+    )
+
+    transport.connect()
+    assert client.connection.connect_calls == [7.5]
+    assert client.registered is not None
+    host, registered = client.registered
+    assert host == "server"
+    assert registered == {
         "username": r"DOMAIN\operator",
-        "flags": 0,
+        "password": "password",
+        "port": 445,
+        "connection_timeout": 7.5,
+        "connection_cache": transport._connection_cache,
     }
+    assert client.connection.receive("default") == "response"
+    assert client.connection.receive("short", timeout=1.25) == "response"
+    assert client.connection.receive("long", timeout=60) == "response"
+    assert client.connection.receive_calls == [
+        ("default", True, 7.5, True),
+        ("short", True, 1.25, True),
+        ("long", True, 7.5, True),
+    ]
+
+    transport.close()
+    assert client.reset == {
+        "fail_on_error": False,
+        "connection_cache": {},
+    }
+
+
+def test_smb_remote_operations_use_private_bounded_session(monkeypatch) -> None:
+    modified = datetime(2026, 7, 26, 3, 4, 5, tzinfo=timezone.utc)
+
+    class Entry:
+        path = r"\\server\share\payload.bin"
+
+        @staticmethod
+        def is_symlink():
+            return False
+
+        @staticmethod
+        def is_dir(*, follow_symlinks):
+            return False
+
+        @staticmethod
+        def is_file(*, follow_symlinks):
+            return True
+
+        @staticmethod
+        def stat(*, follow_symlinks):
+            return SimpleNamespace(
+                st_mode=stat.S_IFREG,
+                st_size=5,
+                st_mtime=modified.timestamp(),
+            )
+
+    class Entries:
+        def __enter__(self):
+            return iter((Entry(),))
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.transport = SimpleNamespace(connected=False)
+
+        def connect(self, *, timeout):
+            self.transport.connected = True
+
+        @staticmethod
+        def receive(
+            request,
+            wait=True,
+            timeout=None,
+            resolve_symlinks=True,
+        ):
+            return None
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict[str, object]]] = []
+            self.connection = FakeConnection()
+
+        def register_session(self, host, **kwargs):
+            return SimpleNamespace(connection=self.connection)
+
+        @staticmethod
+        def reset_connection_cache(**kwargs):
+            return None
+
+        def stat(self, path, **kwargs):
+            self.calls.append(("stat", path, kwargs))
+            return SimpleNamespace(
+                st_mode=(
+                    stat.S_IFDIR if path == r"\\server\share" else stat.S_IFREG
+                ),
+                st_size=0 if path == r"\\server\share" else 5,
+                st_mtime=modified.timestamp(),
+            )
+
+        def scandir(self, path, **kwargs):
+            self.calls.append(("scandir", path, kwargs))
+            return Entries()
+
+        def open_file(self, path, **kwargs):
+            self.calls.append(("open_file", path, kwargs))
+            return BytesIO(b"\x00\xffabc")
+
+    transport = SmbTransport(
+        connection(
+            Protocol.SMB,
+            host="server",
+            remote_paths=(r"\\server\share",),
+            timeout_s=9.0,
+        ),
+        secret="password",
+    )
+    client = FakeClient()
+    transport._smb_client = client
+    monkeypatch.setattr(
+        "app.transports.smb._new_protocol_connection",
+        lambda smbclient, host, port: client.connection,
+    )
+    target = BytesIO()
+
+    with transport:
+        files = list(
+            transport.iter_files(
+                (r"\\server\share",),
+                recursive=False,
+                max_depth=0,
+            )
+        )
+        result = transport.download_to(
+            files[0].remote_path,
+            target,
+            offset=0,
+            block_size=2,
+            on_chunk=lambda chunk: None,
+            on_restart=lambda: None,
+        )
+
+    assert files[0].size_bytes == 5
+    assert target.getvalue() == b"\x00\xffabc"
+    assert result.bytes_received == 5
+    for _operation, _path, kwargs in client.calls:
+        assert kwargs["connection_timeout"] == 9.0
+        assert kwargs["connection_cache"] is transport._connection_cache
+
+
+def test_smb_rejects_unc_path_for_another_host() -> None:
+    transport = SmbTransport(
+        connection(
+            Protocol.SMB,
+            host="server",
+            remote_paths=(r"\\other\share",),
+        ),
+        secret="password",
+    )
+
+    with pytest.raises(ValueError, match="host configurado"):
+        transport.connect()
 
 
 def test_transport_factory_selects_all_protocols(tmp_path: Path) -> None:

@@ -23,6 +23,54 @@ from app.transports.base import RemoteFile, TransferResult, Transport
 FILE_COUNT = 1_205
 
 
+def test_systemic_failure_signature_is_stable_but_keeps_root_cause() -> None:
+    modified = datetime(2026, 7, 27, 11, tzinfo=timezone.utc)
+    first = DownloadOutcome(
+        RemoteFile("/entrada/lote-1.bin", 101, modified),
+        DownloadStatus.FAILED,
+        None,
+        attempts=1,
+        bytes_done=51,
+        error_type=ErrorType.PARTIAL_TRANSFER,
+        error_msg=(
+            "La transferencia de /entrada/lote-1.bin terminó en 51 bytes; "
+            "se esperaban 101 bytes."
+        ),
+    )
+    second = DownloadOutcome(
+        RemoteFile("/entrada/lote-2.bin", 202, modified),
+        DownloadStatus.FAILED,
+        None,
+        attempts=1,
+        bytes_done=87,
+        error_type=ErrorType.PARTIAL_TRANSFER,
+        error_msg=(
+            "La transferencia de /entrada/lote-2.bin terminó en 87 bytes; "
+            "se esperaban 202 bytes."
+        ),
+    )
+    distinct = DownloadOutcome(
+        RemoteFile("/entrada/lote-3.bin", 303, modified),
+        DownloadStatus.FAILED,
+        None,
+        attempts=1,
+        bytes_done=19,
+        error_type=ErrorType.PARTIAL_TRANSFER,
+        error_msg=(
+            "El servidor cerró el canal de /entrada/lote-3.bin tras "
+            "19 bytes; se esperaban 303 bytes."
+        ),
+    )
+
+    first_signature = orchestrator_module._systemic_failure_signature(first)
+    assert first_signature == (
+        orchestrator_module._systemic_failure_signature(second)
+    )
+    assert first_signature != (
+        orchestrator_module._systemic_failure_signature(distinct)
+    )
+
+
 class LazyInventoryTransport(Transport):
     """Expose a large inventory and prove batches persist before later yields."""
 
@@ -289,12 +337,13 @@ def test_systemic_failures_open_circuit_and_terminalize_large_queue(
                 DownloadStatus.FAILED,
                 None,
                 attempts=1,
-                bytes_done=0,
+                bytes_done=(remote_file.size_bytes or 0) // 2,
                 error_type=systemic_error_type,
                 error_msg=(
                     "Fallo sistémico simulado para "
-                    f"{remote_file.remote_path}; tamaño "
-                    f"{remote_file.size_bytes}."
+                    f"{remote_file.remote_path}; recibidos "
+                    f"{(remote_file.size_bytes or 0) // 2} de "
+                    f"{remote_file.size_bytes} bytes."
                 ),
             )
             for remote_file in files

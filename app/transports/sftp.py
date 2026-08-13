@@ -41,6 +41,7 @@ class SftpTransport(Transport):
 
     def connect(self) -> None:
         if self._sftp is not None:
+            self._configure_channel_timeout(self._sftp)
             return
         self.known_hosts.parent.mkdir(parents=True, exist_ok=True)
         self.known_hosts.touch(mode=0o600, exist_ok=True)
@@ -54,6 +55,7 @@ class SftpTransport(Transport):
             "timeout": self.connection.timeout_s,
             "banner_timeout": self.connection.timeout_s,
             "auth_timeout": self.connection.timeout_s,
+            "channel_timeout": self.connection.timeout_s,
             "allow_agent": False,
             "look_for_keys": False,
         }
@@ -66,6 +68,7 @@ class SftpTransport(Transport):
         try:
             client.connect(**arguments)
             self._sftp = client.open_sftp()
+            self._configure_channel_timeout(self._sftp)
         except Exception:
             self.close()
             raise
@@ -206,6 +209,16 @@ class SftpTransport(Transport):
         if self._sftp is None:
             raise RuntimeError("La sesión SFTP no está conectada.")
         return self._sftp
+
+    def _configure_channel_timeout(self, sftp: paramiko.SFTPClient) -> None:
+        """Bound listing and file reads so cancellation cannot hang forever."""
+        get_channel = getattr(sftp, "get_channel", None)
+        if not callable(get_channel):
+            # Lightweight injected clients used by tests may not expose a
+            # Paramiko channel. Real SFTPClient instances always do.
+            return
+        channel = get_channel()
+        channel.settimeout(self.connection.timeout_s)
 
 
 def _attributes_to_file(

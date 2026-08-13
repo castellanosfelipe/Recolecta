@@ -45,7 +45,7 @@ class ConnectionCreate(BaseModel):
     secret: str | None = None
     auth_type: AuthType = AuthType.PASSWORD
     key_path: str | None = None
-    ssl_mode: str = "preferred"
+    ssl_mode: Literal["required", "insecure"] = "required"
     remote_paths: tuple[str, ...] = ()
     recursive: bool = False
     max_depth: int = Field(default=3, ge=0)
@@ -68,7 +68,7 @@ class ConnectionCreate(BaseModel):
     bandwidth_limit_kbps: int | None = Field(default=None, ge=1)
     timeout_s: float = Field(default=30.0, gt=0)
     retries: int = Field(default=3, ge=0)
-    post_action: PostAction = PostAction.NONE
+    post_action: Literal[PostAction.NONE] = PostAction.NONE
     post_action_path: str | None = None
     enabled: bool = True
     notes: str = ""
@@ -86,7 +86,7 @@ class ConnectionPatch(BaseModel):
     secret: str | None = None
     auth_type: AuthType | None = None
     key_path: str | None = None
-    ssl_mode: str | None = None
+    ssl_mode: Literal["required", "insecure"] | None = None
     remote_paths: tuple[str, ...] | None = None
     recursive: bool | None = None
     max_depth: int | None = Field(default=None, ge=0)
@@ -109,7 +109,7 @@ class ConnectionPatch(BaseModel):
     bandwidth_limit_kbps: int | None = Field(default=None, ge=1)
     timeout_s: float | None = Field(default=None, gt=0)
     retries: int | None = Field(default=None, ge=0)
-    post_action: PostAction | None = None
+    post_action: Literal[PostAction.NONE] | None = None
     post_action_path: str | None = None
     enabled: bool | None = None
     notes: str | None = None

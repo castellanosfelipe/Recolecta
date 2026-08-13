@@ -13,6 +13,7 @@ from xml.etree import ElementTree
 
 import httpx
 
+from app.errors import ErrorType, RecolectaError
 from app.models import Connection, Protocol
 from app.transports.base import (
     DirectoryWorkQueue,
@@ -57,22 +58,17 @@ class WebDavTransport(Transport):
         self.secret = secret
         self._client = client
         self._owns_client = client is None
-        scheme = (
+        self._expected_scheme = (
             "https"
             if self.connection.protocol == Protocol.WEBDAVS
             else "http"
         )
-        host = self.connection.host.rstrip("/")
-        if "://" in host:
-            parsed = urlsplit(host)
-            scheme = parsed.scheme
-            authority = parsed.netloc
-        else:
-            authority = host
-        default_port = 443 if scheme == "https" else 80
-        if self.connection.port and self.connection.port != default_port and ":" not in authority:
-            authority = f"{authority}:{self.connection.port}"
-        self._base_url = f"{scheme}://{authority}"
+        origin, self._base_path = _parse_endpoint(
+            self.connection.host,
+            expected_scheme=self._expected_scheme,
+            configured_port=self.connection.port,
+        )
+        self._base_url = origin + quote(self._base_path, safe="/")
 
     def connect(self) -> None:
         if self._client is not None:
@@ -84,13 +80,14 @@ class WebDavTransport(Transport):
         )
         verify = not (
             self.connection.protocol == Protocol.WEBDAVS
-            and self.connection.ssl_mode != "required"
+            and self.connection.ssl_mode == "insecure"
         )
         self._client = httpx.Client(
             auth=auth,
             timeout=self.connection.timeout_s,
             verify=verify,
             follow_redirects=True,
+            event_hooks={"request": [self._validate_request_scheme]},
         )
 
     def close(self) -> None:
@@ -161,6 +158,7 @@ class WebDavTransport(Transport):
         resumed_from = offset
         resume_supported = True
         with client.stream("GET", self._url(path), headers=headers) as response:
+            self._validate_response_scheme(response)
             if offset and response.status_code == 206:
                 content_range = response.headers.get("Content-Range", "")
                 match = _CONTENT_RANGE.fullmatch(content_range.strip())
@@ -230,6 +228,7 @@ class WebDavTransport(Transport):
             },
             content=_PROPFIND_BODY,
         ) as response:
+            self._validate_response_scheme(response)
             if response.status_code != 207:
                 response.raise_for_status()
                 raise RuntimeError(
@@ -245,7 +244,7 @@ class WebDavTransport(Transport):
                         continue
                     if event != "end" or node.tag != "{DAV:}response":
                         continue
-                    entry = _dav_entry(node)
+                    entry = _dav_entry(node, base_path=self._base_path)
                     if document_root is not None:
                         try:
                             document_root.remove(node)
@@ -258,19 +257,42 @@ class WebDavTransport(Transport):
     def _url(self, path: str) -> str:
         return self._base_url + quote(path, safe="/")
 
+    def _validate_request_scheme(self, request: httpx.Request) -> None:
+        if (
+            self._expected_scheme == "https"
+            and request.url.scheme.lower() != "https"
+        ):
+            raise RecolectaError(
+                ErrorType.TLS,
+                "WebDAVS rechazó una redirección a HTTP sin cifrado.",
+            )
+
+    def _validate_response_scheme(self, response: httpx.Response) -> None:
+        if (
+            self._expected_scheme == "https"
+            and response.url.scheme.lower() != "https"
+        ):
+            raise RecolectaError(
+                ErrorType.TLS,
+                "WebDAVS recibió una respuesta mediante HTTP sin cifrado.",
+            )
+
     def _require_client(self) -> httpx.Client:
         if self._client is None:
             raise RuntimeError("La sesión WebDAV no está conectada.")
         return self._client
 
 
-def _dav_entry(response_node: ElementTree.Element) -> _DavEntry | None:
+def _dav_entry(
+    response_node: ElementTree.Element,
+    *,
+    base_path: str = "",
+) -> _DavEntry | None:
     href_node = response_node.find("{DAV:}href")
     if href_node is None or not href_node.text:
         return None
-    remote_path = _normalize_path(
-        unquote(urlsplit(href_node.text).path)
-    )
+    href_path = unquote(urlsplit(href_node.text).path)
+    remote_path = _logical_remote_path(href_path, base_path=base_path)
     prop = response_node.find(".//{DAV:}prop")
     if prop is None:
         return None
@@ -308,6 +330,56 @@ def _dav_entry(response_node: ElementTree.Element) -> _DavEntry | None:
 def _normalize_path(value: str) -> str:
     normalized = "/" + value.strip().replace("\\", "/").lstrip("/")
     return normalized.rstrip("/") or "/"
+
+
+def _parse_endpoint(
+    host: str,
+    *,
+    expected_scheme: str,
+    configured_port: int | None,
+) -> tuple[str, str]:
+    """Build a strict origin while preserving an optional DAV base path."""
+    raw = host.strip()
+    parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+    if parsed.scheme and parsed.scheme.lower() != expected_scheme:
+        raise ValueError(
+            f"El protocolo requiere {expected_scheme}:// y el host usa "
+            f"{parsed.scheme.lower()}://."
+        )
+    if not parsed.hostname:
+        raise ValueError("El host WebDAV no contiene un servidor válido.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(
+            "No incluya credenciales en el host WebDAV; use los campos de usuario."
+        )
+    if parsed.query or parsed.fragment:
+        raise ValueError("El host WebDAV no admite consulta ni fragmento URL.")
+    try:
+        embedded_port = parsed.port
+    except ValueError as exc:
+        raise ValueError("El puerto incluido en el host WebDAV no es válido.") from exc
+    default_port = 443 if expected_scheme == "https" else 80
+    port = embedded_port or configured_port or default_port
+    hostname = parsed.hostname
+    authority = f"[{hostname}]" if ":" in hostname else hostname
+    if port != default_port:
+        authority = f"{authority}:{port}"
+    path = unquote(parsed.path or "")
+    base_path = _normalize_path(path) if path and path != "/" else ""
+    return f"{expected_scheme}://{authority}", base_path
+
+
+def _logical_remote_path(href_path: str, *, base_path: str) -> str:
+    normalized = _normalize_path(href_path)
+    if not base_path:
+        return normalized
+    normalized_base = _normalize_path(base_path)
+    if normalized == normalized_base:
+        return "/"
+    prefix = normalized_base.rstrip("/") + "/"
+    if normalized.startswith(prefix):
+        return _normalize_path(normalized[len(normalized_base) :])
+    return normalized
 
 
 def _same_resource(left: str, right: str) -> bool:

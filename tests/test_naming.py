@@ -122,6 +122,43 @@ def test_remote_tree_preserves_posix_hierarchy_and_separates_siblings(
     assert second.path.is_relative_to(second.root)
 
 
+@pytest.mark.parametrize(
+    "protocol",
+    (Protocol.FTP, Protocol.SFTP, Protocol.WEBDAV),
+)
+def test_remote_tree_accepts_posix_server_root_without_allowing_traversal(
+    tmp_path: Path,
+    protocol: Protocol,
+) -> None:
+    configured = connection(
+        protocol=protocol,
+        remote_paths=("/",),
+        dest_template=r"{remote_tree}",
+    )
+
+    destination = build_destination(
+        configured,
+        remote("/equipo/entrada/reporte.csv"),
+        portable_root=tmp_path,
+        run_id=1,
+    )
+
+    assert destination.path.parts[-3:] == (
+        "equipo",
+        "entrada",
+        "reporte.csv",
+    )
+    assert destination.path.is_relative_to(destination.root)
+    with pytest.raises(RecolectaError) as raised:
+        build_destination(
+            configured,
+            remote("/../fuera.txt"),
+            portable_root=tmp_path,
+            run_id=1,
+        )
+    assert raised.value.error_type == ErrorType.PATH_INVALID
+
+
 def test_remote_tree_accepts_matching_unc_and_omits_server(
     tmp_path: Path,
 ) -> None:

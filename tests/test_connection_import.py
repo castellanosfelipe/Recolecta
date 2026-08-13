@@ -85,6 +85,7 @@ def test_stability_backup_imports_files_and_reports_unsupported_sources(
                 "name": "WebDAV posterior",
                 "protocol": "WEBDAVS",
                 "host": "dav.example.test",
+                "ssl_mode": " PREFERRED ",
                 "targets_json": '["/posterior"]',
             },
         ],
@@ -120,6 +121,7 @@ def test_stability_backup_imports_files_and_reports_unsupported_sources(
     assert key_based.enabled is False
     assert key_based.has_secret is False
     assert later.name == "WebDAV posterior"
+    assert later.ssl_mode == "required"
 
 
 def test_import_is_idempotent_and_recolecta_schedule_round_trips(

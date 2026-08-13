@@ -20,6 +20,9 @@ class Coordinator:
     def __init__(self) -> None:
         self.validations: list[tuple[Connection, str | None]] = []
         self.validation_error: Exception | None = None
+        self.submissions: list[tuple[int, dict[str, object]]] = []
+        self.submission_error: Exception | None = None
+        self.connections: ConnectionRepository | None = None
 
     def cancel(self, run_id: int) -> bool:
         return False
@@ -40,6 +43,15 @@ class Coordinator:
             warnings=(),
         )
 
+    def submit_connection(self, connection_id: int, **kwargs) -> None:
+        if self.submission_error is not None:
+            raise self.submission_error
+        self.submissions.append((connection_id, kwargs))
+
+    def delete_connection(self, connection_id: int) -> bool:
+        assert self.connections is not None
+        return self.connections.delete_if_idle(connection_id)
+
 
 def api(
     tmp_path: Path,
@@ -52,10 +64,12 @@ def api(
         database, FernetSecretStore(Fernet.generate_key())
     )
     runs = RunRepository(database)
+    selected_coordinator = coordinator or Coordinator()
+    selected_coordinator.connections = connections
     app = FastAPI()
     app.include_router(
         create_router(
-            coordinator or Coordinator(),
+            selected_coordinator,
             connections=connections,
             runs=runs,
             settings=SettingsStore(database),
@@ -521,6 +535,72 @@ def test_connection_error_paths_progress_and_delete(tmp_path: Path) -> None:
         missing_delete,
     ):
         assert response.status_code == 404
+
+
+def test_active_run_blocks_connection_delete_and_preserves_audit_rows(
+    tmp_path: Path,
+) -> None:
+    client, connections, runs = api(tmp_path)
+    saved = connections.create(
+        Connection(
+            name="No eliminar",
+            host="sftp.example.test",
+            remote_paths=("/entrada",),
+        )
+    )
+    started = datetime(2026, 7, 27, 3, tzinfo=timezone.utc)
+    run_id = runs.start_run(
+        connection_id=saved.id,
+        trigger="manual",
+        window_start_utc=started - timedelta(days=1),
+        window_end_utc=started,
+        started_at=started,
+    )
+    runs.add_file(
+        run_id=run_id,
+        connection_id=saved.id,
+        remote_file=RemoteFile("/entrada/pendiente.bin", 10, started),
+    )
+
+    with client:
+        rejected = client.delete(f"/api/connections/{saved.id}")
+
+    assert rejected.status_code == 409
+    assert "corrida activa" in rejected.json()["detail"]
+    assert connections.get(saved.id).id == saved.id
+    with connections.database.connect() as database:
+        assert database.execute(
+            "SELECT COUNT(*) FROM runs WHERE id = ?", (run_id,)
+        ).fetchone()[0] == 1
+        assert database.execute(
+            "SELECT COUNT(*) FROM run_files WHERE run_id = ?", (run_id,)
+        ).fetchone()[0] == 1
+
+
+def test_run_endpoint_rejects_active_connection_before_returning_accepted(
+    tmp_path: Path,
+) -> None:
+    coordinator = Coordinator()
+    client, connections, _ = api(tmp_path, coordinator=coordinator)
+    saved = connections.create(
+        Connection(
+            name="Ocupada",
+            host="sftp.example.test",
+            remote_paths=("/entrada",),
+        )
+    )
+    coordinator.submission_error = RecolectaError(
+        ErrorType.INTERRUPTED,
+        "Ya hay una corrida activa para Ocupada.",
+    )
+
+    with client:
+        rejected = client.post(f"/api/connections/{saved.id}/run")
+
+    assert rejected.status_code == 409
+    assert "corrida activa" in rejected.json()["detail"]
+    assert "accepted" not in rejected.json()
+    assert coordinator.submissions == []
 
 
 def test_settings_validation_reports_actionable_errors(tmp_path: Path) -> None:

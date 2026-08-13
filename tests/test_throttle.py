@@ -74,3 +74,60 @@ def test_transfer_slot_does_not_block_after_cancellation() -> None:
         cancel_event=cancel,
     ) as acquired:
         assert acquired is False
+
+
+def test_global_bandwidth_bucket_is_shared_across_connections() -> None:
+    clock = FakeClock()
+    manager = ThrottleManager(
+        global_parallelism=2,
+        global_bandwidth_limit_kbps=1,
+        clock=clock,
+        sleeper=clock.sleep,
+    )
+
+    first = manager.bandwidth_buckets("connection-1", None)
+    second = manager.bandwidth_buckets("connection-2", None)
+
+    assert len(first) == len(second) == 1
+    assert first[0] is second[0]
+    assert first[0].consume(1024) is True
+    assert second[0].consume(1024) is True
+    assert clock.sleeps == [1.0]
+
+
+def test_connection_and_global_bandwidth_caps_are_both_applied() -> None:
+    manager = ThrottleManager(
+        global_parallelism=1,
+        global_bandwidth_limit_kbps=2,
+    )
+
+    first = manager.bandwidth_buckets("connection-1", 1)
+    second = manager.bandwidth_buckets("connection-2", 1)
+
+    assert len(first) == len(second) == 2
+    assert first[0] is not second[0]
+    assert first[1] is second[1]
+
+
+def test_connection_bandwidth_bucket_tracks_an_updated_limit() -> None:
+    manager = ThrottleManager(global_parallelism=1)
+
+    original = manager.bandwidth_buckets("connection-1", 1)[0]
+    unchanged = manager.bandwidth_buckets("connection-1", 1)[0]
+    updated = manager.bandwidth_buckets("connection-1", 3)[0]
+
+    assert unchanged is original
+    assert updated is not original
+    assert updated.rate == 3 * 1024
+
+
+def test_global_bandwidth_limit_can_be_reconfigured_safely() -> None:
+    manager = ThrottleManager(global_parallelism=1)
+    assert manager.bandwidth_buckets("connection", None) == ()
+
+    manager.set_global_bandwidth_limit(3)
+    bucket = manager.bandwidth_buckets("connection", None)[0]
+    assert bucket.rate == 3 * 1024
+
+    manager.set_global_bandwidth_limit(None)
+    assert manager.bandwidth_buckets("connection", None) == ()

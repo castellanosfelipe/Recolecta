@@ -5,6 +5,9 @@ tzlocal==5.4.4
 tzdata==2026.3
 paramiko==3.5.1
 httpx==0.28.1
+smbprotocol==1.17.0
+pyspnego==0.12.1
+sspilib==0.5.0 ; sys_platform == "win32"
 cryptography==44.0.2
 pywin32==308 ; sys_platform == "win32"
 winotify==1.1.0 ; sys_platform == "win32"

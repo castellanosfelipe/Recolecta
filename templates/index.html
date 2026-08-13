@@ -21,7 +21,7 @@
         <div><strong>Recolecta</strong><span>Control local</span></div>
       </div>
       <nav id="primary-nav">
-        <a href="#inicio" data-view="inicio" class="active"><span aria-hidden="true">⌂</span> Inicio</a>
+        <a href="#inicio" data-view="inicio" class="active" aria-current="page"><span aria-hidden="true">⌂</span> Inicio</a>
         <a href="#en-vivo" data-view="en-vivo"><span aria-hidden="true">◉</span> En vivo <b id="live-count" class="nav-count" hidden>0</b></a>
         <a href="#historial" data-view="historial"><span aria-hidden="true">↺</span> Historial</a>
         <a href="#archivos" data-view="archivos"><span aria-hidden="true">▤</span> Archivos</a>
@@ -100,7 +100,10 @@
             <div><p class="eyebrow">ÚLTIMAS CORRIDAS</p><h2>Archivos descargados</h2></div>
             <span class="legend"><i></i> Descargas correctas</span>
           </div>
-          <div class="chart-wrap"><canvas id="runs-chart" aria-label="Archivos descargados por corrida"></canvas></div>
+          <div class="chart-wrap">
+            <canvas id="runs-chart" role="img" aria-label="Archivos descargados por corrida" aria-describedby="runs-chart-summary"></canvas>
+            <p id="runs-chart-summary" class="sr-only">No hay corridas para representar.</p>
+          </div>
         </div>
       </section>
 
@@ -123,6 +126,7 @@
         </form>
         <div class="table-panel">
           <table>
+            <caption class="sr-only">Historial de corridas</caption>
             <thead><tr><th>Corrida</th><th>Conexión</th><th>Inicio</th><th>Estado</th><th>Descargados</th><th>Fallidos</th><th>Volumen</th><th></th></tr></thead>
             <tbody id="history-body"></tbody>
           </table>
@@ -141,6 +145,7 @@
         </form>
         <div class="table-panel">
           <table>
+            <caption class="sr-only">Archivos procesados</caption>
             <thead><tr><th>Archivo remoto</th><th>Conexión</th><th>Fecha</th><th>Estado</th><th>Tamaño</th><th>Duración</th><th>Velocidad</th></tr></thead>
             <tbody id="files-body"></tbody>
           </table>
@@ -158,6 +163,7 @@
         </div>
         <div class="table-panel">
           <table>
+            <caption class="sr-only">Conexiones configuradas</caption>
             <thead><tr><th>Nombre</th><th>Protocolo</th><th>Servidor</th><th>Hora</th><th>Credencial</th><th>Estado</th><th>Acciones</th></tr></thead>
             <tbody id="connections-body"></tbody>
           </table>
@@ -184,7 +190,7 @@
             <label>Jitter (segundos)<input name="schedule.jitter_s" type="number" min="0" value="300"></label>
             <label>Retención (días)<input name="retention.days" type="number" min="1" value="180"></label>
             <label>Catch-up máximo (días)<input name="catchup.max_days" type="number" min="1" value="3"></label>
-            <label>Ancho de banda global (KB/s)<input name="bandwidth.global_kbps" type="number" min="0" value="0"><small>0 conserva los límites por conexión.</small></label>
+            <label>Tope agregado de ancho de banda (KB/s)<input name="bandwidth.global_kbps" type="number" min="0" value="0"><small>Se comparte entre todas las conexiones y se combina con cada límite individual. 0 desactiva únicamente este tope global.</small></label>
             <label>Reserva de disco (%)<input name="disk.reserve_percent" type="number" min="0" max="100" value="10"></label>
             <label>Separación entre aperturas (s)<input name="courtesy.minimum_spacing_s" type="number" min="0" step="0.1" value="0"></label>
           </div>
@@ -215,6 +221,7 @@
         </div>
         <div class="table-panel">
           <table>
+            <caption class="sr-only">Registro de alertas recientes</caption>
             <thead><tr><th>Fecha</th><th>Conexión</th><th>Causa</th><th>Canal</th><th>Entrega</th><th>Mensaje</th></tr></thead>
             <tbody id="alerts-body"></tbody>
           </table>
@@ -234,6 +241,7 @@
         <label>Nombre<input name="name" required placeholder="Reportes de ventas"></label>
         <label>Cliente<input name="client" placeholder="Cliente o área"></label>
         <label>Protocolo<select name="protocol"><option>SFTP</option><option>FTP</option><option>FTPS</option><option>WEBDAV</option><option>WEBDAVS</option><option>SMB</option></select></label>
+        <label id="ssl-mode-field" hidden>Seguridad TLS<select name="ssl_mode" aria-describedby="ssl-mode-help"><option value="required" selected>Verificar certificado (recomendado)</option><option value="insecure">No verificar certificado (solo LAN confiable)</option></select><small id="ssl-mode-help">La opción sin verificación expone la conexión a suplantación. Úsala solo en una red interna controlada.</small></label>
         <label>Servidor<input name="host" required placeholder="servidor.ejemplo.local"></label>
         <label>Puerto<input name="port" type="number" min="1" max="65535" placeholder="Automático"></label>
         <label>Usuario<input name="username" autocomplete="username"></label>
@@ -268,6 +276,14 @@
   <dialog id="import-result-dialog" aria-labelledby="import-result-title">
     <div class="dialog-head"><h2 id="import-result-title">Resultado de importación</h2><button class="icon-button" type="button" data-close-dialog="import-result-dialog" aria-label="Cerrar">×</button></div>
     <div id="import-result-content"></div>
+  </dialog>
+
+  <dialog id="simulation-dialog" aria-labelledby="simulation-title">
+    <div class="dialog-head"><h2 id="simulation-title">Resultado de simulación</h2><button class="icon-button" type="button" data-close-dialog="simulation-dialog" aria-label="Cerrar">×</button></div>
+    <div id="simulation-content" class="dialog-body"></div>
+    <div class="dialog-actions dialog-footer">
+      <button class="btn secondary" type="button" data-close-dialog="simulation-dialog">Cancelar</button>
+    </div>
   </dialog>
 </body>
 </html>

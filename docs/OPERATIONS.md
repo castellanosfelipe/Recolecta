@@ -215,6 +215,11 @@ Verifique `Recolecta-win64.zip` contra `SHA256SUMS.txt`. Para actualizar:
 5. instale en el mismo modo y ejecute `--self-test`;
 6. conserve la versión anterior hasta completar una corrida correcta.
 
-`build.ps1` valida los hashes de `wheelhouse\` y `vendor\`, instala con
+`build.ps1` valida los hashes de `wheelhouse\` y `vendor\`, rechaza cualquier
+wheel o instalador no inventariado, instala con
 `--no-index`, exige pruebas verdes, congela y exige el autodiagnóstico del
 ejecutable antes de crear el ZIP.
+La cadena SMB queda completamente dentro del inventario offline:
+`smbprotocol==1.17.0`, `pyspnego==0.12.1` y `sspilib==0.5.0`. PyInstaller
+recopila sus submódulos y `--self-test` importa `smbclient`, `smbprotocol`,
+`spnego` y `sspilib`; cualquier omisión detiene el empaquetado antes del ZIP.

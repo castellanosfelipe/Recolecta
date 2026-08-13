@@ -284,6 +284,38 @@ def test_oversized_transfer_is_integrity_failure_without_retry(
     assert outcome.error_type == ErrorType.INTEGRITY
     assert outcome.attempts == 1
     assert not (tmp_path / "downloads" / "payload.bin").exists()
+    partial = next((tmp_path / "downloads" / ".staging").rglob("*.part"))
+    assert partial.stat().st_size <= len(CONTENT)
+
+
+def test_oversized_chunk_is_rejected_before_consuming_disk_or_bandwidth(
+    tmp_path: Path,
+) -> None:
+    state: dict = {}
+    bandwidth = type(
+        "BandwidthProbe",
+        (),
+        {
+            "consume": lambda self, amount, *, cancel_event=None: (
+                state.setdefault("bandwidth", []).append(amount) or True
+            )
+        },
+    )()
+    engine = DownloadEngine(
+        connection(retries=0),
+        portable_root=tmp_path,
+        transport_factory=factory(state, content=CONTENT + b"x"),
+        block_size=8192,
+    )
+    engine.bandwidth_buckets = (bandwidth,)
+
+    outcome = engine.download_files((remote(),), run_id=131)[0]
+
+    assert outcome.status == DownloadStatus.FAILED
+    assert outcome.error_type == ErrorType.INTEGRITY
+    assert state.get("bandwidth", []) == []
+    partial = next((tmp_path / "downloads" / ".staging").rglob("*.part"))
+    assert partial.stat().st_size == 0
 
 
 def test_authentication_failure_is_not_retried(tmp_path: Path) -> None:
@@ -306,6 +338,57 @@ def test_authentication_failure_is_not_retried(tmp_path: Path) -> None:
     outcome = engine.download_files((remote(),), run_id=131)[0]
     assert outcome.status == DownloadStatus.FAILED
     assert outcome.error_type == ErrorType.AUTH
+    assert outcome.attempts == 1
+    assert state["calls"] == 1
+
+
+def test_explicit_retryable_error_is_retried_even_for_protocol_category(
+    tmp_path: Path,
+) -> None:
+    state: dict = {}
+
+    class RetryableProtocolTransport(MemoryTransport):
+        def download_to(self, *args, **kwargs):
+            self.state["calls"] = self.state.get("calls", 0) + 1
+            if self.state["calls"] == 1:
+                raise RecolectaError(
+                    ErrorType.PROTOCOL,
+                    "Interrupción transitoria simulada.",
+                    retryable=True,
+                )
+            return super().download_to(*args, **kwargs)
+
+    outcome = DownloadEngine(
+        connection(retries=2),
+        portable_root=tmp_path,
+        transport_factory=lambda: RetryableProtocolTransport(CONTENT, state),
+        retry_waiter=lambda event, delay: event.is_set(),
+    ).download_files((remote(),), run_id=133)[0]
+
+    assert outcome.status == DownloadStatus.OK
+    assert outcome.attempts == 2
+    assert state["calls"] == 3
+
+
+def test_non_retryable_error_overrides_a_retryable_category(tmp_path: Path) -> None:
+    state: dict = {}
+
+    class PermanentTimeoutTransport(MemoryTransport):
+        def download_to(self, *args, **kwargs):
+            self.state["calls"] = self.state.get("calls", 0) + 1
+            raise RecolectaError(
+                ErrorType.TCP_TIMEOUT,
+                "Timeout permanente simulado.",
+                retryable=False,
+            )
+
+    outcome = DownloadEngine(
+        connection(retries=3),
+        portable_root=tmp_path,
+        transport_factory=lambda: PermanentTimeoutTransport(CONTENT, state),
+    ).download_files((remote(),), run_id=134)[0]
+
+    assert outcome.status == DownloadStatus.FAILED
     assert outcome.attempts == 1
     assert state["calls"] == 1
 
@@ -586,6 +669,108 @@ def test_known_size_without_trustworthy_timestamp_restarts_partial(
     assert outcome.resumed_from == 0
     assert state["offsets"] == [0]
     assert (tmp_path / "downloads" / "payload.bin").read_bytes() == CONTENT
+
+
+def test_resume_rejects_remote_replacement_with_same_size(tmp_path: Path) -> None:
+    source = remote()
+    staging = tmp_path / "downloads" / ".staging"
+    identity = "|".join(
+        ("3", source.remote_path, MODIFIED.isoformat(), str(len(CONTENT)))
+    )
+    part_name = f"{uuid.uuid5(uuid.NAMESPACE_URL, identity)}.part"
+    partial = staging / part_name[:2] / part_name
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(CONTENT[:1024])
+    state: dict = {}
+
+    class ReplacedRemoteTransport(MemoryTransport):
+        def stat(self, remote_path: str) -> RemoteFile:
+            return RemoteFile(
+                remote_path,
+                len(self.content),
+                MODIFIED + timedelta(seconds=1),
+            )
+
+    outcome = DownloadEngine(
+        connection(retries=2),
+        portable_root=tmp_path,
+        transport_factory=lambda: ReplacedRemoteTransport(CONTENT, state),
+    ).download_files((source,), run_id=159)[0]
+
+    assert outcome.status == DownloadStatus.FAILED
+    assert outcome.error_type == ErrorType.INTEGRITY
+    assert outcome.attempts == 1
+    assert state.get("calls", 0) == 0
+    assert partial.read_bytes() == b""
+    assert not (tmp_path / "downloads" / "payload.bin").exists()
+
+
+def test_resume_size_change_never_falls_through_to_unchecked_download(
+    tmp_path: Path,
+) -> None:
+    source = remote()
+    staging = tmp_path / "downloads" / ".staging"
+    identity = "|".join(
+        ("3", source.remote_path, MODIFIED.isoformat(), str(len(CONTENT)))
+    )
+    part_name = f"{uuid.uuid5(uuid.NAMESPACE_URL, identity)}.part"
+    partial = staging / part_name[:2] / part_name
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(CONTENT[:1024])
+    state: dict = {}
+
+    class ResizedRemoteTransport(MemoryTransport):
+        def stat(self, remote_path: str) -> RemoteFile:
+            self.state["stats"] = self.state.get("stats", 0) + 1
+            return RemoteFile(remote_path, len(self.content) + 1, MODIFIED)
+
+    outcome = DownloadEngine(
+        connection(retries=3),
+        portable_root=tmp_path,
+        transport_factory=lambda: ResizedRemoteTransport(CONTENT, state),
+    ).download_files((source,), run_id=161)[0]
+
+    assert outcome.status == DownloadStatus.FAILED
+    assert outcome.error_type == ErrorType.PARTIAL_TRANSFER
+    assert outcome.attempts == 4
+    assert state["stats"] == 4
+    assert state.get("calls", 0) == 0
+    assert partial.read_bytes() == CONTENT[:1024]
+    assert not (tmp_path / "downloads" / "payload.bin").exists()
+
+
+def test_resume_revalidates_remote_again_before_publish(tmp_path: Path) -> None:
+    source = remote()
+    staging = tmp_path / "downloads" / ".staging"
+    identity = "|".join(
+        ("3", source.remote_path, MODIFIED.isoformat(), str(len(CONTENT)))
+    )
+    part_name = f"{uuid.uuid5(uuid.NAMESPACE_URL, identity)}.part"
+    partial = staging / part_name[:2] / part_name
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(CONTENT[:1024])
+    state: dict = {}
+
+    class ChangesDuringResumeTransport(MemoryTransport):
+        def stat(self, remote_path: str) -> RemoteFile:
+            calls = self.state.get("stats", 0) + 1
+            self.state["stats"] = calls
+            modified = MODIFIED if calls == 1 else MODIFIED + timedelta(seconds=1)
+            return RemoteFile(remote_path, len(self.content), modified)
+
+    outcome = DownloadEngine(
+        connection(retries=0),
+        portable_root=tmp_path,
+        transport_factory=lambda: ChangesDuringResumeTransport(CONTENT, state),
+        block_size=1024,
+    ).download_files((source,), run_id=160)[0]
+
+    assert outcome.status == DownloadStatus.FAILED
+    assert outcome.error_type == ErrorType.INTEGRITY
+    assert state["stats"] == 2
+    assert state["offsets"] == [1024]
+    assert partial.read_bytes() == b""
+    assert not (tmp_path / "downloads" / "payload.bin").exists()
 
 
 @pytest.mark.parametrize("layout", ("sharded", "legacy"))

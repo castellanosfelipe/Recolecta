@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import io
-import logging
 import threading
 from datetime import date
 from typing import Any
@@ -43,10 +42,6 @@ from app.statuses import (
     enrich_run,
 )
 from app.throttle import ThrottleManager
-
-
-logger = logging.getLogger(__name__)
-
 
 def create_router(
     coordinator: RunCoordinator,
@@ -408,8 +403,16 @@ def create_router(
         status_code=status.HTTP_204_NO_CONTENT,
     )
     def delete_connection(connection_id: int) -> Response:
-        with connection_mutation_lock:
-            deleted = connections.delete(connection_id)
+        try:
+            with connection_mutation_lock:
+                deleted = coordinator.delete_connection(connection_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RecolectaError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=redact_secrets(exc),
+            ) from exc
         if not deleted:
             raise HTTPException(
                 status_code=404,
@@ -487,24 +490,19 @@ def create_router(
                 detail=f"La conexión {connection.name} está en pausa.",
             )
 
-        def execute() -> None:
-            try:
-                coordinator.execute_connection(
-                    connection_id,
-                    trigger="manual",
-                    selected_date=selected_date,
-                )
-            except Exception:
-                logger.exception(
-                    "La corrida manual de la conexión %s falló.",
-                    connection_id,
-                )
-
-        threading.Thread(
-            target=execute,
-            name=f"manual-run-{connection_id}",
-            daemon=True,
-        ).start()
+        try:
+            coordinator.submit_connection(
+                connection_id,
+                trigger="manual",
+                selected_date=selected_date,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RecolectaError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=redact_secrets(exc),
+            ) from exc
         return {"accepted": True, "connection_id": connection_id}
 
     @router.get("/api/runs")
@@ -829,7 +827,8 @@ def create_router(
         if scheduler is not None:
             scheduler.configure(schedule_settings)
         coordinator.throttle = ThrottleManager(
-            global_parallelism=global_parallelism
+            global_parallelism=global_parallelism,
+            global_bandwidth_limit_kbps=global_bandwidth or None,
         )
         coordinator.global_bandwidth_limit_kbps = (
             global_bandwidth or None

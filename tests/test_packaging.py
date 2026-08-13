@@ -67,6 +67,10 @@ def test_build_is_offline_gated_and_complete() -> None:
         "pil.imagedraw",
         "cryptography.hazmat",
         '"apscheduler"',
+        '"smbclient"',
+        '"smbprotocol"',
+        '"spnego"',
+        '"sspilib"',
         '"tzdata"',
         "compress-archive",
         "recolecta-setup",
@@ -151,11 +155,38 @@ def test_offline_inventory_and_hashes() -> None:
             encoding="utf-8"
         ).splitlines()
         assert lines
+        manifested = set()
         for line in lines:
             digest, filename = line.split(" *", 1)
+            assert Path(filename).name == filename
+            assert filename not in manifested
+            manifested.add(filename)
             payload = directory / filename
             assert payload.is_file()
             assert hashlib.sha256(payload.read_bytes()).hexdigest() == digest
+        pattern = "*.whl" if directory == wheelhouse else "*.exe"
+        assert manifested == {payload.name for payload in directory.glob(pattern)}
+
+
+def test_smb_runtime_chain_is_pinned_and_diagnosed() -> None:
+    requirements = _read("requirements.txt").lower()
+    launcher = _read("launcher.py").lower()
+    build = _read("build.ps1").lower()
+
+    for requirement in (
+        "smbprotocol==1.17.0",
+        "pyspnego==0.12.1",
+        "sspilib==0.5.0",
+    ):
+        assert requirement in requirements
+    for module in (
+        "smbclient",
+        "smbprotocol",
+        "spnego",
+        "sspilib",
+    ):
+        assert f'"{module}"' in launcher
+        assert f'"--collect-submodules", "{module}"' in build
 
 
 def test_ci_packages_and_releases_tags() -> None:
@@ -172,6 +203,9 @@ def test_ci_packages_and_releases_tags() -> None:
         "acceptance-smoke.json",
         "installer-smoke.json",
         ".\\scripts\\installer_smoke.ps1",
+        "$env:github_ref_name",
+        "does not match package version",
+        ".\\app\\__init__.py",
     ):
         assert expected in workflow
 

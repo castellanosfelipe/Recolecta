@@ -70,6 +70,23 @@ def test_build_runtime_cleans_each_destination_once_with_catchup_retention(
     assert runtime.recovered_files == 0
 
 
+def test_build_runtime_applies_one_shared_global_bandwidth_limit(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    database = Database(config.paths.database)
+    database.initialize()
+    SettingsStore(database).set("bandwidth.global_kbps", 7)
+
+    runtime = build_runtime(config)
+    first = runtime.coordinator.throttle.bandwidth_buckets("first", None)
+    second = runtime.coordinator.throttle.bandwidth_buckets("second", None)
+
+    assert len(first) == len(second) == 1
+    assert first[0] is second[0]
+    assert first[0].rate == 7 * 1024
+
+
 def test_runtime_cleanup_warns_and_continues_after_destination_errors(
     monkeypatch,
     tmp_path: Path,

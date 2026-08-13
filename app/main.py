@@ -74,7 +74,13 @@ def build_runtime(config: AppConfig) -> RuntimeComponents:
         catchup_max_days=scheduler_settings.catchup_max_days,
     )
     global_parallelism = int(settings.get("concurrency.global", 4))
-    throttle = ThrottleManager(global_parallelism=global_parallelism)
+    global_bandwidth_limit_kbps = (
+        int(settings.get("bandwidth.global_kbps", 0)) or None
+    )
+    throttle = ThrottleManager(
+        global_parallelism=global_parallelism,
+        global_bandwidth_limit_kbps=global_bandwidth_limit_kbps,
+    )
     progress = ProgressRegistry(persist_progress=runs.update_file_progress)
     run_logs = RunLogStore(config.paths.run_logs)
     alert_repository = AlertRepository(database)
@@ -108,9 +114,7 @@ def build_runtime(config: AppConfig) -> RuntimeComponents:
             settings.get("courtesy.minimum_spacing_s", 0)
         ),
         reserve_ratio=float(settings.get("disk.reserve_percent", 10)) / 100,
-        global_bandwidth_limit_kbps=(
-            int(settings.get("bandwidth.global_kbps", 0)) or None
-        ),
+        global_bandwidth_limit_kbps=global_bandwidth_limit_kbps,
     )
     scheduler = SchedulerService(
         coordinator,

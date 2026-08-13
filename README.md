@@ -5,7 +5,7 @@
   <img src="docs/images/dashboard.png" alt="Dashboard principal de Recolecta con el estado de conexiones, ejecuciones y archivos descargados" width="800"/>
 
   <p>
-    <img src="https://img.shields.io/badge/version-0.2.1-blue" alt="Versión 0.2.1"/>
+    <img src="https://img.shields.io/badge/version-0.2.2-blue" alt="Versión 0.2.2"/>
     <img src="https://img.shields.io/badge/status-active-2ea44f" alt="Estado activo"/>
     <img src="https://img.shields.io/badge/license-MIT-orange" alt="Licencia MIT"/>
     <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4" alt="Compatible con Windows 10 y Windows 11"/>
@@ -215,7 +215,7 @@ flowchart LR
 | **Experiencia local** | HTML, CSS, JavaScript y Chart.js | Dashboard responsivo, progreso en vivo y visualización sin CDN. |
 | **API y proceso residente** | Python 3.12, FastAPI y Uvicorn | Orquesta la aplicación y expone operaciones únicamente en la máquina local por defecto. |
 | **Agenda** | APScheduler, tzlocal y tzdata | Ejecuta ventanas por zona horaria, catch-up y tareas de retención. |
-| **Transferencias** | Paramiko, HTTPX y adaptadores FTP/FTPS/SMB | Unifica conexión, listado, reanudación y descarga para cada protocolo. |
+| **Transferencias** | Paramiko, HTTPX, smbprotocol y adaptadores FTP/FTPS | Unifica conexión, listado, reanudación y descarga para cada protocolo. |
 | **Persistencia y auditoría** | SQLite WAL y logs JSONL | Conserva configuración, corridas, archivos, alertas y evidencia operativa. |
 | **Seguridad Windows** | DPAPI, pywin32 y Basic Auth opcional | Protege credenciales y permite operación interactiva o como `SYSTEM`. |
 | **Distribución** | PyInstaller, PowerShell y GitHub Actions | Produce Setup y ZIP offline con hashes y smoke tests reproducibles. |

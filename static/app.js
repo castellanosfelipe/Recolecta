@@ -134,6 +134,10 @@
     exclude_filter: "Excluido por configuración",
     size_filter: "Fuera del tamaño permitido",
     symlink: "Enlace simbólico omitido",
+    local_present: "Ya coincide en local",
+    local_missing: "Ausente en local",
+    local_different: "Diferente en local",
+    path_invalid: "Ruta de destino no válida",
   };
 
   function safeStatusClass(value) {
@@ -210,22 +214,62 @@
   function toast(message, error = false) {
     const node = document.createElement("div");
     node.className = `toast${error ? " error" : ""}`;
-    node.textContent = message;
+    node.setAttribute("role", error ? "alert" : "status");
+    node.setAttribute("aria-live", error ? "assertive" : "polite");
+    node.setAttribute("aria-atomic", "true");
+    const text = document.createElement("span");
+    text.className = "toast-message";
+    text.textContent = message;
+    const close = document.createElement("button");
+    close.className = "toast-close";
+    close.type = "button";
+    close.setAttribute("aria-label", "Cerrar notificación");
+    close.textContent = "×";
+    node.append(text, close);
     $("#toast-region").append(node);
-    window.setTimeout(() => node.remove(), 4500);
+    const lifetime = error ? 12000 : 7000;
+    let timer = null;
+    let startedAt = 0;
+    let remaining = lifetime;
+    const pauseReasons = new Set();
+    const pause = (reason) => {
+      pauseReasons.add(reason);
+      if (!timer) return;
+      window.clearTimeout(timer);
+      timer = null;
+      remaining = Math.max(1000, remaining - (Date.now() - startedAt));
+    };
+    const resume = (reason = null) => {
+      if (reason) pauseReasons.delete(reason);
+      if (pauseReasons.size || timer || !node.isConnected) return;
+      startedAt = Date.now();
+      timer = window.setTimeout(() => node.remove(), remaining);
+    };
+    close.addEventListener("click", () => node.remove());
+    node.addEventListener("pointerenter", () => pause("pointer"));
+    node.addEventListener("pointerleave", () => resume("pointer"));
+    node.addEventListener("focusin", () => pause("focus"));
+    node.addEventListener("focusout", () => resume("focus"));
+    resume();
+    return node;
   }
 
   function emptyState(title, text) {
     return `<div class="empty-state"><b>${escapeHtml(title)}</b><p>${escapeHtml(text)}</p></div>`;
   }
 
-  function setView(name) {
+  function setView(name, { focusMain = true } = {}) {
     const view = titles[name] ? name : "inicio";
     $$(".view").forEach((section) => section.classList.toggle("active", section.id === `view-${view}`));
-    $$("#primary-nav a").forEach((link) => link.classList.toggle("active", link.dataset.view === view));
+    $$("#primary-nav a").forEach((link) => {
+      const active = link.dataset.view === view;
+      link.classList.toggle("active", active);
+      if (active) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    });
     $("#page-title").textContent = titles[view];
     if (window.location.hash !== `#${view}`) history.replaceState(null, "", `#${view}`);
-    $("#main").focus({ preventScroll: true });
+    if (focusMain) $("#main").focus({ preventScroll: true });
   }
 
   async function loadConnections() {
@@ -317,14 +361,13 @@
       return;
     }
     root.innerHTML = state.progress.runs.map((run) => {
-      const percent = run.percent ?? 0;
       const files = run.files.map((file) => `
         <tr>
           <td class="path-cell mono" title="${escapeHtml(file.remote_path)}">${escapeHtml(file.remote_path)}</td>
           <td>${fileStatusBadge(file)}</td>
           <td>
             <div class="progress-meta"><span>${escapeHtml(formatBytes(file.bytes_done))} / ${escapeHtml(formatBytes(file.size_bytes))}</span><span>${file.percent === null ? "—" : `${file.percent}%`}</span></div>
-            <div class="progress-track" role="progressbar" aria-label="Progreso de ${escapeHtml(file.remote_path)}" aria-valuenow="${file.percent ?? 0}" aria-valuemin="0" aria-valuemax="100"><span style="width:${file.percent ?? 3}%"></span></div>
+            <div class="progress-track" role="progressbar" aria-label="Progreso de ${escapeHtml(file.remote_path)}" ${file.percent === null ? `aria-valuetext="Progreso indeterminado; ${escapeHtml(formatBytes(file.bytes_done))} transferidos"` : `aria-valuenow="${file.percent}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${file.percent}%"`}><span class="${file.percent === null ? "indeterminate" : ""}" style="width:${file.percent ?? 100}%"></span></div>
           </td>
           <td>${escapeHtml(formatBytes(file.average_bps))}/s</td>
           <td>${escapeHtml(formatDuration(file.eta_s))}</td>
@@ -336,8 +379,8 @@
             <button class="btn danger small" data-cancel="${run.run_id}" ${run.cancel_requested ? "disabled" : ""}>${run.cancel_requested ? "Cancelación solicitada" : "Cancelar corrida"}</button>
           </div>
           <div class="progress-meta"><span>Progreso global</span><strong>${run.percent === null ? "Tamaño desconocido" : `${run.percent}%`}</strong></div>
-          <div class="progress-track" role="progressbar" aria-label="Progreso global" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"><span style="width:${run.percent ?? 3}%"></span></div>
-          <div class="table-panel live-files"><table><thead><tr><th>Archivo</th><th>Estado</th><th>Progreso</th><th>Velocidad</th><th>ETA</th></tr></thead><tbody>${files || `<tr><td colspan="5">Preparando archivos…</td></tr>`}</tbody></table></div>
+          <div class="progress-track" role="progressbar" aria-label="Progreso global de ${escapeHtml(run.connection_name)}" ${run.percent === null ? `aria-valuetext="Progreso indeterminado; ${run.files_completed} de ${run.files_total} archivos completados"` : `aria-valuenow="${run.percent}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${run.percent}%"`}><span class="${run.percent === null ? "indeterminate" : ""}" style="width:${run.percent ?? 100}%"></span></div>
+          <div class="table-panel live-files"><table><caption class="sr-only">Archivos de la corrida ${run.run_id}</caption><thead><tr><th>Archivo</th><th>Estado</th><th>Progreso</th><th>Velocidad</th><th>ETA</th></tr></thead><tbody>${files || `<tr><td colspan="5">Preparando archivos…</td></tr>`}</tbody></table></div>
         </article>`;
     }).join("");
   }
@@ -413,8 +456,14 @@
 
   function renderChart() {
     const canvas = $("#runs-chart");
-    if (!window.Chart || !canvas) return;
     const ordered = [...state.runs].slice(0, 12).reverse();
+    const summary = $("#runs-chart-summary");
+    if (summary) {
+      summary.textContent = ordered.length
+        ? `Últimas corridas: ${ordered.map((run) => `corrida ${run.id}, ${run.files_downloaded || 0} archivos descargados`).join("; ")}.`
+        : "No hay corridas para representar.";
+    }
+    if (!window.Chart || !canvas) return;
     if (state.chart) state.chart.destroy();
     state.chart = new window.Chart(canvas, {
       type: "bar",
@@ -437,6 +486,19 @@
         },
       },
     });
+  }
+
+  function updateTlsModeField() {
+    const form = $("#connection-form");
+    const field = $("#ssl-mode-field");
+    const select = form.elements.namedItem("ssl_mode");
+    const protocol = String(form.elements.namedItem("protocol").value).toUpperCase();
+    const usesTls = protocol === "FTPS" || protocol === "WEBDAVS";
+    field.hidden = !usesTls;
+    select.disabled = !usesTls;
+    if (!usesTls || !["required", "insecure"].includes(select.value)) {
+      select.value = "required";
+    }
   }
 
   function openConnection(id = null) {
@@ -468,8 +530,15 @@
       });
       form.elements.id.value = item.id;
     }
+    updateTlsModeField();
     invalidateConnectionValidation();
-    $("#connection-dialog").showModal();
+    const dialog = $("#connection-dialog");
+    dialog.showModal();
+    dialog.scrollTop = 0;
+    window.requestAnimationFrame(() => {
+      form.elements.namedItem("name").focus({ preventScroll: true });
+      dialog.scrollTop = 0;
+    });
   }
 
   function connectionPayload(form) {
@@ -488,6 +557,7 @@
     payload.full_local_reconciliation = (
       form.elements.full_local_reconciliation.checked
     );
+    payload.ssl_mode = form.elements.namedItem("ssl_mode").value || "required";
     if (!payload.secret) delete payload.secret;
     return payload;
   }
@@ -781,18 +851,73 @@
     }
   }
 
+  function showSimulationResult(result) {
+    const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+    const counters = Object.entries(result.counters || {})
+      .filter(([, count]) => Number(count) > 0);
+    const items = Array.isArray(result.items) ? result.items : [];
+    const detail = result.result_status === "no_files"
+      ? "No se encontraron archivos en las rutas remotas configuradas."
+      : result.result_status === "no_changes"
+        ? "Los archivos encontrados no requieren una nueva descarga."
+        : `${result.files_to_download} archivo(s) están listos para descargar.`;
+    const counterContent = counters.length
+      ? counters.map(([status, count]) => `
+          <div><dt>${escapeHtml(planStatusLabels[status] || status)}</dt><dd>${Number(count).toLocaleString("es-CO")}</dd></div>`).join("")
+      : "<div><dt>Sin resultados por estado</dt><dd>0</dd></div>";
+    const warningContent = warnings.length
+      ? `<section class="simulation-section simulation-warnings" aria-labelledby="simulation-warnings-title">
+          <h3 id="simulation-warnings-title">Advertencias (${warnings.length})</h3>
+          <ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>
+        </section>`
+      : `<p class="simulation-ok">La simulación no generó advertencias.</p>`;
+    const itemContent = items.length
+      ? `<div class="table-panel simulation-table"><table>
+          <caption>Muestra de ${items.length} elemento(s) evaluado(s)</caption>
+          <thead><tr><th>Archivo remoto</th><th>Estado</th><th>Tamaño</th><th>Fecha remota</th><th>Detalle</th></tr></thead>
+          <tbody>${items.map((item) => `<tr>
+            <td class="path-cell mono" title="${escapeHtml(item.remote_path)}">${escapeHtml(item.remote_path)}</td>
+            <td>${statusBadge(item.status, planStatusLabels[item.status] || item.status)}</td>
+            <td>${escapeHtml(formatBytes(item.size_bytes))}</td>
+            <td>${escapeHtml(formatDate(item.mtime_utc))}</td>
+            <td>${escapeHtml(item.reason || "—")}</td>
+          </tr>`).join("")}</tbody>
+        </table></div>`
+      : emptyState("Sin elementos en la muestra", "No hubo archivos para mostrar en el plan.");
+    $("#simulation-content").innerHTML = `
+      <div class="detail-grid simulation-summary">
+        <div><span>Encontrados</span><strong>${Number(result.files_found || 0).toLocaleString("es-CO")}</strong></div>
+        <div><span>Por descargar</span><strong>${Number(result.files_to_download || 0).toLocaleString("es-CO")}</strong></div>
+        <div><span>Volumen previsto</span><strong>${escapeHtml(formatBytes(result.planned_bytes || 0))}</strong></div>
+        <div><span>Modo</span><strong>${result.scan_mode === "full_local_reconciliation" ? "Comparación completa" : "Ventana programada"}</strong></div>
+      </div>
+      <div class="detail-message ${safeStatusClass(result.result_status)}">
+        <span>Resultado</span><strong>${escapeHtml(planResultLabel(result))}</strong><p>${escapeHtml(detail)}</p>
+      </div>
+      ${warningContent}
+      <section class="simulation-section" aria-labelledby="simulation-counters-title">
+        <h3 id="simulation-counters-title">Contadores del plan</h3>
+        <dl class="counter-grid">${counterContent}</dl>
+      </section>
+      <section class="simulation-section" aria-labelledby="simulation-items-title">
+        <h3 id="simulation-items-title">Muestra del plan</h3>
+        ${result.items_truncated ? `<p>Se muestra una muestra acotada; el total evaluado fue ${Number(result.files_found || 0).toLocaleString("es-CO")}.</p>` : ""}
+        ${itemContent}
+      </section>`;
+    const dialog = $("#simulation-dialog");
+    if (dialog.open) dialog.close();
+    dialog.showModal();
+    dialog.scrollTop = 0;
+  }
+
   async function testConnection(id) {
-    toast("Simulando la corrida y calculando el plan…");
+    const pendingToast = toast("Simulando la corrida y calculando el plan…");
     try {
       const result = await api(`/api/connections/${id}/test`, { method: "POST" });
-      const suffix = result.is_partial ? " Hay advertencias en el listado." : "";
-      const detail = result.result_status === "no_files"
-        ? "No se encontraron archivos en las rutas remotas configuradas."
-        : result.result_status === "no_changes"
-          ? "Los archivos encontrados no requieren una nueva descarga."
-          : `${result.files_to_download} archivo(s) están listos para descargar.`;
-      toast(`${planResultLabel(result)}: ${detail}${suffix}`);
+      pendingToast.remove();
+      showSimulationResult(result);
     } catch (error) {
+      pendingToast.remove();
       toast(error.message, true);
     }
   }
@@ -898,7 +1023,7 @@
           <p>${escapeHtml(causeMessage)}</p>
         </div>
         <p><a class="btn secondary small" href="/api/runs/${run.id}/log.jsonl">Descargar log JSONL</a></p>
-        <div class="table-panel"><table><thead><tr><th>Archivo</th><th>Estado</th><th>Tamaño</th><th>Detalle</th></tr></thead><tbody>
+        <div class="table-panel"><table><caption class="sr-only">Archivos registrados en la corrida ${run.id}</caption><thead><tr><th>Archivo</th><th>Estado</th><th>Tamaño</th><th>Detalle</th></tr></thead><tbody>
           ${run.files.length ? run.files.map((file) => `<tr><td class="path-cell mono">${escapeHtml(file.remote_path)}</td><td>${fileStatusBadge(file)}</td><td>${escapeHtml(formatBytes(file.size_bytes))}</td><td>${escapeHtml(file.error_msg || file.reason || "—")}</td></tr>`).join("") : `<tr><td colspan="4">${escapeHtml(emptyFilesMessage)}</td></tr>`}
         </tbody></table></div>`;
       $("#detail-dialog").showModal();
@@ -1006,6 +1131,15 @@
   function bindEvents() {
     window.addEventListener("hashchange", () => setView(location.hash.slice(1)));
     document.addEventListener("click", handleAction);
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const openDialogs = $$("dialog[open]");
+      const dialog = openDialogs.at(-1);
+      if (!dialog) return;
+      if (dialog.id === "connection-dialog" && state.connectionSaving) return;
+      event.preventDefault();
+      dialog.close();
+    });
     $("#new-connection-button").addEventListener("click", () => openConnection());
     $("#refresh-button").addEventListener("click", refreshAll);
     $("#connection-form").addEventListener("submit", submitConnection);
@@ -1014,7 +1148,8 @@
         "Los datos cambiaron. Vuelve a probar la conexión y sus rutas.",
       );
     });
-    $("#connection-form").addEventListener("change", () => {
+    $("#connection-form").addEventListener("change", (event) => {
+      if (event.target.name === "protocol") updateTlsModeField();
       invalidateConnectionValidation(
         "Los datos cambiaron. Vuelve a probar la conexión y sus rutas.",
       );
@@ -1049,7 +1184,7 @@
 
   async function init() {
     bindEvents();
-    setView(location.hash.slice(1) || "inicio");
+    setView(location.hash.slice(1) || "inicio", { focusMain: false });
     await refreshAll();
     await pollProgress();
   }

@@ -22,7 +22,7 @@ from app.models import (
     utc_now_iso,
 )
 from app.logging_setup import redact_secrets
-from app.errors import RecolectaError
+from app.errors import ErrorType, RecolectaError
 from app.naming import collision_path, local_path_key
 
 if TYPE_CHECKING:
@@ -45,7 +45,7 @@ MIGRATIONS: Final[dict[int, tuple[str, ...]]] = {
             secret_encrypted TEXT,
             auth_type TEXT NOT NULL DEFAULT 'password',
             key_path TEXT,
-            ssl_mode TEXT NOT NULL DEFAULT 'preferred',
+            ssl_mode TEXT NOT NULL DEFAULT 'required',
             remote_paths_json TEXT NOT NULL DEFAULT '[]',
             recursive INTEGER NOT NULL DEFAULT 0,
             max_depth INTEGER NOT NULL DEFAULT 3,
@@ -238,6 +238,18 @@ MIGRATIONS: Final[dict[int, tuple[str, ...]]] = {
         ADD COLUMN timestamp_source TEXT NOT NULL DEFAULT ''
         """,
     ),
+    6: (
+        """
+        UPDATE connections
+        SET ssl_mode = lower(trim(ssl_mode))
+        WHERE lower(trim(ssl_mode)) IN ('required', 'insecure')
+        """,
+        """
+        UPDATE connections
+        SET ssl_mode = 'required'
+        WHERE lower(trim(ssl_mode)) NOT IN ('required', 'insecure')
+        """,
+    ),
 }
 
 
@@ -386,6 +398,46 @@ class ConnectionRepository:
             )
             return cursor.rowcount > 0
 
+    def delete_if_idle(self, connection_id: int) -> bool:
+        """Delete atomically unless a persisted run is still active."""
+        with self.database.connect() as database:
+            cursor = database.execute(
+                """
+                DELETE FROM connections
+                WHERE id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM runs
+                      WHERE connection_id = ? AND status = 'running'
+                  )
+                """,
+                (connection_id, connection_id),
+            )
+            if cursor.rowcount > 0:
+                return True
+            row = database.execute(
+                """
+                SELECT name,
+                       EXISTS(
+                           SELECT 1
+                           FROM runs
+                           WHERE connection_id = connections.id
+                             AND status = 'running'
+                       ) AS has_active_run
+                FROM connections
+                WHERE id = ?
+                """,
+                (connection_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            if row["has_active_run"]:
+                raise RecolectaError(
+                    ErrorType.INTERRUPTED,
+                    f"Ya hay una corrida activa para {row['name']}.",
+                )
+            return False
+
     def get_secret(self, connection_id: int) -> str | None:
         with self.database.connect() as database:
             row = database.execute(
@@ -403,6 +455,19 @@ class RunRepository:
 
     def __init__(self, database: Database) -> None:
         self.database = database
+
+    def has_active_run(self, connection_id: int) -> bool:
+        with self.database.connect() as database:
+            row = database.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM runs
+                    WHERE connection_id = ? AND status = 'running'
+                )
+                """,
+                (connection_id,),
+            ).fetchone()
+        return bool(row[0])
 
     def start_run(
         self,
@@ -1274,7 +1339,12 @@ def _connection_from_row(row: sqlite3.Row) -> Connection:
         username=row["username"],
         auth_type=AuthType(row["auth_type"]),
         key_path=row["key_path"],
-        ssl_mode=row["ssl_mode"],
+        ssl_mode=(
+            str(row["ssl_mode"]).strip().lower()
+            if str(row["ssl_mode"]).strip().lower()
+            in {"required", "insecure"}
+            else "required"
+        ),
         remote_paths=tuple(json.loads(row["remote_paths_json"])),
         recursive=bool(row["recursive"]),
         max_depth=int(row["max_depth"]),

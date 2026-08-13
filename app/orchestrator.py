@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import logging
+import re
 import sqlite3
 import shutil
 import tempfile
@@ -226,7 +227,13 @@ class RunCoordinator:
         self.connections = connections
         self.runs = RunRepository(database)
         self.paths = paths
-        self.throttle = throttle or ThrottleManager(global_parallelism=4)
+        self.throttle = throttle or ThrottleManager(
+            global_parallelism=4,
+            global_bandwidth_limit_kbps=global_bandwidth_limit_kbps,
+        )
+        self.throttle.set_global_bandwidth_limit(
+            global_bandwidth_limit_kbps
+        )
         self.progress = progress or ProgressRegistry(
             persist_progress=self.runs.update_file_progress
         )
@@ -289,18 +296,117 @@ class RunCoordinator:
         started_at: datetime | None = None,
         window_reference_at: datetime | None = None,
     ) -> RunExecution:
-        connection = self.connections.get(connection_id)
-        if not connection.enabled and not dry_run_only:
-            raise RecolectaError(
-                ErrorType.INTERRUPTED,
-                f"La conexión {connection.name} está en pausa.",
-            )
+        connection, lock = self._reserve_connection(
+            connection_id,
+            dry_run_only=dry_run_only,
+        )
+        return self._execute_reserved_connection(
+            connection,
+            lock=lock,
+            trigger=trigger,
+            selected_date=selected_date,
+            dry_run_only=dry_run_only,
+            started_at=started_at,
+            window_reference_at=window_reference_at,
+        )
+
+    def submit_connection(
+        self,
+        connection_id: int,
+        *,
+        trigger: str,
+        selected_date: date | None = None,
+    ) -> threading.Thread:
+        """Reserve synchronously and execute in a background worker."""
+        connection, lock = self._reserve_connection(
+            connection_id,
+            dry_run_only=False,
+        )
+
+        def execute() -> None:
+            try:
+                self._execute_reserved_connection(
+                    connection,
+                    lock=lock,
+                    trigger=trigger,
+                    selected_date=selected_date,
+                )
+            except Exception:
+                logger.exception(
+                    "La corrida en segundo plano de la conexión %s falló.",
+                    connection_id,
+                )
+
+        worker = threading.Thread(
+            target=execute,
+            name=f"manual-run-{connection_id}",
+            daemon=True,
+        )
+        try:
+            worker.start()
+        except BaseException:
+            lock.release()
+            raise
+        return worker
+
+    def delete_connection(self, connection_id: int) -> bool:
+        """Delete only while no in-process or persisted run is active."""
         lock = self._connection_lock(connection_id)
         if not lock.acquire(blocking=False):
             raise RecolectaError(
                 ErrorType.INTERRUPTED,
-                f"Ya hay una corrida activa para {connection.name}.",
+                f"Ya hay una corrida activa para la conexión {connection_id}.",
             )
+        try:
+            self.connections.get(connection_id)
+            return self.connections.delete_if_idle(connection_id)
+        finally:
+            lock.release()
+
+    def _reserve_connection(
+        self,
+        connection_id: int,
+        *,
+        dry_run_only: bool,
+    ) -> tuple[Connection, threading.Lock]:
+        lock = self._connection_lock(connection_id)
+        if not lock.acquire(blocking=False):
+            raise RecolectaError(
+                ErrorType.INTERRUPTED,
+                f"Ya hay una corrida activa para la conexión {connection_id}.",
+            )
+        try:
+            connection = self.connections.get(connection_id)
+            if not connection.enabled and not dry_run_only:
+                raise RecolectaError(
+                    ErrorType.INTERRUPTED,
+                    f"La conexión {connection.name} está en pausa.",
+                )
+            if self.runs.has_active_run(connection_id):
+                raise RecolectaError(
+                    ErrorType.INTERRUPTED,
+                    f"Ya hay una corrida activa para {connection.name}.",
+                )
+            return connection, lock
+        except BaseException:
+            lock.release()
+            raise
+
+    def _execute_reserved_connection(
+        self,
+        connection: Connection,
+        *,
+        lock: threading.Lock,
+        trigger: str,
+        selected_date: date | None = None,
+        dry_run_only: bool = False,
+        started_at: datetime | None = None,
+        window_reference_at: datetime | None = None,
+    ) -> RunExecution:
+        connection_id = connection.id
+        if connection_id is None:
+            lock.release()
+            raise ValueError("La conexión debe estar guardada antes de ejecutarse.")
         try:
             actual_started = started_at or self.now()
             reference = window_reference_at or actual_started
@@ -438,57 +544,91 @@ class RunCoordinator:
             started_at=started_at,
             scan_mode=scan_mode,
         )
-        run_log = self.run_logs.create(
-            run_id=run_id,
-            connection_name=connection.name,
-            started_at=started_at,
-        )
-        run_log.write(
-            "run_started",
-            run_id=run_id,
-            connection_id=connection.id,
-            connection_name=connection.name,
-            trigger=trigger,
-            window_start_utc=window.start_utc.isoformat(),
-            window_end_utc=window.end_utc.isoformat(),
-            scan_mode=scan_mode,
-        )
-        self.progress.start_run(
-            run_id=run_id,
-            connection_id=connection.id,
-            connection_name=connection.name,
-            trigger=trigger,
-            files=(),
-            bounded=True,
-            phase="discovering",
-            total_files=0,
-            total_size_bytes=0,
-        )
+        run_log: RunEventLog | None = None
+        seen_paths: sqlite3.Connection | None = None
         cancel = threading.Event()
-        with self._state_lock:
-            self._cancel_events[run_id] = cancel
-        counters = {status.value: 0 for status in PlanStatus}
-        plan_sample: list[PlanItem] = []
-        warnings: list[str] = []
-        total_items = 0
-        planned_total = 0
-        planned_bytes = 0
-        estimated_disk_growth = 0
-        largest_staging_extra = 0
-        known_sized_planned = 0
-        unknown_sized_planned = 0
-        unreliable_timestamps = 0
-        missing_timestamps = 0
-        mapping_scope = _mapping_scope(connection, self.paths.root)
-        destination_root = resolve_destination_root(
-            connection,
-            self.paths.root,
-        )
-        seen_paths = sqlite3.connect("")
-        seen_paths.execute("PRAGMA temp_store = FILE")
-        seen_paths.execute(
-            "CREATE TABLE seen_paths (path_key TEXT PRIMARY KEY)"
-        )
+        try:
+            run_log = self.run_logs.create(
+                run_id=run_id,
+                connection_name=connection.name,
+                started_at=started_at,
+            )
+            run_log.write(
+                "run_started",
+                run_id=run_id,
+                connection_id=connection.id,
+                connection_name=connection.name,
+                trigger=trigger,
+                window_start_utc=window.start_utc.isoformat(),
+                window_end_utc=window.end_utc.isoformat(),
+                scan_mode=scan_mode,
+            )
+            self.progress.start_run(
+                run_id=run_id,
+                connection_id=connection.id,
+                connection_name=connection.name,
+                trigger=trigger,
+                files=(),
+                bounded=True,
+                phase="discovering",
+                total_files=0,
+                total_size_bytes=0,
+            )
+            with self._state_lock:
+                self._cancel_events[run_id] = cancel
+            counters = {status.value: 0 for status in PlanStatus}
+            plan_sample: list[PlanItem] = []
+            warnings: list[str] = []
+            total_items = 0
+            planned_total = 0
+            planned_bytes = 0
+            estimated_disk_growth = 0
+            largest_staging_extra = 0
+            known_sized_planned = 0
+            unknown_sized_planned = 0
+            unreliable_timestamps = 0
+            missing_timestamps = 0
+            mapping_scope = _mapping_scope(connection, self.paths.root)
+            destination_root = resolve_destination_root(
+                connection,
+                self.paths.root,
+            )
+            seen_paths = sqlite3.connect("")
+            seen_paths.execute("PRAGMA temp_store = FILE")
+            seen_paths.execute(
+                "CREATE TABLE seen_paths (path_key TEXT PRIMARY KEY)"
+            )
+        except Exception as exc:
+            error_type = classify_exception(exc)
+            self.runs.finish_run(
+                run_id,
+                status="failed",
+                error_type=error_type.value,
+                error_msg=str(exc),
+            )
+            if run_log is not None:
+                try:
+                    run_log.write(
+                        "run_finished",
+                        run_id=run_id,
+                        status="failed",
+                        error_type=error_type.value,
+                        error_msg=str(exc),
+                    )
+                except Exception:
+                    logger.exception(
+                        "No se pudo registrar el fallo inicial de la corrida %s.",
+                        run_id,
+                    )
+            self.progress.finish_run(run_id)
+            with self._state_lock:
+                self._cancel_events.pop(run_id, None)
+            if seen_paths is not None:
+                seen_paths.close()
+            self._evaluate_alerts(run_id)
+            raise
+        assert run_log is not None
+        assert seen_paths is not None
         engine: DownloadEngine | None = None
         try:
             includes, excludes = _split_globs(
@@ -851,17 +991,8 @@ class RunCoordinator:
                 preflight_bytes,
                 reserve_ratio=self.reserve_ratio,
             )
-            engine_connection = connection
-            if (
-                connection.bandwidth_limit_kbps is None
-                and self.global_bandwidth_limit_kbps
-            ):
-                engine_connection = replace(
-                    connection,
-                    bandwidth_limit_kbps=self.global_bandwidth_limit_kbps,
-                )
             engine = DownloadEngine(
-                engine_connection,
+                connection,
                 portable_root=self.paths.root,
                 transport_factory=lambda: create_transport(
                     connection,
@@ -881,7 +1012,7 @@ class RunCoordinator:
             outcome_sample: list[DownloadOutcome] = []
             detailed_logged = 0
             systemic_error: ErrorType | None = None
-            systemic_signature: ErrorType | None = None
+            systemic_signature: tuple[ErrorType, str] | None = None
             systemic_streak = 0
             circuit_error: ErrorType | None = None
             circuit_message = ""
@@ -1044,7 +1175,7 @@ class RunCoordinator:
                         outcome.status == DownloadStatus.FAILED
                         and outcome.error_type in SYSTEMIC_DOWNLOAD_ERRORS
                     ):
-                        signature = outcome.error_type
+                        signature = _systemic_failure_signature(outcome)
                         if signature == systemic_signature:
                             systemic_streak += 1
                         else:
@@ -1217,33 +1348,39 @@ class RunCoordinator:
             window_end_utc=window.end_utc,
             started_at=started_at,
         )
-        run_log = self.run_logs.create(
-            run_id=run_id,
-            connection_name=connection.name,
-            started_at=started_at,
-        )
-        run_log.write(
-            "run_started",
-            run_id=run_id,
-            connection_id=connection.id,
-            connection_name=connection.name,
-            trigger=trigger,
-            window_start_utc=window.start_utc.isoformat(),
-            window_end_utc=window.end_utc.isoformat(),
-        )
         self.runs.finish_run(
             run_id,
             status="failed",
             error_type=error_type.value,
             error_msg=str(exc),
         )
-        run_log.write(
-            "run_finished",
-            run_id=run_id,
-            status="failed",
-            error_type=error_type.value,
-            error_msg=str(exc),
-        )
+        try:
+            run_log = self.run_logs.create(
+                run_id=run_id,
+                connection_name=connection.name,
+                started_at=started_at,
+            )
+            run_log.write(
+                "run_started",
+                run_id=run_id,
+                connection_id=connection.id,
+                connection_name=connection.name,
+                trigger=trigger,
+                window_start_utc=window.start_utc.isoformat(),
+                window_end_utc=window.end_utc.isoformat(),
+            )
+            run_log.write(
+                "run_finished",
+                run_id=run_id,
+                status="failed",
+                error_type=error_type.value,
+                error_msg=str(exc),
+            )
+        except Exception:
+            logger.exception(
+                "No se pudo escribir el log de preflight de la corrida %s.",
+                run_id,
+            )
         self._evaluate_alerts(run_id)
         return run_id
 
@@ -1829,7 +1966,19 @@ def _listing_iterator(
             if discovered is not None:
                 close_discovered = getattr(discovered, "close", None)
                 if callable(close_discovered):
-                    close_discovered()
+                    try:
+                        close_discovered()
+                    except Exception:
+                        # A partially consumed network listing can report an
+                        # abort while its generator is being closed.  The
+                        # enclosing transport is closed next, so this cleanup
+                        # error must not turn cancellation (or a primary
+                        # planning error) into a failed run.
+                        logger.warning(
+                            "El iterador remoto informó un error al cerrarse; "
+                            "la sesión se cerrará a continuación.",
+                            exc_info=True,
+                        )
 
 
 def _iter_batches(
@@ -2097,6 +2246,50 @@ def _canonical_timestamp(value: str | None) -> str | None:
         return None
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return _aware_utc(parsed, "mtime_utc").isoformat(timespec="seconds")
+
+
+def _systemic_failure_signature(
+    outcome: DownloadOutcome,
+) -> tuple[ErrorType, str]:
+    """Group one root cause while excluding per-file diagnostic values."""
+    error_type = outcome.error_type
+    if error_type is None:
+        raise ValueError("Un fallo sistémico debe incluir error_type.")
+    message = outcome.error_msg.casefold().strip()
+    dynamic_values = (
+        outcome.remote_file.remote_path,
+        str(outcome.local_path) if outcome.local_path is not None else "",
+        (
+            outcome.remote_file.mtime_utc.isoformat()
+            if outcome.remote_file.mtime_utc is not None
+            else ""
+        ),
+    )
+    for value in dynamic_values:
+        if len(value) > 1:
+            message = message.replace(value.casefold(), "<item>")
+    dynamic_numbers = {
+        outcome.remote_file.size_bytes,
+        outcome.bytes_done,
+        outcome.resumed_from,
+    }
+    for value in sorted(
+        (number for number in dynamic_numbers if number is not None),
+        key=lambda number: len(str(number)),
+        reverse=True,
+    ):
+        message = re.sub(
+            rf"(?<!\d){re.escape(str(value))}(?!\d)",
+            "<value>",
+            message,
+        )
+    message = re.sub(
+        r"\b[0-9a-f]{8}-[0-9a-f-]{27,}\b",
+        "<id>",
+        message,
+    )
+    message = " ".join(message.split())
+    return error_type, message
 
 
 def _log_outcome(

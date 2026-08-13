@@ -60,7 +60,7 @@ class FtpTransport(Transport):
             return
         if self.connection.protocol == Protocol.FTPS:
             context = ssl.create_default_context()
-            if self.connection.ssl_mode != "required":
+            if self.connection.ssl_mode == "insecure":
                 context.check_hostname = False
                 context.verify_mode = ssl.CERT_NONE
             ftp: ftplib.FTP = ftplib.FTP_TLS(context=context)

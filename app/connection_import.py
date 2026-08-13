@@ -209,7 +209,7 @@ def _connection_from_backup(
             "username": raw.get("username", ""),
             "auth_type": raw.get("auth_type", AuthType.PASSWORD.value),
             "key_path": raw.get("key_path"),
-            "ssl_mode": raw.get("ssl_mode", "preferred"),
+            "ssl_mode": raw.get("ssl_mode", "required"),
             "remote_paths": _json_string_list(
                 raw.get("targets_json", ()),
                 field_name="targets_json",
@@ -220,6 +220,17 @@ def _connection_from_backup(
             "notes": raw.get("notes", ""),
         }
 
+    # Old backups used ``preferred`` to mean certificate verification was
+    # disabled. Import them safely by upgrading to verified TLS; users can
+    # opt in to the explicit ``insecure`` mode after reviewing the connection.
+    imported_ssl_mode = values.get("ssl_mode", "required")
+    if isinstance(imported_ssl_mode, str):
+        normalized_ssl_mode = imported_ssl_mode.strip().lower()
+        values["ssl_mode"] = (
+            normalized_ssl_mode
+            if normalized_ssl_mode in {"required", "insecure"}
+            else "required"
+        )
     _validate_text_fields(values)
     _normalize_scalar_fields(values)
     # Imported definitions are drafts until their current credential and paths

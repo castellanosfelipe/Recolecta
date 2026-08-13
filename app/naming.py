@@ -102,10 +102,17 @@ def _remote_tree_components(
     )
 
 
-def _parse_remote_path(connection: Connection, value: str) -> _RemotePath:
+def _parse_remote_path(
+    connection: Connection,
+    value: str,
+    *,
+    allow_posix_root: bool = False,
+) -> _RemotePath:
     text = _validate_path_text(value)
     is_smb = connection.protocol == Protocol.SMB
     normalized = text.replace("\\", "/")
+    if allow_posix_root and not is_smb and normalized == "/":
+        return _RemotePath("posix", "/", ())
     if normalized.startswith("//"):
         if not is_smb:
             raise RecolectaError(
@@ -171,7 +178,11 @@ def _longest_matching_root(
 ) -> _RemotePath | None:
     matches: list[_RemotePath] = []
     for configured in connection.remote_paths:
-        root = _parse_remote_path(connection, configured)
+        root = _parse_remote_path(
+            connection,
+            configured,
+            allow_posix_root=True,
+        )
         if root.kind != remote.kind or root.anchor != remote.anchor:
             continue
         if len(root.components) > len(remote.components):

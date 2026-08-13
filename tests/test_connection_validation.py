@@ -116,6 +116,38 @@ def test_validation_checks_all_remote_roots_and_local_write_access(
     assert not list(tmp_path.rglob(".recolecta-validacion-*"))
 
 
+@pytest.mark.parametrize(
+    "protocol",
+    (Protocol.FTP, Protocol.SFTP, Protocol.WEBDAV),
+)
+def test_validation_accepts_posix_server_root_with_remote_tree(
+    tmp_path: Path,
+    protocol: Protocol,
+) -> None:
+    destination = tmp_path / "destino"
+    transport = FakeTransport(
+        files=(RemoteFile("/entrada/reporte.csv", 10, None),)
+    )
+
+    result = validate_connection_paths(
+        connection(
+            destination,
+            protocol=protocol,
+            remote_paths=("/",),
+            dest_template="{remote_tree}",
+        ),
+        secret=None,
+        portable_root=tmp_path,
+        known_hosts=tmp_path / "known_hosts",
+        transport_factory=lambda *args, **kwargs: transport,
+    )
+
+    assert result.remote_paths == ("/",)
+    assert result.remote_files_found == 1
+    assert transport.list_calls == [(('/',), False, 0)]
+    assert transport.closed is True
+
+
 def test_validation_rejects_empty_remote_paths_before_connecting(
     tmp_path: Path,
 ) -> None:
@@ -199,28 +231,26 @@ def test_validation_rejects_an_invalid_destination_template(
     assert "token no válido" in str(captured.value)
 
 
-def test_validation_checks_a_distinct_remote_move_destination(
+def test_validation_rejects_unimplemented_remote_post_actions(
     tmp_path: Path,
 ) -> None:
     transport = FakeTransport()
 
-    validate_connection_paths(
-        connection(
-            tmp_path / "destino",
-            post_action="move_remote",
-            post_action_path="/procesados",
-        ),
-        secret=None,
-        portable_root=tmp_path,
-        known_hosts=tmp_path / "known_hosts",
-        transport_factory=lambda *args, **kwargs: transport,
-    )
+    with pytest.raises(ValueError, match="acciones posteriores"):
+        validate_connection_paths(
+            connection(
+                tmp_path / "destino",
+                post_action="move_remote",
+                post_action_path="/procesados",
+            ),
+            secret=None,
+            portable_root=tmp_path,
+            known_hosts=tmp_path / "known_hosts",
+            transport_factory=lambda *args, **kwargs: transport,
+        )
 
-    assert transport.list_calls == [
-        (("/entrada",), False, 0),
-        (("/reportes",), False, 0),
-        (("/procesados",), False, 0),
-    ]
+    assert transport.connected is False
+    assert transport.list_calls == []
 
 
 def test_validation_samples_each_infinite_root_and_closes_every_iterator(
@@ -287,8 +317,7 @@ def test_validation_samples_each_infinite_root_and_closes_every_iterator(
     result = validate_connection_paths(
         connection(
             tmp_path / "destino",
-            post_action="move_remote",
-            post_action_path="/procesados",
+            remote_paths=("/entrada", "/reportes", "/procesados"),
         ),
         secret=None,
         portable_root=tmp_path,
@@ -310,17 +339,13 @@ def test_validation_samples_each_infinite_root_and_closes_every_iterator(
     ]
     assert transport.closed is True
     assert transport.events[-1] == "transport-closed"
-    assert result.remote_files_found == sample_limit * 2
+    assert result.remote_files_found == sample_limit * 3
     assert result.remote_files_found_is_exact is False
     assert result.remote_files_sample_limit_per_root == sample_limit
     assert sum(
         "remote_files_found no representa el total exacto" in warning
         for warning in result.warnings
-    ) == 2
-    assert any(
-        "carpeta de movimiento no forma parte" in warning
-        for warning in result.warnings
-    )
+    ) == 3
 
 
 def test_validation_reports_an_exact_sample_at_the_limit(

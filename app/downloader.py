@@ -197,7 +197,7 @@ class DownloadEngine:
             lambda event, timeout: event.wait(timeout)
         )
         bucket_key = str(self.connection.id or self.connection.name)
-        self.bandwidth_bucket = self.throttle.bandwidth_bucket(
+        self.bandwidth_buckets = self.throttle.bandwidth_buckets(
             bucket_key, self.connection.bandwidth_limit_kbps
         )
         self._executor: ThreadPoolExecutor | None = None
@@ -439,7 +439,12 @@ class DownloadEngine:
             except Exception as exc:
                 self._discard_worker_transport()
                 error_type = classify_exception(exc)
-                if attempts > self.connection.retries or not is_retryable(error_type):
+                retryable = (
+                    exc.retryable
+                    if isinstance(exc, RecolectaError)
+                    else is_retryable(error_type)
+                )
+                if attempts > self.connection.retries or not retryable:
                     return DownloadOutcome(
                         item.remote_file,
                         DownloadStatus.FAILED,
@@ -487,6 +492,8 @@ class DownloadEngine:
         with item.part_path.open(mode) as target:
             target.seek(0, os.SEEK_END)
             offset = target.tell()
+            transport: Transport | None = None
+            resume_identity_verified = False
             if not _has_trustworthy_resume_identity(item.remote_file):
                 # Size alone does not identify a remote object version.
                 # Without a reliable timestamp, stale bytes must never be
@@ -498,6 +505,25 @@ class DownloadEngine:
                 target.seek(0)
                 target.truncate(0)
                 offset = 0
+            elif offset:
+                transport = self._worker_transport()
+                current = transport.stat(item.remote_file.remote_path)
+                if not _same_remote_version(item.remote_file, current):
+                    mismatch = _remote_version_mismatch_error(
+                        item.remote_file,
+                        current,
+                        phase="desde el listado",
+                        retry_size_change=True,
+                    )
+                    # A size mismatch happened before this attempt wrote any
+                    # bytes. Preserve the known partial while retrying so the
+                    # next attempt must revalidate it again; truncating here
+                    # would fall through to an unchecked offset-zero retry.
+                    if not mismatch.retryable:
+                        target.seek(0)
+                        target.truncate(0)
+                    raise mismatch
+                resume_identity_verified = True
             verifier.seed_from_partial(
                 target, length=offset, block_size=self.block_size
             )
@@ -510,10 +536,22 @@ class DownloadEngine:
             def on_chunk(chunk: bytes) -> None:
                 if cancel.is_set():
                     raise DownloadCancelled()
+                expected_size = item.remote_file.size_bytes
+                next_size = verifier.bytes_seen + len(chunk)
+                if expected_size is not None and next_size > expected_size:
+                    raise RecolectaError(
+                        ErrorType.INTEGRITY,
+                        (
+                            "El remoto entregó más datos de los anunciados: "
+                            f"el siguiente bloque alcanzaría {next_size} bytes "
+                            f"y se esperaban {expected_size}."
+                        ),
+                        retryable=False,
+                    )
                 if disk_guard is not None:
                     disk_guard.before_write(len(chunk))
-                if self.bandwidth_bucket is not None:
-                    if not self.bandwidth_bucket.consume(
+                for bandwidth_bucket in self.bandwidth_buckets:
+                    if not bandwidth_bucket.consume(
                         len(chunk),
                         cancel_event=cancel,
                     ):
@@ -533,7 +571,7 @@ class DownloadEngine:
                 resumed_from = offset
                 resume_supported = True
             else:
-                transport = self._worker_transport()
+                transport = transport or self._worker_transport()
                 transfer = transport.download_to(
                     item.remote_file.remote_path,
                     target,
@@ -544,6 +582,17 @@ class DownloadEngine:
                 )
                 resumed_from = transfer.resumed_from
                 resume_supported = transfer.resume_supported
+            if resume_identity_verified:
+                assert transport is not None
+                current = transport.stat(item.remote_file.remote_path)
+                if not _same_remote_version(item.remote_file, current):
+                    target.seek(0)
+                    target.truncate(0)
+                    raise _remote_version_mismatch_error(
+                        item.remote_file,
+                        current,
+                        phase="durante la reanudación",
+                    )
             target.flush()
             os.fsync(target.fileno())
             actual_size = target.seek(0, os.SEEK_END)
@@ -863,6 +912,44 @@ def _has_trustworthy_resume_identity(remote_file: RemoteFile) -> bool:
         remote_file.size_bytes is not None
         and remote_file.mtime_utc is not None
         and remote_file.timestamp_reliable
+    )
+
+
+def _same_remote_version(expected: RemoteFile, current: RemoteFile) -> bool:
+    """Compare version-bearing metadata before and after a resumed transfer."""
+    return (
+        _has_trustworthy_resume_identity(expected)
+        and _has_trustworthy_resume_identity(current)
+        and expected.size_bytes == current.size_bytes
+        and expected.mtime_utc == current.mtime_utc
+    )
+
+
+def _remote_version_mismatch_error(
+    expected: RemoteFile,
+    current: RemoteFile,
+    *,
+    phase: str,
+    retry_size_change: bool = False,
+) -> RecolectaError:
+    """Classify a remote identity change without allowing unchecked resume."""
+    if retry_size_change and expected.size_bytes != current.size_bytes:
+        return RecolectaError(
+            ErrorType.PARTIAL_TRANSFER,
+            (
+                f"El tamaño remoto cambió {phase}: esperado "
+                f"{expected.size_bytes}, actual {current.size_bytes}. El "
+                "parcial se conservó pendiente de una nueva validación."
+            ),
+            retryable=True,
+        )
+    return RecolectaError(
+        ErrorType.INTEGRITY,
+        (
+            f"La versión remota cambió {phase}; el parcial se descartó "
+            "para evitar mezclar versiones y no se publicó."
+        ),
+        retryable=False,
     )
 
 

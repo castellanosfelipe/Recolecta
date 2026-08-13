@@ -6,6 +6,8 @@ import ssl
 import httpx
 import paramiko
 import pytest
+from smbprotocol import exceptions as smb_exceptions
+from smbprotocol.header import NtStatus, SMB2HeaderResponse
 
 from app.errors import ErrorType, RecolectaError, classify_exception, is_retryable
 
@@ -28,11 +30,13 @@ class WindowsNetworkError(OSError):
         (OSError(errno.ENOSPC, "full"), ErrorType.DISK_SPACE),
         (ftplib.error_perm("530 Login incorrect"), ErrorType.AUTH),
         (ftplib.error_perm("550 Permission denied"), ErrorType.PERMISSION),
+        (ftplib.error_temp("426 Transfer aborted"), ErrorType.PARTIAL_TRANSFER),
         (WindowsNetworkError(86), ErrorType.AUTH),
         (WindowsNetworkError(1326), ErrorType.AUTH),
         (WindowsNetworkError(5), ErrorType.PERMISSION),
         (WindowsNetworkError(53), ErrorType.TARGET_MISSING),
         (paramiko.AuthenticationException("bad"), ErrorType.AUTH),
+        (paramiko.SSHException("channel closed"), ErrorType.PARTIAL_TRANSFER),
         (
             httpx.ConnectTimeout(
                 "late", request=httpx.Request("GET", "https://example.test")
@@ -56,13 +60,110 @@ def test_auth_is_not_retryable() -> None:
     assert is_retryable(ErrorType.TCP_TIMEOUT)
 
 
+def test_paramiko_no_valid_connections_is_a_retryable_connect_failure() -> None:
+    exc = paramiko.ssh_exception.NoValidConnectionsError(
+        {("127.0.0.1", 22): ConnectionRefusedError("refused")}
+    )
+    error_type = classify_exception(exc)
+    assert error_type == ErrorType.TCP_CONNECT
+    assert is_retryable(error_type)
+
+
+def test_http_read_error_is_a_retryable_partial_transfer() -> None:
+    request = httpx.Request("GET", "https://example.test/file")
+    error_type = classify_exception(httpx.ReadError("closed", request=request))
+    assert error_type == ErrorType.PARTIAL_TRANSFER
+    assert is_retryable(error_type)
+
+
+def test_http_connect_certificate_failure_is_not_retryable() -> None:
+    request = httpx.Request("GET", "https://example.test/file")
+    try:
+        try:
+            raise ssl.SSLCertVerificationError("certificate verify failed")
+        except ssl.SSLError as cause:
+            raise httpx.ConnectError("TLS failed", request=request) from cause
+    except httpx.ConnectError as exc:
+        error_type = classify_exception(exc)
+    assert error_type == ErrorType.TLS
+    assert not is_retryable(error_type)
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected", "retryable"),
+    (
+        (smb_exceptions.SMBAuthenticationError("bad"), ErrorType.AUTH, False),
+        (smb_exceptions.LogonFailure(), ErrorType.AUTH, False),
+        (smb_exceptions.WrongPassword(), ErrorType.AUTH, False),
+        (smb_exceptions.PasswordExpired(), ErrorType.AUTH, False),
+        (smb_exceptions.AccessDenied(), ErrorType.PERMISSION, False),
+        (smb_exceptions.PrivilegeNotHeld(), ErrorType.PERMISSION, False),
+        (smb_exceptions.BadNetworkName(), ErrorType.TARGET_MISSING, False),
+        (smb_exceptions.ObjectNameNotFound(), ErrorType.TARGET_MISSING, False),
+        (smb_exceptions.ObjectPathNotFound(), ErrorType.TARGET_MISSING, False),
+        (smb_exceptions.IOTimeout(), ErrorType.TCP_TIMEOUT, True),
+        (
+            smb_exceptions.SMBException(
+                "Connection timeout of 7.5 seconds exceeded"
+            ),
+            ErrorType.TCP_TIMEOUT,
+            True,
+        ),
+        (
+            smb_exceptions.SMBConnectionClosed("closed"),
+            ErrorType.PARTIAL_TRANSFER,
+            True,
+        ),
+        (smb_exceptions.ServerUnavailable(), ErrorType.TCP_CONNECT, True),
+        (smb_exceptions.SMBException("invalid"), ErrorType.PROTOCOL, False),
+    ),
+)
+def test_smb_exception_classification(
+    exc: BaseException,
+    expected: ErrorType,
+    retryable: bool,
+) -> None:
+    error_type = classify_exception(exc)
+    assert error_type == expected
+    assert is_retryable(error_type) is retryable
+
+
+def test_wrapped_socket_failure_preserves_network_taxonomy() -> None:
+    try:
+        try:
+            raise socket.gaierror("name not known")
+        except socket.gaierror as cause:
+            raise ValueError("SMB failed to connect") from cause
+    except ValueError as exc:
+        assert classify_exception(exc) == ErrorType.DNS
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    (
+        (NtStatus.STATUS_LOGON_FAILURE, ErrorType.AUTH),
+        (NtStatus.STATUS_ACCESS_DENIED, ErrorType.PERMISSION),
+        (NtStatus.STATUS_OBJECT_PATH_NOT_FOUND, ErrorType.TARGET_MISSING),
+        (NtStatus.STATUS_IO_TIMEOUT, ErrorType.TCP_TIMEOUT),
+        (NtStatus.STATUS_SERVER_UNAVAILABLE, ErrorType.TCP_CONNECT),
+    ),
+)
+def test_smb_response_status_uses_specific_subclass(
+    status: int,
+    expected: ErrorType,
+) -> None:
+    header = SMB2HeaderResponse()
+    header["status"] = status
+    assert classify_exception(smb_exceptions.SMBResponseException(header)) == expected
+
+
 @pytest.mark.parametrize(
     ("status", "expected"),
     [
         (401, ErrorType.AUTH),
         (403, ErrorType.PERMISSION),
         (404, ErrorType.TARGET_MISSING),
-        (500, ErrorType.PROTOCOL),
+        (500, ErrorType.PARTIAL_TRANSFER),
     ],
 )
 def test_http_status_classification(status: int, expected: ErrorType) -> None:

@@ -51,7 +51,18 @@ SELF_TEST_IMPORTS = (
     "httpx",
     "paramiko",
     "uvicorn",
-) + (("win32crypt",) if sys.platform == "win32" else ()) + (
+) + (
+    (
+        "smbclient",
+        "smbprotocol",
+        "spnego",
+        "sspilib",
+        "sspilib.raw",
+        "win32crypt",
+    )
+    if sys.platform == "win32"
+    else ()
+) + (
     (
         "PIL.Image",
         "PIL.ImageDraw",
