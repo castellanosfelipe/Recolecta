@@ -45,7 +45,7 @@
 - [x] Código, interfaz, tareas, exportaciones y artefactos usan exclusivamente la marca `Recolecta`.
 - [x] El dashboard enlaza al repositorio de GitHub y al perfil de LinkedIn con iconos locales, etiquetas accesibles y apertura segura.
 
-Evidencia previa a la compilación del release v0.2.0: CPython.org 3.12.10 x64,
+Evidencia previa a la compilación del release v0.2.1: CPython.org 3.12.10 x64,
 308 pruebas aprobadas, una omisión esperada por permisos de symlink y cobertura
 total 86,23 %. El autodiagnóstico congelado y el tamaño del bundle se verifican
 nuevamente en `build.ps1` antes de publicar.
