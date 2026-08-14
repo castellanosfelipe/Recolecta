@@ -32,9 +32,19 @@ _WINDOWS_LIST_RE = re.compile(
     re.IGNORECASE,
 )
 _MLSD_UNSUPPORTED = ("500", "501", "502", "504")
+_COMMAND_ENCODINGS = {
+    "utf-8": "utf-8",
+    "utf8": "utf-8",
+    "cp1252": "cp1252",
+    "windows-1252": "cp1252",
+}
 _LIST_FALLBACK_WARNING = (
     "El servidor FTP no soporta MLSD/MDTM de forma utilizable; "
     "se usó LIST con precisión temporal limitada."
+)
+_ANSI_LISTING_WARNING = (
+    "El servidor FTP envió nombres que no son UTF-8; se usó Windows-1252 "
+    "para el listado y los comandos FTP posteriores."
 )
 
 
@@ -48,12 +58,26 @@ class FtpTransport(Transport):
         secret: str | None,
         client: ftplib.FTP | None = None,
         now: Callable[[], datetime] | None = None,
+        command_encoding: str | None = None,
     ) -> None:
         self.connection = connection.normalized()
         self.secret = secret or ""
         self._ftp = client
         self._owns_client = client is None
         self._now = now or (lambda: datetime.now(timezone.utc))
+        inferred_encoding = (
+            getattr(client, "encoding", "utf-8")
+            if command_encoding is None
+            else command_encoding
+        )
+        self._command_encoding = _normalize_command_encoding(inferred_encoding)
+        if client is not None:
+            client.encoding = self._command_encoding
+
+    @property
+    def command_encoding(self) -> str:
+        """Return the encoding that fresh FTP worker sessions must reuse."""
+        return self._command_encoding
 
     def connect(self) -> None:
         if self._ftp is not None:
@@ -66,6 +90,9 @@ class FtpTransport(Transport):
             ftp: ftplib.FTP = ftplib.FTP_TLS(context=context)
         else:
             ftp = ftplib.FTP()
+        # RFC 2640 made UTF-8 the preferred FTP encoding. Keep it explicit so
+        # a later Windows-1252 fallback is deliberate and auditable.
+        ftp.encoding = self._command_encoding
         self._ftp = ftp
         try:
             ftp.connect(
@@ -74,6 +101,8 @@ class FtpTransport(Transport):
                 timeout=self.connection.timeout_s,
             )
             ftp.login(self.connection.username, self.secret)
+            if self._command_encoding == "utf-8":
+                _enable_utf8_best_effort(ftp)
             ftp.set_pasv(True)
             if isinstance(ftp, ftplib.FTP_TLS):
                 ftp.prot_p()
@@ -222,6 +251,7 @@ class FtpTransport(Transport):
             for name, facts in _iter_mlsd_entries(
                 ftp,
                 path,
+                on_encoding_fallback=self._record_ansi_fallback,
             ):
                 listed_any = True
                 if name in {".", ".."}:
@@ -276,7 +306,11 @@ class FtpTransport(Transport):
         depth: int,
         directories: DirectoryWorkQueue,
     ) -> Iterator[RemoteFile]:
-        for line in _iter_ftp_lines(ftp, f"LIST {path}"):
+        for line in _iter_ftp_lines(
+            ftp,
+            f"LIST {path}",
+            on_encoding_fallback=self._record_ansi_fallback,
+        ):
             parsed = _parse_list_line(
                 line,
                 server_zone=ZoneInfo(self.connection.timezone),
@@ -299,6 +333,10 @@ class FtpTransport(Transport):
                 is_symlink=is_symlink,
             )
 
+    def _record_ansi_fallback(self) -> None:
+        self._command_encoding = "cp1252"
+        self._add_listing_warning(_ANSI_LISTING_WARNING)
+
     @staticmethod
     def _mdtm(ftp: ftplib.FTP, remote_path: str) -> datetime | None:
         try:
@@ -318,6 +356,16 @@ class FtpTransport(Transport):
 def _normalize_remote_path(value: str) -> str:
     normalized = "/" + value.strip().replace("\\", "/").lstrip("/")
     return normalized.rstrip("/") or "/"
+
+
+def _normalize_command_encoding(value: str) -> str:
+    normalized = value.strip().replace("_", "-").casefold()
+    try:
+        return _COMMAND_ENCODINGS[normalized]
+    except KeyError as exc:
+        raise ValueError(
+            "La codificación de comandos FTP debe ser UTF-8 o Windows-1252."
+        ) from exc
 
 
 def _parse_mlsd_timestamp(value: str | None) -> datetime | None:
@@ -341,16 +389,27 @@ def _parse_int(value: str | None) -> int | None:
 def _iter_mlsd_entries(
     ftp: ftplib.FTP,
     path: str,
+    *,
+    on_encoding_fallback: Callable[[], None] | None = None,
 ) -> Iterator[tuple[str, dict[str, str]]]:
     """Stream MLSD on real clients while retaining lightweight test doubles."""
+    try:
+        ftp.sendcmd("OPTS MLST type;size;modify;")
+    except (AttributeError, ftplib.Error):
+        # OPTS only selects preferred facts. Some servers reject it while
+        # still implementing MLSD, so MLSD itself is authoritative.
+        pass
     if not callable(getattr(ftp, "transfercmd", None)):
         yield from ftp.mlsd(
             path,
-            facts=["type", "size", "modify"],
+            facts=[],
         )
         return
-    ftp.sendcmd("OPTS MLST type;size;modify;")
-    for line in _iter_ftp_lines(ftp, f"MLSD {path}"):
+    for line in _iter_ftp_lines(
+        ftp,
+        f"MLSD {path}",
+        on_encoding_fallback=on_encoding_fallback,
+    ):
         facts_text, separator, name = line.partition(" ")
         if not separator:
             continue
@@ -366,8 +425,10 @@ def _iter_mlsd_entries(
 def _iter_ftp_lines(
     ftp: ftplib.FTP,
     command: str,
+    *,
+    on_encoding_fallback: Callable[[], None] | None = None,
 ) -> Iterator[str]:
-    """Read a data command line by line without ftplib's internal list."""
+    """Read raw data lines lazily and adapt legacy IIS names safely."""
     transfer = getattr(ftp, "transfercmd", None)
     if not callable(transfer):
         lines: list[str] = []
@@ -377,15 +438,25 @@ def _iter_ftp_lines(
 
     ftp.voidcmd("TYPE A")
     data_socket = transfer(command)
-    stream = data_socket.makefile(
-        "r",
-        encoding=getattr(ftp, "encoding", "utf-8"),
-        newline="",
-    )
+    stream = data_socket.makefile("rb")
     completed = False
     try:
-        for line in stream:
-            yield line.rstrip("\r\n")
+        for raw_line in stream:
+            raw_line = raw_line.rstrip(b"\r\n")
+            encoding = getattr(ftp, "encoding", "utf-8")
+            try:
+                line = raw_line.decode(encoding)
+            except UnicodeDecodeError:
+                if encoding.replace("_", "-").casefold() not in {
+                    "utf-8",
+                    "utf8",
+                }:
+                    raise
+                line = raw_line.decode("cp1252")
+                ftp.encoding = "cp1252"
+                if on_encoding_fallback is not None:
+                    on_encoding_fallback()
+            yield line
         completed = True
     finally:
         try:
@@ -397,6 +468,14 @@ def _iter_ftp_lines(
         except ftplib.error_temp as exc:
             if completed or not str(exc).lstrip().startswith("426"):
                 raise
+
+
+def _enable_utf8_best_effort(ftp: ftplib.FTP) -> None:
+    """Ask for UTF-8 without rejecting otherwise usable legacy servers."""
+    try:
+        ftp.sendcmd("OPTS UTF8 ON")
+    except (AttributeError, ftplib.Error):
+        pass
 
 
 def _parse_list_line(

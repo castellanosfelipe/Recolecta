@@ -225,8 +225,16 @@ def test_dashboard_exposes_responsive_and_accessible_interactions(
     assert '<option value="required" selected>' in page
     assert '<option value="insecure">' in page
     assert 'protocol === "FTPS" || protocol === "WEBDAVS"' in script
+    assert "field.hidden = !usesTls" in script
+    assert "select.disabled = !usesTls" in script
     assert 'payload.ssl_mode = form.elements.namedItem("ssl_mode").value' in script
     assert "updateTlsModeField()" in script
+    assert '[hidden] { display: none !important; }' in styles
+    assert 'id="ssl-mode-field" hidden' in page
+    assert 'aria-describedby="dest-root-help"' in page
+    assert 'id="dest-root-help"' in page
+    assert "En modo servicio/SYSTEM, usa una ruta UNC" in page
+    assert "las unidades mapeadas, como W:" in page
     assert "Tope agregado de ancho de banda" in page
 
     assert 'setAttribute("aria-current", "page")' in script

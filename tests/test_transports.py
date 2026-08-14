@@ -5,7 +5,7 @@ import ssl
 import stat
 from dataclasses import replace
 from datetime import datetime, timezone
-from io import BytesIO, StringIO
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -123,6 +123,40 @@ def test_ftps_certificate_verification_is_explicit(
     assert context.check_hostname is check_hostname
 
 
+def test_ftp_utf8_negotiation_is_best_effort(monkeypatch) -> None:
+    class LegacyFtp:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+            self.passive: bool | None = None
+
+        def connect(self, host, port, timeout):
+            return None
+
+        def login(self, username, secret):
+            return None
+
+        def sendcmd(self, command):
+            self.commands.append(command)
+            raise ftplib.error_perm("500 OPTS UTF8 not understood")
+
+        def set_pasv(self, passive):
+            self.passive = passive
+
+        def quit(self):
+            return None
+
+    client = LegacyFtp()
+    monkeypatch.setattr(ftplib, "FTP", lambda: client)
+    transport = FtpTransport(connection(Protocol.FTP), secret="x")
+
+    transport.connect()
+    transport.close()
+
+    assert client.commands == ["OPTS UTF8 ON"]
+    assert client.encoding == "utf-8"
+    assert client.passive is True
+
+
 def test_ftp_uses_streamed_mlsd_modify_metadata() -> None:
     transport = FtpTransport(
         connection(Protocol.FTP),
@@ -174,18 +208,37 @@ def test_ftp_iter_files_consumes_mlsd_lazily() -> None:
         files.close()
 
 
+class _StreamingFtpLines:
+    def __init__(self, lines: tuple[bytes, ...]) -> None:
+        self._lines = iter(lines)
+        self.lines_yielded = 0
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> bytes:
+        line = next(self._lines)
+        self.lines_yielded += 1
+        return line
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _FtpListingSocket:
     def __init__(self) -> None:
         self.closed = False
-
-    def makefile(self, mode, *, encoding, newline):
-        assert mode == "r"
-        assert encoding == "utf-8"
-        assert newline == ""
-        return StringIO(
-            "type=file;size=1;modify=20260101010101; first.csv\r\n"
-            "type=file;size=1;modify=20260101010101; second.csv\r\n"
+        self.stream = _StreamingFtpLines(
+            (
+                b"type=file;size=1;modify=20260101010101; first.csv\r\n",
+                b"type=file;size=1;modify=20260101010101; second.csv\r\n",
+            )
         )
+
+    def makefile(self, mode):
+        assert mode == "rb"
+        return self.stream
 
     def close(self) -> None:
         self.closed = True
@@ -208,6 +261,19 @@ class _FtpListingWithAbortReply(FakeFtp):
         raise ftplib.error_temp("426 Transfer aborted")
 
 
+class _BytesDataSocket:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.closed = False
+
+    def makefile(self, mode):
+        assert mode == "rb"
+        return BytesIO(self.payload)
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def test_ftp_partial_listing_ignores_expected_426_abort_reply() -> None:
     client = _FtpListingWithAbortReply()
     transport = FtpTransport(
@@ -226,6 +292,8 @@ def test_ftp_partial_listing_ignores_expected_426_abort_reply() -> None:
         files.close()
 
     assert client.data_socket.closed is True
+    assert client.data_socket.stream.closed is True
+    assert client.data_socket.stream.lines_yielded == 1
     assert client.voidresp_calls == 1
 
 
@@ -248,6 +316,174 @@ def test_ftp_completed_listing_propagates_426_reply() -> None:
 
     assert client.data_socket.closed is True
     assert client.voidresp_calls == 1
+
+
+def test_ftp_attempts_mlsd_when_opts_mlst_is_rejected() -> None:
+    class OptsRejectedFtp(FakeFtp):
+        encoding = "utf-8"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.commands: list[str] = []
+
+        def sendcmd(self, command):
+            self.commands.append(command)
+            if command.startswith("OPTS MLST"):
+                raise ftplib.error_perm("501 OPTS MLST not understood")
+            return "200 OK"
+
+        def transfercmd(self, command):
+            self.commands.append(command)
+            assert command == "MLSD /root"
+            return _BytesDataSocket(
+                b"type=file;size=1;modify=20260101010101; report.csv\r\n"
+            )
+
+        def voidresp(self):
+            return "226 Transfer complete"
+
+    client = OptsRejectedFtp()
+    transport = FtpTransport(
+        connection(Protocol.FTP),
+        secret="x",
+        client=client,
+    )
+
+    result = transport.list_files(("/root",), recursive=False, max_depth=0)
+
+    assert [file.name for file in result.files] == ["report.csv"]
+    assert result.warnings == ()
+    assert client.commands == [
+        "OPTS MLST type;size;modify;",
+        "MLSD /root",
+    ]
+
+
+def test_ftp_ansi_hint_reaches_a_separate_worker_without_retrying_retr(
+    monkeypatch,
+) -> None:
+    payload = b"\x00\xd1\xff\r\n"
+
+    class LegacyAnsiIisListingFtp:
+        encoding = "utf-8"
+
+        def __init__(self) -> None:
+            self.commands: list[bytes] = []
+
+        def sendcmd(self, command):
+            self.commands.append(command.encode(self.encoding))
+            raise ftplib.error_perm("500 OPTS MLST not understood")
+
+        def voidcmd(self, command):
+            return "200 Type set"
+
+        def transfercmd(self, command):
+            encoded = command.encode(self.encoding)
+            self.commands.append(encoded)
+            if command.startswith("MLSD "):
+                raise ftplib.error_perm("500 MLSD not understood")
+            if command == "LIST /FONVIVIENDA_CAVIS_UT":
+                return _BytesDataSocket(
+                    b"08-13-26  09:17AM       <DIR>          "
+                    b"COMFAMILIAR NARI\xd1O ok\r\n"
+                )
+            assert command == (
+                "LIST /FONVIVIENDA_CAVIS_UT/COMFAMILIAR NARIÑO ok"
+            )
+            return _BytesDataSocket(
+                b"08-13-26  09:18AM                    5 documento.bin\r\n"
+            )
+
+        def voidresp(self):
+            return "226 Transfer complete"
+
+    class LegacyAnsiIisDownloadFtp:
+        encoding = "utf-8"
+
+        def __init__(self) -> None:
+            self.commands: list[bytes] = []
+            self.retr_calls = 0
+
+        def connect(self, host, port, timeout):
+            return None
+
+        def login(self, username, secret):
+            return None
+
+        def sendcmd(self, command):
+            self.commands.append(command.encode(self.encoding))
+            return "200 OK"
+
+        def set_pasv(self, passive):
+            return None
+
+        def quit(self):
+            return None
+
+        def retrbinary(
+            self,
+            command,
+            callback,
+            blocksize=8192,
+            rest=None,
+        ):
+            self.retr_calls += 1
+            self.commands.append(command.encode(self.encoding))
+            callback(payload)
+            return "226 Transfer complete"
+
+    listing_client = LegacyAnsiIisListingFtp()
+    configured = connection(
+        Protocol.FTP,
+        remote_paths=("/FONVIVIENDA_CAVIS_UT",),
+        recursive=True,
+        max_depth=1,
+    )
+    listing_transport = FtpTransport(
+        configured,
+        secret="x",
+        client=listing_client,
+    )
+
+    result = listing_transport.list_files(
+        configured.remote_paths,
+        recursive=True,
+        max_depth=1,
+    )
+    download_client = LegacyAnsiIisDownloadFtp()
+    monkeypatch.setattr(ftplib, "FTP", lambda: download_client)
+    worker_transport = FtpTransport(
+        configured,
+        secret="x",
+        command_encoding=listing_transport.command_encoding,
+    )
+    worker_transport.connect()
+    target = BytesIO()
+    transfer = worker_transport.download_to(
+        result.files[0].remote_path,
+        target,
+        offset=0,
+        block_size=1024,
+        on_chunk=lambda chunk: None,
+        on_restart=lambda: None,
+    )
+
+    assert result.files[0].remote_path == (
+        "/FONVIVIENDA_CAVIS_UT/COMFAMILIAR NARIÑO ok/documento.bin"
+    )
+    assert listing_client.encoding == "cp1252"
+    assert listing_transport.command_encoding == "cp1252"
+    assert download_client.encoding == "cp1252"
+    assert sum("Windows-1252" in warning for warning in result.warnings) == 1
+    assert any(
+        b"COMFAMILIAR NARI\xd1O ok" in command
+        for command in download_client.commands
+    )
+    assert download_client.retr_calls == 1
+    assert b"OPTS UTF8 ON" not in download_client.commands
+    assert target.getvalue() == payload
+    assert transfer.bytes_received == len(payload)
+    worker_transport.close()
 
 
 def test_ftp_list_fallback_marks_timestamp_unreliable() -> None:

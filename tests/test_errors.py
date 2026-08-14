@@ -60,6 +60,54 @@ def test_auth_is_not_retryable() -> None:
     assert is_retryable(ErrorType.TCP_TIMEOUT)
 
 
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    (
+        (
+            "550 The system cannot find the file specified.",
+            ErrorType.TARGET_MISSING,
+        ),
+        (
+            "550 /entrada: No such file or directory",
+            ErrorType.TARGET_MISSING,
+        ),
+        ("550 Requested directory does not exist", ErrorType.TARGET_MISSING),
+        ("550 Access is denied.", ErrorType.PERMISSION),
+        ("550 Permission denied.", ErrorType.PERMISSION),
+        # A bare RFC 959 response cannot distinguish absence from access
+        # control, so it deliberately preserves the conservative default.
+        ("550 Requested action not taken.", ErrorType.PERMISSION),
+    ),
+)
+def test_ftp_550_distinguishes_known_missing_and_permission_messages(
+    response: str,
+    expected: ErrorType,
+) -> None:
+    assert classify_exception(ftplib.error_perm(response)) == expected
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    (
+        (
+            "421 Service not available, closing control connection",
+            ErrorType.TCP_CONNECT,
+        ),
+        ("425 Can't open data connection", ErrorType.TCP_CONNECT),
+        ("426 Connection closed; transfer aborted", ErrorType.PARTIAL_TRANSFER),
+        ("450 Requested file action not taken", ErrorType.PARTIAL_TRANSFER),
+    ),
+)
+def test_ftp_temporary_replies_distinguish_connection_and_partial_transfer(
+    response: str,
+    expected: ErrorType,
+) -> None:
+    error_type = classify_exception(ftplib.error_temp(response))
+
+    assert error_type == expected
+    assert is_retryable(error_type)
+
+
 def test_paramiko_no_valid_connections_is_a_retryable_connect_failure() -> None:
     exc = paramiko.ssh_exception.NoValidConnectionsError(
         {("127.0.0.1", 22): ConnectionRefusedError("refused")}

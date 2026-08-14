@@ -1,16 +1,19 @@
 import ftplib
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 from app.connection_validation import (
     REMOTE_VALIDATION_SAMPLE_LIMIT_PER_ROOT,
+    connection_validation_error,
     validate_connection_paths,
 )
 from app.errors import ErrorType, RecolectaError
 from app.models import Connection, Protocol
 from app.transports.base import RemoteFile
+from app.transports.ftp import FtpTransport
 
 
 class FakeTransport:
@@ -190,6 +193,194 @@ def test_validation_reports_authentication_failure_and_closes_transport(
     assert "credencial fue rechazada" in str(captured.value).lower()
     assert "credencial-real" not in str(captured.value)
     assert transport.closed is True
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_type", "expected"),
+    (
+        (
+            ftplib.error_temp("426 password=credencial-real"),
+            ErrorType.PARTIAL_TRANSFER,
+            "canal de datos",
+        ),
+        (
+            ftplib.error_temp("425 password=credencial-real"),
+            ErrorType.TCP_CONNECT,
+            "modo pasivo",
+        ),
+        (
+            OSError(5, "fallo de escritura"),
+            ErrorType.DISK_WRITE,
+            "destino local",
+        ),
+        (
+            RecolectaError(ErrorType.PATH_INVALID, "ruta insegura"),
+            ErrorType.PATH_INVALID,
+            "ruta insegura",
+        ),
+        (
+            RuntimeError("respuesta privada del servidor"),
+            ErrorType.UNKNOWN,
+            "listado remoto no es compatible",
+        ),
+    ),
+)
+def test_validation_error_messages_are_actionable_without_raw_details(
+    failure: Exception,
+    error_type: ErrorType,
+    expected: str,
+) -> None:
+    result = connection_validation_error(failure)
+
+    assert result.error_type == error_type
+    assert expected in str(result)
+    if not isinstance(failure, RecolectaError):
+        assert str(failure) not in str(result)
+    assert "credencial-real" not in str(result)
+
+
+def test_validation_reports_safe_context_for_the_remote_root_that_failed(
+    tmp_path: Path,
+) -> None:
+    secret_path = "/FONVIVIENDA_CAVIÑ_UT?token=credencial-real"
+
+    class FailingSecondRoot(FakeTransport):
+        def iter_files(self, remote_paths, *, recursive, max_depth):
+            if remote_paths == (secret_path,):
+                def fail():
+                    raise ftplib.error_temp("426 secret=credencial-real")
+                    yield  # pragma: no cover - make this a lazy iterator
+
+                return fail()
+            return super().iter_files(
+                remote_paths,
+                recursive=recursive,
+                max_depth=max_depth,
+            )
+
+    transport = FailingSecondRoot()
+    with pytest.raises(RecolectaError) as captured:
+        validate_connection_paths(
+            connection(
+                tmp_path / "destino",
+                remote_paths=("/primera", secret_path),
+            ),
+            secret="credencial-real",
+            portable_root=tmp_path,
+            known_hosts=tmp_path / "known_hosts",
+            transport_factory=lambda *args, **kwargs: transport,
+        )
+
+    message = str(captured.value)
+    assert captured.value.error_type == ErrorType.PARTIAL_TRANSFER
+    assert "/FONVIVIENDA_CAVIÑ_UT?token=***" in message
+    assert "/primera" not in message
+    assert "canal de datos" in message
+    assert "credencial-real" not in message
+    assert "426" not in message
+    assert transport.closed is True
+
+
+def test_validation_redacts_a_preclassified_error_message_for_a_remote_root(
+    tmp_path: Path,
+) -> None:
+    class FailingTransport(FakeTransport):
+        def iter_files(self, remote_paths, *, recursive, max_depth):
+            def fail():
+                raise RecolectaError(
+                    ErrorType.PERMISSION,
+                    "Acceso denegado password=credencial-real",
+                )
+                yield  # pragma: no cover - make this a lazy iterator
+
+            return fail()
+
+    with pytest.raises(RecolectaError) as captured:
+        validate_connection_paths(
+            connection(tmp_path / "destino"),
+            secret="credencial-real",
+            portable_root=tmp_path,
+            known_hosts=tmp_path / "known_hosts",
+            transport_factory=lambda *args, **kwargs: FailingTransport(),
+        )
+
+    message = str(captured.value)
+    assert "password=***" in message
+    assert "credencial-real" not in message
+
+
+def test_validation_uses_ftp_cp1252_listing_and_preserves_enye_path(
+    tmp_path: Path,
+) -> None:
+    remote_root = "/FONVIVIENDA_CAVIÑ_UT"
+    listing = (
+        "-rw-r--r-- 1 owner group 42 Jul 31 2026 "
+        "INFORMACIÓN_Ñ.pdf\r\n"
+    ).encode("cp1252")
+
+    class DataSocket:
+        def __init__(self, client) -> None:
+            self.client = client
+            self.closed = False
+
+        def makefile(self, mode):
+            assert mode == "rb"
+            self.client.makefile_encodings.append(self.client.encoding)
+            return BytesIO(listing)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class Cp1252FtpClient:
+        encoding = "cp1252"
+
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+            self.makefile_encodings: list[str] = []
+
+        def sendcmd(self, command: str) -> str:
+            self.commands.append(command)
+            return "200 OPCIÓN ACEPTADA"
+
+        def voidcmd(self, command: str) -> str:
+            self.commands.append(command)
+            return "200 OK"
+
+        def transfercmd(self, command: str):
+            self.commands.append(command)
+            if command.startswith("MLSD "):
+                raise ftplib.error_perm("500 MLSD no disponible")
+            assert command == f"LIST {remote_root}"
+            return DataSocket(self)
+
+        def voidresp(self) -> str:
+            self.commands.append("VOIDRESP")
+            return "226 LISTADO COMPLETO"
+
+    client = Cp1252FtpClient()
+
+    result = validate_connection_paths(
+        connection(
+            tmp_path / "destino",
+            remote_paths=(remote_root,),
+        ),
+        secret="credencial-real",
+        portable_root=tmp_path,
+        known_hosts=tmp_path / "known_hosts",
+        transport_factory=lambda draft, *, secret, known_hosts: FtpTransport(
+            draft,
+            secret=secret,
+            client=client,
+        ),
+    )
+
+    assert result.remote_paths == (remote_root,)
+    assert result.remote_files_found == 1
+    assert client.makefile_encodings == ["cp1252"]
+    assert f"LIST {remote_root}" in client.commands
+    assert any("se usó LIST" in warning for warning in result.warnings)
+    assert "Ñ" in result.to_dict()["remote_paths"][0]
+    assert "credencial-real" not in repr(result.to_dict())
 
 
 def test_validation_rejects_a_local_file_as_destination(

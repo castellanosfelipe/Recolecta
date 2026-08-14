@@ -249,7 +249,7 @@
         <label>Zona horaria<input name="timezone" value="America/Bogota" required></label>
         <label>Hora diaria<input name="schedule_time" type="time"><small>Vacío: usa la hora global.</small></label>
         <label class="span-2">Rutas remotas<textarea name="remote_paths" rows="2" required placeholder="/entrada&#10;/reportes"></textarea><small>Una ruta por línea.</small></label>
-        <label class="span-2">Destino local<input name="dest_root" value="downloads" required></label>
+        <label class="span-2">Destino local<input name="dest_root" value="downloads" required aria-describedby="dest-root-help"><small id="dest-root-help">En modo servicio/SYSTEM, usa una ruta UNC (\\servidor\recurso\carpeta): las unidades mapeadas, como W:, pueden no existir para esa cuenta.</small></label>
         <label>Ventana<select name="window_mode"><option value="calendar_day">Día calendario anterior</option><option value="rolling_hours">Últimas horas</option><option value="since_last_run">Desde última corrida</option></select></label>
         <label>Horas de ventana<input name="window_hours" type="number" min="1" value="24"></label>
         <label class="check check-with-help"><input name="recursive" type="checkbox"><span>Incluir subcarpetas<small>Recorre el árbol remoto hasta la profundidad indicada.</small></span></label>

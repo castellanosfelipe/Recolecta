@@ -994,10 +994,11 @@ class RunCoordinator:
             engine = DownloadEngine(
                 connection,
                 portable_root=self.paths.root,
-                transport_factory=lambda: create_transport(
+                transport_factory=_worker_transport_factory(
                     connection,
                     secret=secret,
                     known_hosts=self.paths.known_hosts,
+                    listing_transport=listing_transport,
                 ),
                 throttle=self.throttle,
                 minimum_spacing_s=self.minimum_spacing_s,
@@ -1979,6 +1980,34 @@ def _listing_iterator(
                             "la sesión se cerrará a continuación.",
                             exc_info=True,
                         )
+
+
+def _worker_transport_factory(
+    connection: Connection,
+    *,
+    secret: str | None,
+    known_hosts: Path,
+    listing_transport: Transport,
+) -> Callable[[], Transport]:
+    """Create workers with the FTP command encoding learned at discovery."""
+    ftp_command_encoding = None
+    if connection.protocol in {Protocol.FTP, Protocol.FTPS}:
+        candidate = getattr(listing_transport, "command_encoding", None)
+        if isinstance(candidate, str):
+            ftp_command_encoding = candidate
+
+    if ftp_command_encoding is None:
+        return lambda: create_transport(
+            connection,
+            secret=secret,
+            known_hosts=known_hosts,
+        )
+    return lambda: create_transport(
+        connection,
+        secret=secret,
+        known_hosts=known_hosts,
+        ftp_command_encoding=ftp_command_encoding,
+    )
 
 
 def _iter_batches(

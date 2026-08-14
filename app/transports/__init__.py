@@ -13,13 +13,18 @@ def create_transport(
     *,
     secret: str | None,
     known_hosts: Path | None = None,
+    ftp_command_encoding: str | None = None,
 ) -> Transport:
     """Create the protocol adapter selected by a validated connection."""
     protocol = connection.protocol
     if protocol in {Protocol.FTP, Protocol.FTPS}:
         from app.transports.ftp import FtpTransport
 
-        return FtpTransport(connection, secret=secret)
+        return FtpTransport(
+            connection,
+            secret=secret,
+            command_encoding=ftp_command_encoding,
+        )
     if protocol == Protocol.SFTP:
         from app.transports.sftp import SftpTransport
 

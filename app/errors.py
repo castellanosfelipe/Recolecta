@@ -64,12 +64,38 @@ def classify_exception(exc: BaseException) -> ErrorType:
         if response.startswith("530"):
             return ErrorType.AUTH
         if response.startswith("550"):
+            detail = response[3:].casefold()
+            missing_markers = (
+                "not found",
+                "does not exist",
+                "doesn't exist",
+                "no such file",
+                "no such directory",
+                "cannot find",
+                "can't find",
+            )
+            if any(marker in detail for marker in missing_markers):
+                return ErrorType.TARGET_MISSING
+            permission_markers = (
+                "access denied",
+                "access is denied",
+                "permission denied",
+            )
+            if any(marker in detail for marker in permission_markers):
+                return ErrorType.PERMISSION
+            # RFC 959 uses 550 for both a missing target and denied access.
+            # Keep an otherwise ambiguous 550 as permission: this preserves
+            # the historical classification without claiming that a remote
+            # path is absent when the server intentionally hides it.
             return ErrorType.PERMISSION
         return ErrorType.PROTOCOL
     # RFC 959 reserves 4xx replies for temporary failures.  Treat them as a
     # retryable interrupted transfer (including the common 426 reply) instead
     # of a permanent protocol error.
     if isinstance(exc, ftplib.error_temp):
+        response = str(exc).lstrip()
+        if response.startswith(("421", "425")):
+            return ErrorType.TCP_CONNECT
         return ErrorType.PARTIAL_TRANSFER
     if isinstance(exc, (ftplib.error_reply, ftplib.error_proto)):
         return ErrorType.PROTOCOL

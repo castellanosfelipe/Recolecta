@@ -14,6 +14,7 @@ from app.orchestrator import (
     RunCoordinator,
     TimeWindow,
     _listing_iterator,
+    _worker_transport_factory,
     dry_run,
     plan_listing,
 )
@@ -293,6 +294,39 @@ def test_listing_iterator_cleanup_error_does_not_mask_cancellation() -> None:
         "transport_connected",
         "iterator_abort",
         "transport_closed",
+    ]
+
+
+def test_worker_factory_captures_discovery_ftp_encoding(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    listing_transport = SimpleNamespace(command_encoding="cp1252")
+    worker = RecordingTransport(ListingResult())
+    captured: list[tuple[str | None, str | None, Path | None]] = []
+
+    def create_worker(
+        configured,
+        *,
+        secret,
+        known_hosts,
+        ftp_command_encoding=None,
+    ):
+        captured.append((secret, ftp_command_encoding, known_hosts))
+        return worker
+
+    monkeypatch.setattr("app.orchestrator.create_transport", create_worker)
+    factory = _worker_transport_factory(
+        connection(protocol=Protocol.FTP),
+        secret="credencial",
+        known_hosts=tmp_path / "known_hosts",
+        listing_transport=listing_transport,
+    )
+    listing_transport.command_encoding = "utf-8"
+
+    assert factory() is worker
+    assert captured == [
+        ("credencial", "cp1252", tmp_path / "known_hosts")
     ]
 
 

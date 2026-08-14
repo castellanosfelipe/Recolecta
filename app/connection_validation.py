@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ftplib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from app.errors import (
     classify_exception,
     is_retryable,
 )
+from app.logging_setup import redact_secrets
 from app.models import Connection, PostAction
 from app.naming import build_destination, resolve_destination_root
 from app.transports import create_transport
@@ -88,10 +90,16 @@ def validate_connection_paths(
             remote_files_found = 0
             remote_files_found_is_exact = True
             for remote_path in normalized.remote_paths:
-                sampled, truncated = _sample_remote_root(
-                    transport,
-                    remote_path,
-                )
+                try:
+                    sampled, truncated = _sample_remote_root(
+                        transport,
+                        remote_path,
+                    )
+                except Exception as exc:
+                    raise _remote_path_validation_error(
+                        exc,
+                        remote_path=remote_path,
+                    ) from exc
                 remote_files_found += sampled
                 remote_files_found_is_exact = (
                     remote_files_found_is_exact and not truncated
@@ -206,6 +214,39 @@ def _truncated_sample_warning(
     )
 
 
+def _remote_path_validation_error(
+    exc: Exception,
+    *,
+    remote_path: str,
+) -> RecolectaError:
+    """Attach a safe root reference without exposing the server response."""
+    validation_error = connection_validation_error(exc)
+    path_label = _safe_remote_path_label(remote_path)
+    safe_message = redact_secrets(validation_error)
+    return RecolectaError(
+        validation_error.error_type,
+        (
+            f"No se pudo validar la ruta remota {path_label}. "
+            f"{safe_message}"
+        ),
+        retryable=validation_error.retryable,
+    )
+
+
+def _safe_remote_path_label(remote_path: str) -> str:
+    """Render configured path context while redacting secrets and controls."""
+    redacted = redact_secrets(remote_path)
+    printable = "".join(
+        character if character.isprintable() else " "
+        for character in redacted
+    )
+    compact = " ".join(printable.split()) or "(vacía)"
+    limit = 160
+    if len(compact) > limit:
+        compact = compact[: limit - 1] + "…"
+    return repr(compact)
+
+
 def _validate_local_destination(
     connection: Connection,
     *,
@@ -311,6 +352,19 @@ def connection_validation_error(exc: Exception) -> RecolectaError:
     """Convert a transport failure into a secret-free actionable error."""
     if isinstance(exc, RecolectaError):
         return exc
+    if (
+        isinstance(exc, ftplib.error_temp)
+        and str(exc).lstrip().startswith("425")
+    ):
+        return RecolectaError(
+            ErrorType.TCP_CONNECT,
+            (
+                "El servidor FTP no pudo abrir el canal de datos para listar "
+                "la ruta. Confirme el modo pasivo y el rango de puertos de "
+                "datos en el servidor y el firewall."
+            ),
+            retryable=True,
+        )
     error_type = classify_exception(exc)
     messages = {
         ErrorType.DNS: "No se pudo resolver el servidor remoto.",
@@ -326,6 +380,22 @@ def connection_validation_error(exc: Exception) -> RecolectaError:
         ),
         ErrorType.PROTOCOL: (
             "El servidor rechazó la operación de validación del protocolo."
+        ),
+        ErrorType.PARTIAL_TRANSFER: (
+            "El servidor interrumpió el listado remoto o no pudo abrir el "
+            "canal de datos. En FTP/FTPS, confirme el modo pasivo y que el "
+            "firewall permita los puertos de datos."
+        ),
+        ErrorType.DISK_WRITE: (
+            "No se pudo preparar o escribir el destino local configurado."
+        ),
+        ErrorType.PATH_INVALID: (
+            "La ruta configurada o devuelta por el servidor no puede usarse "
+            "de forma segura."
+        ),
+        ErrorType.UNKNOWN: (
+            "La respuesta o el listado remoto no es compatible o no pudo "
+            "interpretarse. Revise el protocolo y la codificación del listado."
         ),
     }
     message = messages.get(
