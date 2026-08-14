@@ -13,6 +13,7 @@
 - [x] Descubrimiento, persistencia y descarga usan lotes acotados; una cola grande no crea una lista o un futuro en memoria por cada documento.
 - [x] Dry-run, resultado y detalle limitan la muestra visible a 500 elementos e informan los totales y el truncamiento.
 - [x] Un archivo con contenido binario no UTF-8 conserva exactamente sus bytes; ninguna etapa lo decodifica o recodifica.
+- [x] FTP/FTPS negocia UTF-8 y, ante listados Windows-1252, conserva esa codificación en las sesiones separadas de descarga sin alterar los bytes del archivo.
 - [x] WebDAV consume bytes HTTP crudos y solo reanuda con un `Content-Range` exacto; una respuesta ambigua no modifica el parcial.
 - [x] Un archivo sin tamaño reserva 64 MiB por worker activo y comprueba espacio durante el stream, sin multiplicar la reserva por todo el inventario.
 - [x] Un parcial solo se reutiliza con tamaño y timestamp remoto confiables; tamaño por sí solo no mezcla versiones.
@@ -45,9 +46,9 @@
 - [x] Código, interfaz, tareas, exportaciones y artefactos usan exclusivamente la marca `Recolecta`.
 - [x] El dashboard enlaza al repositorio de GitHub y al perfil de LinkedIn con iconos locales, etiquetas accesibles y apertura segura.
 
-Evidencia previa a la compilación del release v0.2.2: CPython.org 3.12.10 x64,
-374 pruebas aprobadas, una omisión esperada por permisos de symlink y cobertura
-total 86,82 %. El autodiagnóstico congelado y el tamaño del bundle se verifican
+Evidencia previa a la compilación del release v0.2.3: CPython.org 3.12.10 x64,
+396 pruebas aprobadas, una omisión esperada por permisos de symlink y cobertura
+total 87,24 %. El autodiagnóstico congelado y el tamaño del bundle se verifican
 nuevamente en `build.ps1` antes de publicar.
 
 ## Pruebas de aceptación en equipo destino

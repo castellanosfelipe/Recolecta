@@ -207,14 +207,14 @@ explica recuperación, rotación de credenciales, respaldos y soporte.
 
 ## Estado del proyecto
 
-| Evidencia de v0.2.2 | Resultado |
+| Evidencia de v0.2.3 | Resultado |
 |---------------------|-----------|
-| Suite automatizada | 374 pruebas aprobadas; 1 omisión esperada por permisos de symlink en Windows. |
-| Cobertura | 86,82 %, por encima de la compuerta obligatoria del 85 %. |
+| Suite automatizada | 396 pruebas aprobadas; 1 omisión esperada por permisos de symlink en Windows. |
+| Cobertura | 87,24 %, por encima de la compuerta obligatoria del 85 %. |
 | Protocolos | FTP/FTPS, SFTP y WebDAV con smokes locales reales; SMB cubierto por pruebas del cliente, timeout, binarios y reanudación. |
 | Paquete portable | Autodiagnóstico congelado, dashboard y recursos estáticos aprobados. |
 | Instalador | Extracción aislada y autodiagnóstico aprobados sin alterar tareas durante el smoke. |
-| Release | [`v0.2.2`](https://github.com/castellanosfelipe/Recolecta/releases/tag/v0.2.2), con Setup, ZIP, hashes y evidencias JSON. |
+| Release | [`v0.2.3`](https://github.com/castellanosfelipe/Recolecta/releases/tag/v0.2.3), con Setup, ZIP, hashes y evidencias JSON. |
 
 Pendientes conocidos: firma de código, validación posterior a reinicio en una
 VM limpia y certificación SMB contra endpoints autenticados representativos.
