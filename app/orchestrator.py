@@ -68,6 +68,7 @@ SYSTEMIC_DOWNLOAD_ERRORS = frozenset(
         ErrorType.TCP_TIMEOUT,
         ErrorType.TLS,
         ErrorType.PARTIAL_TRANSFER,
+        ErrorType.UNKNOWN,
     }
 )
 
@@ -113,6 +114,7 @@ class DryRunPlan:
     window: TimeWindow
     items: tuple[PlanItem, ...]
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    notices: tuple[str, ...] = field(default_factory=tuple)
     total_items: int | None = None
     counter_totals: dict[str, int] | None = None
     planned_total: int | None = None
@@ -168,6 +170,7 @@ class RunExecution:
     outcomes: tuple[DownloadOutcome, ...] = field(default_factory=tuple)
     outcome_counts: dict[str, int] | None = None
     outcomes_truncated: bool = False
+    discovery_scope: dict[str, object] | None = None
 
     def summary(self) -> dict[str, object]:
         outcomes = self.outcome_counts or {
@@ -186,9 +189,15 @@ class RunExecution:
             "files_found": self.plan.files_found_count,
             "files_planned": self.plan.files_to_download_count,
             "scan_mode": self.plan.scan_mode,
+            "discovery_scope": (
+                dict(self.discovery_scope)
+                if self.discovery_scope is not None
+                else None
+            ),
             "items_truncated": self.plan.items_truncated,
             "outcomes_truncated": self.outcomes_truncated,
             "warnings": list(self.plan.warnings),
+            "notices": list(self.plan.notices),
             "outcomes": outcomes,
         }
         result = enrich_run(
@@ -197,12 +206,26 @@ class RunExecution:
                 "files_found": self.plan.files_found_count,
                 "files_downloaded": outcomes[DownloadStatus.OK.value],
                 "files_failed": outcomes[DownloadStatus.FAILED.value],
+                "scan_mode": self.plan.scan_mode,
+                "discovery_scope": self.discovery_scope,
             }
         )
         summary["result_status"] = result["result_status"]
         summary["status_label"] = result["status_label"]
         summary["status_detail"] = result["status_detail"]
+        summary["discovery_scope"] = result["discovery_scope"]
         return summary
+
+
+def _effective_discovery_scope(connection: Connection) -> dict[str, object]:
+    full_scan = connection.full_local_reconciliation
+    return {
+        "remote_paths": list(connection.remote_paths),
+        "recursive": True if full_scan else connection.recursive,
+        "max_depth": (
+            FULL_SCAN_MAX_DEPTH if full_scan else connection.max_depth
+        ),
+    }
 
 
 class RunCoordinator:
@@ -444,6 +467,7 @@ class RunCoordinator:
                         },
                         planned_total=0,
                     ),
+                    discovery_scope=_effective_discovery_scope(connection),
                 )
             try:
                 secret = self.connections.get_secret(connection_id)
@@ -478,6 +502,7 @@ class RunCoordinator:
                     trigger,
                     "dry_run",
                     plan,
+                    discovery_scope=_effective_discovery_scope(connection),
                 )
             return self._execute_queued(
                 connection,
@@ -536,6 +561,9 @@ class RunCoordinator:
             if connection.full_local_reconciliation
             else "window"
         )
+        discovery_scope = _effective_discovery_scope(connection)
+        discovery_recursive = bool(discovery_scope["recursive"])
+        discovery_max_depth = int(discovery_scope["max_depth"])
         run_id = self.runs.start_run(
             connection_id=connection.id,
             trigger=trigger,
@@ -543,6 +571,9 @@ class RunCoordinator:
             window_end_utc=window.end_utc,
             started_at=started_at,
             scan_mode=scan_mode,
+            remote_paths=connection.remote_paths,
+            recursive=discovery_recursive,
+            max_depth=discovery_max_depth,
         )
         run_log: RunEventLog | None = None
         seen_paths: sqlite3.Connection | None = None
@@ -579,6 +610,7 @@ class RunCoordinator:
             counters = {status.value: 0 for status in PlanStatus}
             plan_sample: list[PlanItem] = []
             warnings: list[str] = []
+            notices: list[str] = []
             total_items = 0
             planned_total = 0
             planned_bytes = 0
@@ -638,21 +670,12 @@ class RunCoordinator:
             quiet_before = started_at.astimezone(timezone.utc) - timedelta(
                 seconds=connection.quiet_period_s
             )
-            recursive = (
-                True
-                if connection.full_local_reconciliation
-                else connection.recursive
-            )
-            max_depth = (
-                FULL_SCAN_MAX_DEPTH
-                if connection.full_local_reconciliation
-                else connection.max_depth
-            )
             with _listing_iterator(
                 listing_transport,
                 connection.remote_paths,
-                recursive=recursive,
-                max_depth=max_depth,
+                recursive=discovery_recursive,
+                max_depth=discovery_max_depth,
+                notices=notices,
             ) as discovered:
                 for remote_batch in _iter_batches(
                     discovered,
@@ -879,11 +902,11 @@ class RunCoordinator:
                                 reason=item.reason,
                             )
 
-            for warning in listing_transport.last_listing_warnings:
-                _append_warning(warnings, warning)
+            for notice in listing_transport.last_listing_warnings:
+                _append_warning(notices, notice)
             if unreliable_timestamps:
                 _append_warning(
-                    warnings,
+                    notices,
                     (
                         f"{unreliable_timestamps} archivo(s) tienen una fecha "
                         "remota de precisión limitada."
@@ -894,10 +917,20 @@ class RunCoordinator:
                 and missing_timestamps
             ):
                 _append_warning(
-                    warnings,
+                    notices,
                     (
                         f"{missing_timestamps} archivo(s) no informaron fecha; "
                         "la comparación local usó el tamaño disponible."
+                    ),
+                )
+
+            invalid_paths = counters[PlanStatus.PATH_INVALID.value]
+            if invalid_paths:
+                _append_warning(
+                    warnings,
+                    (
+                        f"{invalid_paths} archivo(s) tenían una ruta remota "
+                        "no permitida y fueron aislados."
                     ),
                 )
 
@@ -906,6 +939,7 @@ class RunCoordinator:
                 window=window,
                 items=tuple(plan_sample),
                 warnings=tuple(warnings),
+                notices=tuple(notices),
                 total_items=total_items,
                 counter_totals=counters,
                 planned_total=planned_total,
@@ -947,7 +981,12 @@ class RunCoordinator:
                     for value in DownloadStatus
                 }
                 status = "cancelled"
-                self.runs.finish_run(run_id, status=status)
+                self.runs.finish_run(
+                    run_id,
+                    status=status,
+                    warnings=warnings,
+                    notices=notices,
+                )
                 run_log.write(
                     "run_finished",
                     run_id=run_id,
@@ -956,6 +995,7 @@ class RunCoordinator:
                     files_planned=planned_total,
                     scan_mode=scan_mode,
                     warnings=warnings,
+                    notices=notices,
                 )
                 if self.alerts is not None:
                     self._evaluate_alerts(run_id)
@@ -968,6 +1008,7 @@ class RunCoordinator:
                     (),
                     cancelled_counts,
                     sum(cancelled_counts.values()) > 0,
+                    discovery_scope=discovery_scope,
                 )
 
             preflight_bytes = (
@@ -1262,6 +1303,8 @@ class RunCoordinator:
                     run_error.value if run_error is not None else None
                 ),
                 error_msg=run_error_message,
+                warnings=warnings,
+                notices=notices,
             )
             run_log.write(
                 "run_finished",
@@ -1283,6 +1326,7 @@ class RunCoordinator:
                 ),
                 plan_details_truncated=plan.items_truncated,
                 warnings=warnings,
+                notices=notices,
                 error_type=(
                     run_error.value if run_error is not None else None
                 ),
@@ -1299,6 +1343,7 @@ class RunCoordinator:
                 tuple(outcome_sample),
                 outcome_counts,
                 sum(outcome_counts.values()) > len(outcome_sample),
+                discovery_scope=discovery_scope,
             )
         except Exception as exc:
             error_type = classify_exception(exc)
@@ -1312,6 +1357,8 @@ class RunCoordinator:
                 status="failed",
                 error_type=error_type.value,
                 error_msg=str(exc),
+                warnings=warnings,
+                notices=notices,
             )
             run_log.write(
                 "run_finished",
@@ -1319,6 +1366,8 @@ class RunCoordinator:
                 status="failed",
                 error_type=error_type.value,
                 error_msg=str(exc),
+                warnings=warnings,
+                notices=notices,
             )
             if self.alerts is not None:
                 self._evaluate_alerts(run_id)
@@ -1342,12 +1391,21 @@ class RunCoordinator:
     ) -> int:
         assert connection.id is not None
         error_type = classify_exception(exc)
+        discovery_scope = _effective_discovery_scope(connection)
         run_id = self.runs.start_run(
             connection_id=connection.id,
             trigger=trigger,
             window_start_utc=window.start_utc,
             window_end_utc=window.end_utc,
             started_at=started_at,
+            scan_mode=(
+                "full_local_reconciliation"
+                if connection.full_local_reconciliation
+                else "window"
+            ),
+            remote_paths=connection.remote_paths,
+            recursive=bool(discovery_scope["recursive"]),
+            max_depth=int(discovery_scope["max_depth"]),
         )
         self.runs.finish_run(
             run_id,
@@ -1467,7 +1525,8 @@ def plan_listing(
         connection.include_globs, connection.exclude_globs
     )
     items: list[PlanItem] = []
-    warnings = list(listing.warnings)
+    warnings: list[str] = []
+    notices = list(listing.warnings)
 
     for remote_file in sorted(listing.files, key=lambda item: item.remote_path):
         status, reason = _classify_file(
@@ -1487,14 +1546,15 @@ def plan_listing(
                 "La precisión temporal es limitada para "
                 f"{remote_file.remote_path} ({remote_file.timestamp_source or 'fuente desconocida'})."
             )
-            if warning not in warnings:
-                warnings.append(warning)
+            if warning not in notices:
+                notices.append(warning)
 
     return DryRunPlan(
         connection_id=connection.id,
         window=window,
         items=tuple(items),
         warnings=tuple(warnings),
+        notices=tuple(notices),
     )
 
 
@@ -1525,6 +1585,7 @@ def dry_run(
     counters = {status.value: 0 for status in PlanStatus}
     sample: list[PlanItem] = []
     warnings: list[str] = []
+    notices: list[str] = []
     total_items = 0
     planned_total = 0
     planned_bytes = 0
@@ -1562,6 +1623,7 @@ def dry_run(
                 if full_scan
                 else normalized.max_depth
             ),
+            notices=notices,
         ) as discovered:
             for remote_batch in _iter_batches(
                 discovered,
@@ -1688,11 +1750,11 @@ def dry_run(
                     if len(sample) < PLAN_SAMPLE_LIMIT:
                         sample.append(item)
 
-        for warning in transport.last_listing_warnings:
-            _append_warning(warnings, warning)
+        for notice in transport.last_listing_warnings:
+            _append_warning(notices, notice)
         if unreliable_timestamps:
             _append_warning(
-                warnings,
+                notices,
                 (
                     f"{unreliable_timestamps} archivo(s) tienen una fecha "
                     "remota de precisión limitada."
@@ -1700,7 +1762,7 @@ def dry_run(
             )
         if full_scan and missing_timestamps:
             _append_warning(
-                warnings,
+                notices,
                 (
                     f"{missing_timestamps} archivo(s) no informaron fecha; "
                     "la comparación local usó el tamaño disponible."
@@ -1723,6 +1785,7 @@ def dry_run(
         window=window,
         items=tuple(sample),
         warnings=tuple(warnings),
+        notices=tuple(notices),
         total_items=total_items,
         counter_totals=counters,
         planned_total=planned_total,
@@ -1952,34 +2015,44 @@ def _listing_iterator(
     *,
     recursive: bool,
     max_depth: int,
+    notices: list[str] | None = None,
 ) -> Iterator[Iterator[RemoteFile]]:
     """Close a partially consumed listing before its transport session."""
     discovered: Iterator[RemoteFile] | None = None
-    with transport:
-        try:
-            discovered = transport.iter_files(
-                remote_paths,
-                recursive=recursive,
-                max_depth=max_depth,
-            )
-            yield discovered
-        finally:
-            if discovered is not None:
-                close_discovered = getattr(discovered, "close", None)
-                if callable(close_discovered):
-                    try:
-                        close_discovered()
-                    except Exception:
-                        # A partially consumed network listing can report an
-                        # abort while its generator is being closed.  The
-                        # enclosing transport is closed next, so this cleanup
-                        # error must not turn cancellation (or a primary
-                        # planning error) into a failed run.
-                        logger.warning(
-                            "El iterador remoto informó un error al cerrarse; "
-                            "la sesión se cerrará a continuación.",
-                            exc_info=True,
-                        )
+    try:
+        with transport:
+            try:
+                discovered = transport.iter_files(
+                    remote_paths,
+                    recursive=recursive,
+                    max_depth=max_depth,
+                )
+                # Protocol adapters own exception classification.  Keeping
+                # the original exception here avoids presenting application
+                # or parser bugs as a verified remote protocol failure.
+                yield discovered
+            finally:
+                if discovered is not None:
+                    close_discovered = getattr(discovered, "close", None)
+                    if callable(close_discovered):
+                        try:
+                            close_discovered()
+                        except Exception:
+                            # A partially consumed network listing can report
+                            # an abort while its generator is being closed.
+                            # The enclosing transport is closed next, so this
+                            # cleanup error must not turn cancellation (or a
+                            # primary planning error) into a failed run.
+                            logger.warning(
+                                "El iterador remoto informó un error al "
+                                "cerrarse; la sesión se cerrará a "
+                                "continuación.",
+                                exc_info=True,
+                            )
+    finally:
+        if notices is not None:
+            for notice in transport.last_listing_warnings:
+                _append_warning(notices, notice)
 
 
 def _worker_transport_factory(

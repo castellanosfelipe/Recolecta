@@ -267,6 +267,7 @@ def test_large_lazy_inventory_uses_bounded_samples_and_queue_batches(
         ErrorType.PERMISSION,
         ErrorType.PROTOCOL,
         ErrorType.PARTIAL_TRANSFER,
+        ErrorType.UNKNOWN,
     ),
 )
 def test_systemic_failures_open_circuit_and_terminalize_large_queue(

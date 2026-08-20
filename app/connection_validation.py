@@ -113,6 +113,11 @@ def validate_connection_paths(
                         warnings,
                         (_truncated_sample_warning(remote_path),),
                     )
+            if remote_files_found == 0:
+                _extend_unique(
+                    warnings,
+                    (_empty_remote_sample_warning(normalized),),
+                )
             if (
                 normalized.post_action == PostAction.MOVE_REMOTE
                 and normalized.post_action_path
@@ -191,6 +196,39 @@ def _extend_unique(target: list[str], values: tuple[str, ...]) -> None:
     for value in values:
         if value not in target:
             target.append(value)
+
+
+def _empty_remote_sample_warning(connection: Connection) -> str:
+    """Explain the bounded validation scope without rejecting the draft."""
+    if connection.full_local_reconciliation:
+        return (
+            "No se encontraron archivos en el nivel inicial durante la "
+            "validación. Esta comprobación no recorre subcarpetas; las "
+            "ejecuciones con «Comparación completa» recorrerán todo el "
+            "árbol remoto."
+        )
+    if connection.recursive and connection.max_depth == 0:
+        return (
+            "No se encontraron archivos en el nivel inicial durante la "
+            "validación. Aunque «Buscar también dentro de subcarpetas» está "
+            "activado, la profundidad máxima es 0; auméntela al menos a 1 "
+            "para que las ejecuciones entren en subcarpetas."
+        )
+    if connection.recursive:
+        return (
+            "No se encontraron archivos en el nivel inicial durante la "
+            "validación. Esta comprobación no recorre subcarpetas; las "
+            "ejecuciones con «Buscar también dentro de subcarpetas» podrán "
+            "encontrar archivos "
+            "dentro de la profundidad máxima configurada."
+        )
+    return (
+        "No se encontraron archivos en el nivel inicial durante la "
+        "validación. Esta comprobación solo revisa ese nivel y la conexión "
+        "no recorrerá subcarpetas mientras «Buscar también dentro de "
+        "subcarpetas» esté "
+        "desactivado."
+    )
 
 
 def _truncated_sample_warning(

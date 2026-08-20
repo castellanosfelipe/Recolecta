@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
 
 RUN_RESULT_LABELS = {
     "completed": "Descarga completada",
-    "no_files": "Archivos no existentes",
+    "no_files": "Sin archivos encontrados",
     "no_changes": "Sin archivos nuevos",
     "ok": "Ejecución sin errores",
     "partial": "Completada con incidencias",
@@ -75,10 +76,15 @@ CONNECTION_STATUS_LABELS = {
 }
 
 PLAN_RESULT_LABELS = {
-    "no_files": "Archivos no existentes",
+    "partial": "Simulación con incidencias",
+    "no_files": "Sin archivos encontrados",
     "no_changes": "Sin archivos nuevos",
     "files_ready": "Archivos listos para descargar",
 }
+
+SUCCESSFUL_RUN_RESULTS = frozenset(
+    {"completed", "no_files", "no_changes", "ok"}
+)
 
 
 def run_result_status(
@@ -86,9 +92,24 @@ def run_result_status(
     *,
     files_found: object = 0,
     files_downloaded: object = 0,
+    files_failed: object = 0,
+    error_type: object = None,
+    error_msg: object = None,
+    warnings: object = None,
 ) -> str:
     """Derive a descriptive result without changing the canonical run status."""
     canonical = str(status or "")
+    if _is_legacy_warning_only_partial(
+        canonical,
+        files_failed=files_failed,
+        error_type=error_type,
+        error_msg=error_msg,
+        warnings=warnings,
+    ):
+        # Older releases persisted non-fatal transport notices (notably FTP
+        # LIST timestamp precision) as ``partial``.  Preserve the raw value
+        # for audit compatibility while presenting the completed outcome.
+        canonical = "ok"
     if canonical != "ok":
         return canonical or "unknown"
     if _as_int(files_found) == 0:
@@ -103,7 +124,10 @@ def run_result_label(
     *,
     files_found: object = 0,
     files_downloaded: object = 0,
+    files_failed: object = 0,
     error_type: object = None,
+    error_msg: object = None,
+    warnings: object = None,
 ) -> str:
     """Return the operator-facing label for one persisted run."""
     canonical = str(status or "")
@@ -114,6 +138,10 @@ def run_result_label(
         canonical,
         files_found=files_found,
         files_downloaded=files_downloaded,
+        files_failed=files_failed,
+        error_type=error_type,
+        error_msg=error_msg,
+        warnings=warnings,
     )
     return RUN_RESULT_LABELS.get(result, "Estado no identificado")
 
@@ -125,17 +153,30 @@ def run_result_detail(
     files_downloaded: object = 0,
     files_failed: object = 0,
     error_type: object = None,
+    error_msg: object = None,
+    warnings: object = None,
+    discovery_scope: Mapping[str, Any] | None = None,
+    scan_mode: object = None,
 ) -> str:
     """Explain what a run result means in plain Spanish."""
     result = run_result_status(
         status,
         files_found=files_found,
         files_downloaded=files_downloaded,
+        files_failed=files_failed,
+        error_type=error_type,
+        error_msg=error_msg,
+        warnings=warnings,
     )
     if result == "no_files":
+        if discovery_scope is not None:
+            return _empty_discovery_detail(
+                discovery_scope,
+                scan_mode=scan_mode,
+            )
         return (
             "La conexión respondió correctamente, pero no se encontraron "
-            "archivos en las rutas configuradas."
+            "archivos dentro del alcance configurado."
         )
     if result == "no_changes":
         return (
@@ -154,7 +195,10 @@ def run_result_detail(
             status,
             files_found=files_found,
             files_downloaded=files_downloaded,
+            files_failed=files_failed,
             error_type=error_type,
+            error_msg=error_msg,
+            warnings=warnings,
         )
         return f"La ejecución no pudo completarse: {label.lower()}."
     if result == "running":
@@ -167,17 +211,28 @@ def run_result_detail(
 def enrich_run(row: Mapping[str, Any]) -> dict[str, Any]:
     """Add a descriptive result to a run mapping."""
     result = dict(row)
+    result["warnings"] = _run_messages(result, "warnings")
+    result["notices"] = _run_messages(result, "notices")
+    discovery_scope = _run_discovery_scope(result)
+    result["discovery_scope"] = discovery_scope
     result_status = run_result_status(
         result.get("status"),
         files_found=result.get("files_found"),
         files_downloaded=result.get("files_downloaded"),
+        files_failed=result.get("files_failed"),
+        error_type=result.get("error_type"),
+        error_msg=result.get("error_msg"),
+        warnings=result["warnings"],
     )
     result["result_status"] = result_status
     result["status_label"] = run_result_label(
         result.get("status"),
         files_found=result.get("files_found"),
         files_downloaded=result.get("files_downloaded"),
+        files_failed=result.get("files_failed"),
         error_type=result.get("error_type"),
+        error_msg=result.get("error_msg"),
+        warnings=result["warnings"],
     )
     result["status_detail"] = run_result_detail(
         result.get("status"),
@@ -185,8 +240,145 @@ def enrich_run(row: Mapping[str, Any]) -> dict[str, Any]:
         files_downloaded=result.get("files_downloaded"),
         files_failed=result.get("files_failed"),
         error_type=result.get("error_type"),
+        error_msg=result.get("error_msg"),
+        warnings=result["warnings"],
+        discovery_scope=discovery_scope,
+        scan_mode=result.get("scan_mode"),
     )
     return result
+
+
+def _run_messages(result: dict[str, Any], field: str) -> list[str]:
+    """Decode a persisted message list while tolerating legacy rows."""
+    existing = result.get(field)
+    raw = result.pop(f"{field}_json", None)
+    value: object = existing
+    if raw is not None:
+        try:
+            value = json.loads(str(raw))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            value = []
+    if not isinstance(value, (list, tuple)):
+        return []
+    messages: list[str] = []
+    for item in value:
+        message = str(item).strip()
+        if message and message not in messages:
+            messages.append(message)
+    return messages
+
+
+def _is_legacy_warning_only_partial(
+    status: object,
+    *,
+    files_failed: object,
+    error_type: object,
+    error_msg: object,
+    warnings: object,
+) -> bool:
+    """Identify historical partials caused only by non-fatal notices."""
+    return (
+        str(status or "") == "partial"
+        and _as_int(files_failed) == 0
+        and not str(error_type or "").strip()
+        and not str(error_msg or "").strip()
+        and not _has_messages(warnings)
+    )
+
+
+def _has_messages(value: object) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if not isinstance(value, (list, tuple)):
+        return False
+    return any(str(item).strip() for item in value)
+
+
+def _run_discovery_scope(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Decode only the scope persisted with this run, never current config."""
+    existing = result.get("discovery_scope")
+    raw_paths = result.pop("discovery_paths_json", None)
+    raw_recursive = result.pop("discovery_recursive", None)
+    raw_max_depth = result.pop("discovery_max_depth", None)
+    if existing is not None:
+        return _normalize_discovery_scope(existing)
+    if (
+        raw_paths is None
+        or raw_recursive is None
+        or raw_max_depth is None
+    ):
+        return None
+    try:
+        remote_paths = json.loads(str(raw_paths))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return _normalize_discovery_scope(
+        {
+            "remote_paths": remote_paths,
+            "recursive": raw_recursive,
+            "max_depth": raw_max_depth,
+        }
+    )
+
+
+def _normalize_discovery_scope(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    remote_paths = value.get("remote_paths")
+    recursive = value.get("recursive")
+    max_depth = value.get("max_depth")
+    if not isinstance(remote_paths, (list, tuple)) or any(
+        not isinstance(path, str) for path in remote_paths
+    ):
+        return None
+    if recursive not in (False, True, 0, 1):
+        return None
+    if isinstance(max_depth, bool) or not isinstance(max_depth, int):
+        return None
+    if max_depth < 0:
+        return None
+    return {
+        "remote_paths": list(remote_paths),
+        "recursive": bool(recursive),
+        "max_depth": max_depth,
+    }
+
+
+def _empty_discovery_detail(
+    scope: Mapping[str, Any],
+    *,
+    scan_mode: object,
+) -> str:
+    remote_paths = scope.get("remote_paths")
+    path_count = len(remote_paths) if isinstance(remote_paths, list) else 0
+    if path_count == 1:
+        roots = "la ruta configurada"
+    elif path_count > 1:
+        roots = f"las {path_count} rutas configuradas"
+    else:
+        roots = "el alcance remoto configurado"
+
+    prefix = (
+        "La conexión respondió correctamente, pero no se encontraron "
+        "archivos"
+    )
+    if str(scan_mode or "") == "full_local_reconciliation":
+        return f"{prefix} en el árbol remoto de {roots}."
+    if not bool(scope.get("recursive")):
+        return (
+            f"{prefix} directamente en {roots}. Las subcarpetas no se "
+            "exploraron en esta corrida."
+        )
+    max_depth = int(scope.get("max_depth") or 0)
+    if max_depth == 0:
+        return (
+            f"{prefix} directamente en {roots}. La profundidad máxima fue "
+            "0, por lo que no se exploraron subcarpetas."
+        )
+    return (
+        f"{prefix} en {roots} ni en las subcarpetas exploradas hasta "
+        f"{max_depth} nivel(es) de profundidad."
+    )
 
 
 def file_status_label(
@@ -239,8 +431,15 @@ def plan_status_label(status: object) -> str:
     )
 
 
-def plan_result_status(*, files_found: object, files_planned: object) -> str:
+def plan_result_status(
+    *,
+    files_found: object,
+    files_planned: object,
+    is_partial: object = False,
+) -> str:
     """Classify a dry-run summary based on listed and eligible files."""
+    if bool(is_partial):
+        return "partial"
     if _as_int(files_found) == 0:
         return "no_files"
     if _as_int(files_planned) == 0:
@@ -248,12 +447,18 @@ def plan_result_status(*, files_found: object, files_planned: object) -> str:
     return "files_ready"
 
 
-def plan_result_label(*, files_found: object, files_planned: object) -> str:
+def plan_result_label(
+    *,
+    files_found: object,
+    files_planned: object,
+    is_partial: object = False,
+) -> str:
     """Return the operator-facing dry-run summary label."""
     return PLAN_RESULT_LABELS[
         plan_result_status(
             files_found=files_found,
             files_planned=files_planned,
+            is_partial=is_partial,
         )
     ]
 
@@ -274,10 +479,12 @@ def enrich_plan(row: Mapping[str, Any]) -> dict[str, Any]:
     result["result_status"] = plan_result_status(
         files_found=files_found,
         files_planned=files_planned,
+        is_partial=result.get("is_partial", False),
     )
     result["result_label"] = plan_result_label(
         files_found=files_found,
         files_planned=files_planned,
+        is_partial=result.get("is_partial", False),
     )
     return result
 

@@ -111,11 +111,15 @@ validar. Si cambias un dato de conectividad, deberás probarla otra vez.
 
 | Estado visible | Significado |
 |----------------|-------------|
-| **Archivos no existentes** | El servidor no contenía archivos aplicables; no se trata como fallo. |
+| **Sin archivos encontrados** | La ejecución no encontró archivos dentro del alcance recorrido; no se trata como fallo. Sin recursión solo se revisa el nivel inicial de cada ruta y, con recursión, se respeta la profundidad configurada. |
 | **Sin archivos nuevos** | Había elementos, pero ninguno necesitaba descargarse. |
 | **Descarga completada** | Uno o más archivos se publicaron correctamente. |
-| **Resultado parcial** | Parte del lote terminó y otra parte requiere atención. |
+| **Completada con incidencias** | Parte del lote terminó y hubo archivos fallidos, rutas aisladas u otra causa que requiere atención. |
 | **Fallida** | La ejecución no pudo completarse y muestra una causa específica, como autenticación, TLS, ruta, red o espacio. |
+
+Las limitaciones compatibles del servidor, como usar FTP `LIST` o nombres
+Windows-1252, se conservan como **Observaciones técnicas** en el detalle. No
+se muestran como incidencias si no hubo fallos reales.
 
 ## Cómo funciona
 
@@ -207,14 +211,14 @@ explica recuperación, rotación de credenciales, respaldos y soporte.
 
 ## Estado del proyecto
 
-| Evidencia de v0.2.3 | Resultado |
-|---------------------|-----------|
-| Suite automatizada | 396 pruebas aprobadas; 1 omisión esperada por permisos de symlink en Windows. |
-| Cobertura | 87,24 %, por encima de la compuerta obligatoria del 85 %. |
+| Evidencia | Resultado |
+|-----------|-----------|
+| Rama actual | 447 pruebas aprobadas; 1 omisión esperada por permisos de symlink en Windows. |
+| Cobertura | 87,63 %, por encima de la compuerta obligatoria del 85 %. |
 | Protocolos | FTP/FTPS, SFTP y WebDAV con smokes locales reales; SMB cubierto por pruebas del cliente, timeout, binarios y reanudación. |
 | Paquete portable | Autodiagnóstico congelado, dashboard y recursos estáticos aprobados. |
 | Instalador | Extracción aislada y autodiagnóstico aprobados sin alterar tareas durante el smoke. |
-| Release | [`v0.2.3`](https://github.com/castellanosfelipe/Recolecta/releases/tag/v0.2.3), con Setup, ZIP, hashes y evidencias JSON. |
+| Último release publicado | [`v0.2.4`](https://github.com/castellanosfelipe/Recolecta/releases/tag/v0.2.4), con Setup, ZIP, hashes y evidencias JSON. |
 
 Pendientes conocidos: firma de código, validación posterior a reinicio en una
 VM limpia y certificación SMB contra endpoints autenticados representativos.

@@ -47,6 +47,20 @@ class RecolectaError(Exception):
 
 def classify_exception(exc: BaseException) -> ErrorType:
     """Map common Python/network exceptions to the public taxonomy."""
+    return _classify_exception(exc, visited=set())
+
+
+def _classify_exception(
+    exc: BaseException,
+    *,
+    visited: set[int],
+) -> ErrorType:
+    """Classify one exception and safely inspect its wrapped failures."""
+    identity = id(exc)
+    if identity in visited:
+        return ErrorType.UNKNOWN
+    visited.add(identity)
+
     if isinstance(exc, RecolectaError):
         return exc.error_type
     winerror = getattr(exc, "winerror", None)
@@ -56,7 +70,10 @@ def classify_exception(exc: BaseException) -> ErrorType:
         return ErrorType.PERMISSION
     if winerror in {53, 67}:
         return ErrorType.TARGET_MISSING
-    optional = _classify_optional_dependency_exception(exc)
+    optional = _classify_optional_dependency_exception(
+        exc,
+        visited=visited,
+    )
     if optional is not None:
         return optional
     if isinstance(exc, ftplib.error_perm):
@@ -99,6 +116,10 @@ def classify_exception(exc: BaseException) -> ErrorType:
         return ErrorType.PARTIAL_TRANSFER
     if isinstance(exc, (ftplib.error_reply, ftplib.error_proto)):
         return ErrorType.PROTOCOL
+    if isinstance(exc, ftplib.Error):
+        return ErrorType.PROTOCOL
+    if isinstance(exc, EOFError):
+        return ErrorType.PARTIAL_TRANSFER
     if isinstance(exc, socket.gaierror):
         return ErrorType.DNS
     if isinstance(exc, (TimeoutError, socket.timeout)):
@@ -111,6 +132,8 @@ def classify_exception(exc: BaseException) -> ErrorType:
         return ErrorType.TARGET_MISSING
     if isinstance(exc, ConnectionRefusedError):
         return ErrorType.TCP_CONNECT
+    if isinstance(exc, BrokenPipeError):
+        return ErrorType.PARTIAL_TRANSFER
     if isinstance(exc, OSError):
         if exc.errno in {errno.ENOSPC, getattr(errno, "EDQUOT", -1)}:
             return ErrorType.DISK_SPACE
@@ -125,13 +148,15 @@ def classify_exception(exc: BaseException) -> ErrorType:
             errno.EHOSTUNREACH,
         }:
             return ErrorType.TCP_CONNECT
+        if exc.errno == errno.EPIPE:
+            return ErrorType.PARTIAL_TRANSFER
         if exc.errno in {errno.EIO, getattr(errno, "EROFS", -1)}:
             return ErrorType.DISK_WRITE
-    cause = exc.__cause__
-    if cause is not None and cause is not exc:
-        cause_type = classify_exception(cause)
-        if cause_type != ErrorType.UNKNOWN:
-            return cause_type
+    wrapped = _visible_wrapped_exception(exc)
+    if wrapped is not None and wrapped is not exc:
+        wrapped_type = _classify_exception(wrapped, visited=visited)
+        if wrapped_type != ErrorType.UNKNOWN:
+            return wrapped_type
     return ErrorType.UNKNOWN
 
 
@@ -148,6 +173,8 @@ def is_retryable(error_type: ErrorType) -> bool:
 
 def _classify_optional_dependency_exception(
     exc: BaseException,
+    *,
+    visited: set[int],
 ) -> ErrorType | None:
     try:
         from smbprotocol import exceptions as smb_exceptions
@@ -193,8 +220,8 @@ def _classify_optional_dependency_exception(
                 return ErrorType.TCP_TIMEOUT
             cause = exc.__cause__
             if isinstance(cause, smb_exceptions.SMBException):
-                cause_type = _classify_optional_dependency_exception(cause)
-                if cause_type is not None:
+                cause_type = _classify_exception(cause, visited=visited)
+                if cause_type != ErrorType.UNKNOWN:
                     return cause_type
             return ErrorType.PROTOCOL
     except ImportError:
@@ -280,5 +307,20 @@ def _exception_chain_contains(
         if isinstance(current, expected):
             return True
         visited.add(id(current))
-        current = current.__cause__ or current.__context__
+        current = _visible_wrapped_exception(current)
     return False
+
+
+def _visible_wrapped_exception(exc: BaseException) -> BaseException | None:
+    """Return the exception Python exposes as the relevant wrapped failure.
+
+    An explicit cause has precedence over the implicit context. ``from None``
+    deliberately suppresses that context, so it must not affect either the
+    public taxonomy or retry decisions.
+    """
+    cause = exc.__cause__
+    if cause is not None:
+        return cause
+    if exc.__suppress_context__:
+        return None
+    return exc.__context__

@@ -250,7 +250,77 @@ MIGRATIONS: Final[dict[int, tuple[str, ...]]] = {
         WHERE lower(trim(ssl_mode)) NOT IN ('required', 'insecure')
         """,
     ),
+    7: (
+        "ALTER TABLE runs ADD COLUMN discovery_paths_json TEXT",
+        """
+        ALTER TABLE runs
+        ADD COLUMN discovery_recursive INTEGER
+        CHECK (
+            discovery_recursive IS NULL
+            OR discovery_recursive IN (0, 1)
+        )
+        """,
+        """
+        ALTER TABLE runs
+        ADD COLUMN discovery_max_depth INTEGER
+        CHECK (
+            discovery_max_depth IS NULL
+            OR discovery_max_depth >= 0
+        )
+        """,
+    ),
+    8: (
+        """
+        ALTER TABLE runs
+        ADD COLUMN warnings_json TEXT NOT NULL DEFAULT '[]'
+        """,
+        """
+        ALTER TABLE runs
+        ADD COLUMN notices_json TEXT NOT NULL DEFAULT '[]'
+        """,
+    ),
 }
+
+
+# Releases before the warning-severity correction stored non-fatal transport
+# notices as ``partial``.  Those rows completed their window when they have no
+# failed files and no run-level error; keep them successful for scheduling and
+# derived-result filters without rewriting the audit history.
+_SUCCESSFUL_RUN_PREDICATE = """
+(
+    status = 'ok'
+    OR (
+        status = 'partial'
+        AND COALESCE(files_failed, 0) = 0
+        AND TRIM(COALESCE(error_type, '')) = ''
+        AND TRIM(COALESCE(error_msg, '')) = ''
+        AND TRIM(COALESCE(warnings_json, '[]')) IN ('', '[]')
+    )
+)
+"""
+_SUCCESSFUL_RUN_PREDICATE_R = """
+(
+    r.status = 'ok'
+    OR (
+        r.status = 'partial'
+        AND COALESCE(r.files_failed, 0) = 0
+        AND TRIM(COALESCE(r.error_type, '')) = ''
+        AND TRIM(COALESCE(r.error_msg, '')) = ''
+        AND TRIM(COALESCE(r.warnings_json, '[]')) IN ('', '[]')
+    )
+)
+"""
+_ACTIONABLE_PARTIAL_PREDICATE_R = """
+(
+    r.status = 'partial'
+    AND (
+        COALESCE(r.files_failed, 0) > 0
+        OR TRIM(COALESCE(r.error_type, '')) <> ''
+        OR TRIM(COALESCE(r.error_msg, '')) <> ''
+        OR TRIM(COALESCE(r.warnings_json, '[]')) NOT IN ('', '[]')
+    )
+)
+"""
 
 
 class Database:
@@ -478,17 +548,31 @@ class RunRepository:
         window_end_utc: datetime,
         started_at: datetime | None = None,
         scan_mode: str = "window",
+        remote_paths: tuple[str, ...] | None = None,
+        recursive: bool | None = None,
+        max_depth: int | None = None,
     ) -> int:
         started = started_at or datetime.now(timezone.utc)
         if scan_mode not in {"window", "full_local_reconciliation"}:
             raise ValueError(f"Modo de exploración no soportado: {scan_mode}.")
+        if max_depth is not None and max_depth < 0:
+            raise ValueError("La profundidad máxima no puede ser negativa.")
+        discovery_paths_json = (
+            json.dumps(remote_paths, ensure_ascii=False)
+            if remote_paths is not None
+            else None
+        )
         with self.database.connect() as database:
             cursor = database.execute(
                 """
                 INSERT INTO runs(
                     connection_id, trigger, window_start_utc, window_end_utc,
-                    started_at, status, scan_mode, phase
-                ) VALUES (?, ?, ?, ?, ?, 'running', ?, 'discovering')
+                    started_at, status, scan_mode, phase,
+                    discovery_paths_json, discovery_recursive,
+                    discovery_max_depth
+                ) VALUES (
+                    ?, ?, ?, ?, ?, 'running', ?, 'discovering', ?, ?, ?
+                )
                 """,
                 (
                     connection_id,
@@ -497,6 +581,9 @@ class RunRepository:
                     _aware_iso(window_end_utc),
                     _aware_iso(started),
                     scan_mode,
+                    discovery_paths_json,
+                    None if recursive is None else int(recursive),
+                    max_depth,
                 ),
             )
             return int(cursor.lastrowid)
@@ -933,6 +1020,8 @@ class RunRepository:
         status: str,
         error_type: str | None = None,
         error_msg: str = "",
+        warnings: Sequence[str] = (),
+        notices: Sequence[str] = (),
     ) -> None:
         with self.database.connect() as database:
             counts = database.execute(
@@ -988,6 +1077,7 @@ class RunRepository:
                 SET finished_at = ?, status = ?, files_found = ?,
                     files_downloaded = ?, files_skipped = ?, files_failed = ?,
                     bytes_downloaded = ?, error_type = ?, error_msg = ?,
+                    warnings_json = ?, notices_json = ?,
                     phase = 'finished'
                 WHERE id = ?
                 """,
@@ -1001,6 +1091,8 @@ class RunRepository:
                     counts["bytes_downloaded"] or 0,
                     error_type,
                     redact_secrets(error_msg),
+                    _messages_json(warnings),
+                    _messages_json(notices),
                     run_id,
                 ),
             )
@@ -1010,10 +1102,11 @@ class RunRepository:
     def last_successful_end(self, connection_id: int) -> datetime | None:
         with self.database.connect() as database:
             row = database.execute(
-                """
+                f"""
                 SELECT window_end_utc
                 FROM runs
-                WHERE connection_id = ? AND status = 'ok'
+                WHERE connection_id = ?
+                  AND {_SUCCESSFUL_RUN_PREDICATE}
                 ORDER BY window_end_utc DESC
                 LIMIT 1
                 """,
@@ -1032,10 +1125,11 @@ class RunRepository:
         expected_end = window_end_utc.astimezone(timezone.utc)
         with self.database.connect() as database:
             rows = database.execute(
-                """
+                f"""
                 SELECT window_start_utc, window_end_utc
                 FROM runs
-                WHERE connection_id = ? AND status = 'ok'
+                WHERE connection_id = ?
+                  AND {_SUCCESSFUL_RUN_PREDICATE}
                 """,
                 (connection_id,),
             ).fetchall()
@@ -1145,16 +1239,21 @@ class RunRepository:
             clauses.append("r.connection_id = ?")
             parameters.append(connection_id)
         if status == "no_files":
-            clauses.append("r.status = 'ok' AND r.files_found = 0")
+            clauses.append(
+                f"{_SUCCESSFUL_RUN_PREDICATE_R} AND r.files_found = 0"
+            )
         elif status == "no_changes":
             clauses.append(
-                "r.status = 'ok' AND r.files_found > 0 "
-                "AND r.files_downloaded = 0"
+                f"{_SUCCESSFUL_RUN_PREDICATE_R} "
+                "AND r.files_found > 0 AND r.files_downloaded = 0"
             )
         elif status == "completed":
             clauses.append(
-                "r.status = 'ok' AND r.files_downloaded > 0"
+                f"{_SUCCESSFUL_RUN_PREDICATE_R} "
+                "AND r.files_downloaded > 0"
             )
+        elif status == "partial":
+            clauses.append(_ACTIONABLE_PARTIAL_PREDICATE_R)
         elif status:
             clauses.append("r.status = ?")
             parameters.append(status)
@@ -1260,9 +1359,16 @@ class RunRepository:
                        r.files_found AS last_files_found,
                        r.files_downloaded AS last_files_downloaded,
                        r.files_skipped AS last_files_skipped,
-                       r.files_failed AS last_files_failed,
-                       r.bytes_downloaded AS last_bytes_downloaded,
-                       r.error_type AS last_error_type
+                        r.files_failed AS last_files_failed,
+                        r.bytes_downloaded AS last_bytes_downloaded,
+                        r.error_type AS last_error_type,
+                        r.error_msg AS last_error_msg,
+                        r.scan_mode AS last_scan_mode,
+                        r.discovery_paths_json AS last_discovery_paths_json,
+                        r.discovery_recursive AS last_discovery_recursive,
+                        r.discovery_max_depth AS last_discovery_max_depth,
+                        r.warnings_json AS last_warnings_json,
+                        r.notices_json AS last_notices_json
                 FROM connections c
                 LEFT JOIN runs r ON r.id = (
                     SELECT r2.id
@@ -1383,6 +1489,16 @@ def _aware_iso(value: datetime) -> str:
     if value.tzinfo is None:
         raise ValueError("Los timestamps de corrida deben incluir zona horaria.")
     return value.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _messages_json(values: Sequence[str]) -> str:
+    """Serialize unique operator messages after the standard redaction."""
+    messages: list[str] = []
+    for value in values:
+        message = redact_secrets(value).strip()
+        if message and message not in messages:
+            messages.append(message)
+    return json.dumps(messages, ensure_ascii=False)
 
 
 def _parse_datetime(value: str) -> datetime:

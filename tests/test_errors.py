@@ -31,6 +31,10 @@ class WindowsNetworkError(OSError):
         (ftplib.error_perm("530 Login incorrect"), ErrorType.AUTH),
         (ftplib.error_perm("550 Permission denied"), ErrorType.PERMISSION),
         (ftplib.error_temp("426 Transfer aborted"), ErrorType.PARTIAL_TRANSFER),
+        (ftplib.Error("Malformed FTP response"), ErrorType.PROTOCOL),
+        (EOFError("FTP control channel closed"), ErrorType.PARTIAL_TRANSFER),
+        (BrokenPipeError("FTP data channel closed"), ErrorType.PARTIAL_TRANSFER),
+        (OSError(errno.EPIPE, "broken pipe"), ErrorType.PARTIAL_TRANSFER),
         (WindowsNetworkError(86), ErrorType.AUTH),
         (WindowsNetworkError(1326), ErrorType.AUTH),
         (WindowsNetworkError(5), ErrorType.PERMISSION),
@@ -184,6 +188,76 @@ def test_wrapped_socket_failure_preserves_network_taxonomy() -> None:
             raise ValueError("SMB failed to connect") from cause
     except ValueError as exc:
         assert classify_exception(exc) == ErrorType.DNS
+
+
+def test_implicit_exception_context_preserves_network_taxonomy() -> None:
+    try:
+        try:
+            raise socket.timeout("timed out")
+        except socket.timeout:
+            raise RuntimeError("listing failed")
+    except RuntimeError as exc:
+        assert exc.__cause__ is None
+        assert classify_exception(exc) == ErrorType.TCP_TIMEOUT
+
+
+def test_suppressed_exception_context_does_not_change_taxonomy() -> None:
+    try:
+        try:
+            raise PermissionError("contexto que se ocultó deliberadamente")
+        except PermissionError:
+            raise ValueError("fallo público") from None
+    except ValueError as exc:
+        assert exc.__suppress_context__ is True
+        assert classify_exception(exc) == ErrorType.UNKNOWN
+
+
+def test_explicit_unknown_cause_takes_precedence_over_implicit_context() -> None:
+    explicit_cause = ValueError("causa explícita")
+    try:
+        try:
+            raise PermissionError("contexto implícito")
+        except PermissionError:
+            raise RuntimeError("fallo exterior") from explicit_cause
+    except RuntimeError as exc:
+        assert exc.__context__ is not None
+        assert exc.__cause__ is explicit_cause
+        assert classify_exception(exc) == ErrorType.UNKNOWN
+
+
+def test_http_connect_ignores_suppressed_tls_context() -> None:
+    request = httpx.Request("GET", "https://example.test/file")
+    try:
+        try:
+            raise ssl.SSLCertVerificationError("certificado anterior")
+        except ssl.SSLError:
+            raise httpx.ConnectError("conexión rechazada", request=request) from None
+    except httpx.ConnectError as exc:
+        assert classify_exception(exc) == ErrorType.TCP_CONNECT
+
+
+def test_exception_chain_cycle_is_safe_and_keeps_generic_errors_unknown() -> None:
+    outer = RuntimeError("outer")
+    inner = ValueError("inner")
+    outer.__cause__ = inner
+    inner.__context__ = outer
+
+    assert classify_exception(outer) == ErrorType.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "exc",
+    (
+        EOFError("closed"),
+        BrokenPipeError("closed"),
+        OSError(errno.EPIPE, "closed"),
+    ),
+)
+def test_closed_stream_failures_are_retryable(exc: BaseException) -> None:
+    error_type = classify_exception(exc)
+
+    assert error_type == ErrorType.PARTIAL_TRANSFER
+    assert is_retryable(error_type)
 
 
 @pytest.mark.parametrize(

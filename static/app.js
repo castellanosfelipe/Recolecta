@@ -88,7 +88,7 @@
   }
 
   const runStatusLabels = {
-    no_files: "Archivos no existentes",
+    no_files: "Sin archivos encontrados",
     no_changes: "Sin archivos nuevos",
     completed: "Descarga completada",
     ok: "Ejecución completada",
@@ -122,7 +122,8 @@
   };
 
   const planStatusLabels = {
-    no_files: "Archivos no existentes",
+    partial: "Simulación con incidencias",
+    no_files: "Sin archivos encontrados",
     no_changes: "Sin archivos nuevos",
     files_ready: "Archivos listos para descargar",
     planned: "Listo para descargar",
@@ -154,6 +155,7 @@
 
   function runStatusLabel(run) {
     const status = runResultStatus(run);
+    if (status === "no_files") return runStatusLabels.no_files;
     return run?.status_label || runStatusLabels[status] || status;
   }
 
@@ -205,10 +207,93 @@
   }
 
   function planResultLabel(result) {
+    if (result?.result_status === "no_files") return planStatusLabels.no_files;
     return result?.result_label
       || planStatusLabels[result?.result_status]
       || result?.result_status
       || "Simulación completada";
+  }
+
+  function normalizeDiscoveryScope(run) {
+    const raw = run?.discovery_scope;
+    const scanMode = String(raw?.scan_mode || run?.scan_mode || "");
+    if (!raw || typeof raw !== "object") {
+      return scanMode === "full_local_reconciliation"
+        ? { scanMode, remotePaths: [], recursive: true, maxDepth: null }
+        : null;
+    }
+    const remotePaths = Array.isArray(raw.remote_paths)
+      ? raw.remote_paths.map((path) => String(path)).filter(Boolean)
+      : [];
+    const recursiveValue = raw.recursive ?? raw.listing_recursive;
+    const recursive = typeof recursiveValue === "boolean"
+      ? recursiveValue
+      : recursiveValue === 0
+        ? false
+        : recursiveValue === 1
+          ? true
+          : null;
+    const depthValue = raw.max_depth ?? raw.listing_max_depth;
+    const parsedDepth = Number(depthValue);
+    const maxDepth = depthValue !== null
+      && depthValue !== undefined
+      && Number.isFinite(parsedDepth)
+      ? Math.max(0, parsedDepth)
+      : null;
+    return { scanMode, remotePaths, recursive, maxDepth };
+  }
+
+  function discoveryTarget(remotePaths) {
+    if (remotePaths.length === 1) return remotePaths[0];
+    if (remotePaths.length > 1) {
+      return `las ${remotePaths.length} rutas remotas configuradas`;
+    }
+    return "cada ruta remota configurada";
+  }
+
+  function noFilesPresentation(run) {
+    const scope = normalizeDiscoveryScope(run);
+    const fallback = {
+      message: "La ejecución terminó correctamente, pero no encontró archivos dentro del alcance configurado.",
+      canConfigureSubfolders: false,
+      focusField: null,
+      actionLabel: null,
+    };
+    if (!scope) return fallback;
+    if (scope.scanMode === "full_local_reconciliation") {
+      return {
+        message: "La comparación completa recorrió el árbol remoto configurado y no encontró archivos.",
+        canConfigureSubfolders: false,
+        focusField: null,
+        actionLabel: null,
+      };
+    }
+    const target = discoveryTarget(scope.remotePaths);
+    if (scope.recursive === false) {
+      return {
+        message: `Se revisó únicamente el nivel inicial de ${target}. Las subcarpetas no se exploraron porque “Buscar también dentro de subcarpetas” estaba desactivado.`,
+        canConfigureSubfolders: true,
+        focusField: "recursive",
+        actionLabel: "Activar búsqueda en subcarpetas",
+      };
+    }
+    if (scope.recursive === true && scope.maxDepth !== null) {
+      if (scope.maxDepth === 0) {
+        return {
+          message: `Se revisó únicamente el nivel inicial de ${target}; la profundidad máxima estaba configurada en 0. No se encontraron archivos dentro de ese alcance.`,
+          canConfigureSubfolders: true,
+          focusField: "max_depth",
+          actionLabel: "Aumentar profundidad",
+        };
+      }
+      return {
+        message: `Se revisó el nivel inicial de ${target} y hasta ${scope.maxDepth} nivel(es) de subcarpetas. No se encontraron archivos dentro de ese alcance.`,
+        canConfigureSubfolders: false,
+        focusField: null,
+        actionLabel: null,
+      };
+    }
+    return fallback;
   }
 
   function toast(message, error = false) {
@@ -316,8 +401,10 @@
 
   function renderSummary(connections) {
     const enabled = connections.filter((item) => item.enabled).length;
-    const ok = connections.filter((item) => item.last_status === "ok").length;
-    const attention = connections.filter((item) => ["failed", "partial"].includes(item.last_status)).length;
+    const successfulResults = new Set(["completed", "no_files", "no_changes", "ok"]);
+    const lastResult = (item) => item.last_result_status || item.last_status || "never_run";
+    const ok = connections.filter((item) => successfulResults.has(lastResult(item))).length;
+    const attention = connections.filter((item) => ["failed", "partial"].includes(lastResult(item))).length;
     const bytes = connections.reduce((sum, item) => sum + Number(item.last_bytes_downloaded || 0), 0);
     $("#hero-active").textContent = state.progress.active_runs || 0;
     $("#summary-stats").innerHTML = [
@@ -501,6 +588,31 @@
     }
   }
 
+  function updateTraversalControls() {
+    const form = $("#connection-form");
+    const recursive = form.elements.namedItem("recursive");
+    const maxDepth = form.elements.namedItem("max_depth");
+    const fullReconciliation = form.elements.namedItem(
+      "full_local_reconciliation",
+    );
+    const summary = $("#traversal-scope-summary");
+    const fullScan = fullReconciliation.checked;
+    recursive.disabled = fullScan;
+    maxDepth.disabled = fullScan || !recursive.checked;
+    if (fullScan) {
+      summary.textContent = "Alcance actual: la comparación completa recorre todo el árbol remoto y no usa el límite de profundidad.";
+      return;
+    }
+    if (!recursive.checked) {
+      summary.textContent = "Alcance actual: solo el nivel inicial de cada ruta remota; las subcarpetas no se exploran.";
+      return;
+    }
+    const depth = Math.max(0, Number(maxDepth.value) || 0);
+    summary.textContent = depth === 0
+      ? "Alcance actual: solo el nivel inicial; aumenta la profundidad para entrar en subcarpetas."
+      : `Alcance actual: nivel inicial y hasta ${depth} nivel(es) de subcarpetas.`;
+  }
+
   function openConnection(id = null) {
     if (state.connectionSaving) return;
     setConnectionDialogBusy(false);
@@ -531,6 +643,7 @@
       form.elements.id.value = item.id;
     }
     updateTlsModeField();
+    updateTraversalControls();
     invalidateConnectionValidation();
     const dialog = $("#connection-dialog");
     dialog.showModal();
@@ -554,6 +667,8 @@
     }
     payload.enabled = form.elements.enabled.checked;
     payload.recursive = form.elements.recursive.checked;
+    const maxDepth = form.elements.namedItem("max_depth").value;
+    payload.max_depth = maxDepth === "" ? null : Number(maxDepth);
     payload.full_local_reconciliation = (
       form.elements.full_local_reconciliation.checked
     );
@@ -594,6 +709,8 @@
     const saveButton = $("#connection-save-button");
     saveButton.textContent = busy ? "Guardando…" : "Guardar conexión";
     if (!busy) {
+      updateTlsModeField();
+      updateTraversalControls();
       $("#connection-test-button").disabled = false;
       saveButton.disabled = (
         state.connectionValidatedRevision
@@ -607,6 +724,28 @@
     const element = $("#connection-validation-status");
     element.textContent = message;
     element.className = `validation-status${status ? ` ${status}` : ""}`;
+  }
+
+  function showConnectionValidationSuccess(result) {
+    const element = $("#connection-validation-status");
+    const remotePaths = Array.isArray(result.remote_paths)
+      ? result.remote_paths
+      : [];
+    const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+    const count = Math.max(0, Number(result.remote_files_found) || 0);
+    const isExact = result.remote_files_found_is_exact !== false;
+    const inventory = isExact
+      ? `Conteo del nivel inicial: ${count.toLocaleString("es-CO")} archivo(s). Esta prueba no recorre subcarpetas.`
+      : `Muestra acotada: se validaron ${count.toLocaleString("es-CO")} archivo(s) del nivel inicial; el inventario puede ser mayor.`;
+    const warningContent = warnings.length
+      ? `<strong>Advertencias (${warnings.length})</strong><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
+      : "<span>Sin advertencias de validación.</span>";
+    element.className = "validation-status valid";
+    element.innerHTML = `
+      <strong>Validación correcta</strong>
+      <span>${remotePaths.length.toLocaleString("es-CO")} ruta(s) remota(s) accesible(s) y destino local escribible.</span>
+      <span>${escapeHtml(inventory)}</span>
+      ${warningContent}`;
   }
 
   function invalidateConnectionValidation(
@@ -708,13 +847,7 @@
       state.connectionValidatedRevision = revision;
       state.connectionValidatedFingerprint = fingerprint;
       $("#connection-save-button").disabled = false;
-      const warning = result.warnings?.length
-        ? ` Advertencias: ${result.warnings.join(" ")}`
-        : "";
-      setConnectionValidationStatus(
-        `Validación correcta: ${result.remote_paths.length} ruta(s) remota(s) accesible(s) y destino local escribible.${warning}`,
-        "valid",
-      );
+      showConnectionValidationSuccess(result);
       toast("Conexión y rutas validadas. Ya puedes guardar.");
     } catch (error) {
       if (requestId !== state.connectionValidationRequest) return;
@@ -853,13 +986,19 @@
 
   function showSimulationResult(result) {
     const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+    const notices = Array.isArray(result.notices) ? result.notices : [];
     const counters = Object.entries(result.counters || {})
       .filter(([, count]) => Number(count) > 0);
     const items = Array.isArray(result.items) ? result.items : [];
+    const simulatedNoFiles = result.result_status === "no_files"
+      ? noFilesPresentation(result)
+      : null;
     const detail = result.result_status === "no_files"
-      ? "No se encontraron archivos en las rutas remotas configuradas."
+      ? simulatedNoFiles.message
       : result.result_status === "no_changes"
         ? "Los archivos encontrados no requieren una nueva descarga."
+        : result.result_status === "partial"
+          ? "La simulación detectó incidencias que deben corregirse antes de ejecutar la descarga."
         : `${result.files_to_download} archivo(s) están listos para descargar.`;
     const counterContent = counters.length
       ? counters.map(([status, count]) => `
@@ -871,6 +1010,12 @@
           <ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>
         </section>`
       : `<p class="simulation-ok">La simulación no generó advertencias.</p>`;
+    const noticeContent = notices.length
+      ? `<section class="simulation-section simulation-notices" aria-labelledby="simulation-notices-title">
+          <h3 id="simulation-notices-title">Observaciones (${notices.length})</h3>
+          <ul>${notices.map((notice) => `<li>${escapeHtml(notice)}</li>`).join("")}</ul>
+        </section>`
+      : "";
     const itemContent = items.length
       ? `<div class="table-panel simulation-table"><table>
           <caption>Muestra de ${items.length} elemento(s) evaluado(s)</caption>
@@ -895,6 +1040,7 @@
         <span>Resultado</span><strong>${escapeHtml(planResultLabel(result))}</strong><p>${escapeHtml(detail)}</p>
       </div>
       ${warningContent}
+      ${noticeContent}
       <section class="simulation-section" aria-labelledby="simulation-counters-title">
         <h3 id="simulation-counters-title">Contadores del plan</h3>
         <dl class="counter-grid">${counterContent}</dl>
@@ -980,13 +1126,20 @@
   async function showRunDetail(id) {
     try {
       const run = await api(`/api/runs/${id}`);
+      const warnings = Array.isArray(run.warnings) ? run.warnings : [];
+      const notices = Array.isArray(run.notices) ? run.notices : [];
       const resultStatus = runResultStatus(run);
       const resultLabel = runStatusLabel(run);
+      const noFiles = resultStatus === "no_files"
+        ? noFilesPresentation(run)
+        : null;
       const causeTitle = run.error_msg || run.error_type ? "Causa reportada" : "Resultado";
       const causeMessage = run.error_msg
-        || run.status_detail
+        || (noFiles
+          ? noFiles.message
+          : run.status_detail
         || (resultStatus === "no_files"
-          ? "No se encontraron archivos en las rutas remotas configuradas durante esta ejecución."
+          ? "La ejecución terminó correctamente, pero no encontró archivos dentro del alcance configurado."
           : resultStatus === "no_changes"
             ? "Se encontraron archivos, pero ninguno requería una nueva descarga."
             : resultStatus === "completed"
@@ -997,9 +1150,9 @@
                   ? "La ejecución fue cancelada antes de completar el procesamiento."
                   : resultStatus === "failed"
                     ? "La ejecución terminó con un error antes de completar el procesamiento."
-                    : "Consulta los archivos y métricas registrados para esta ejecución.");
+                    : "Consulta los archivos y métricas registrados para esta ejecución."));
       const emptyFilesMessage = resultStatus === "no_files"
-        ? "No se encontraron archivos en las rutas remotas configuradas."
+        ? noFiles.message
         : resultStatus === "no_changes"
           ? "No hubo archivos que requirieran una nueva descarga."
           : resultStatus === "failed"
@@ -1007,6 +1160,18 @@
             : resultStatus === "cancelled"
               ? "La ejecución se canceló antes de registrar archivos."
               : "No hay registros de archivos para esta ejecución.";
+      const noticeContent = notices.length
+        ? `<section class="simulation-section run-notices" aria-labelledby="run-notices-title">
+            <h3 id="run-notices-title">Observaciones técnicas</h3>
+            <ul>${notices.map((notice) => `<li>${escapeHtml(notice)}</li>`).join("")}</ul>
+          </section>`
+        : "";
+      const warningContent = warnings.length
+        ? `<section class="simulation-section run-warnings" aria-labelledby="run-warnings-title">
+            <h3 id="run-warnings-title">Incidencias detectadas</h3>
+            <ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>
+          </section>`
+        : "";
       $("#detail-content").innerHTML = `
         <div class="detail-grid">
           <div><span>Conexión</span><strong>${escapeHtml(run.connection_name)}</strong></div>
@@ -1022,6 +1187,9 @@
           <strong>${escapeHtml(resultLabel)}</strong>
           <p>${escapeHtml(causeMessage)}</p>
         </div>
+        ${warningContent}
+        ${noticeContent}
+        ${noFiles?.canConfigureSubfolders ? `<div class="detail-actions"><button class="btn secondary small" type="button" data-configure-subfolders="${run.connection_id}" data-configure-focus="${noFiles.focusField}">${escapeHtml(noFiles.actionLabel)}</button></div>` : ""}
         <p><a class="btn secondary small" href="/api/runs/${run.id}/log.jsonl">Descargar log JSONL</a></p>
         <div class="table-panel"><table><caption class="sr-only">Archivos registrados en la corrida ${run.id}</caption><thead><tr><th>Archivo</th><th>Estado</th><th>Tamaño</th><th>Detalle</th></tr></thead><tbody>
           ${run.files.length ? run.files.map((file) => `<tr><td class="path-cell mono">${escapeHtml(file.remote_path)}</td><td>${fileStatusBadge(file)}</td><td>${escapeHtml(formatBytes(file.size_bytes))}</td><td>${escapeHtml(file.error_msg || file.reason || "—")}</td></tr>`).join("") : `<tr><td colspan="4">${escapeHtml(emptyFilesMessage)}</td></tr>`}
@@ -1037,6 +1205,19 @@
     if (!target) return;
     if (target.dataset.closeDialog) {
       document.getElementById(target.dataset.closeDialog)?.close();
+      return;
+    }
+    if (target.dataset.configureSubfolders) {
+      $("#detail-dialog").close();
+      openConnection(target.dataset.configureSubfolders);
+      window.requestAnimationFrame(() => {
+        const focusField = target.dataset.configureFocus === "max_depth"
+          ? "max_depth"
+          : "recursive";
+        $("#connection-form").elements.namedItem(focusField).focus({
+          preventScroll: true,
+        });
+      });
       return;
     }
     if (target.dataset.go) setView(target.dataset.go);
@@ -1143,13 +1324,23 @@
     $("#new-connection-button").addEventListener("click", () => openConnection());
     $("#refresh-button").addEventListener("click", refreshAll);
     $("#connection-form").addEventListener("submit", submitConnection);
-    $("#connection-form").addEventListener("input", () => {
+    $("#connection-form").addEventListener("input", (event) => {
+      if (["recursive", "max_depth", "full_local_reconciliation"].includes(
+        event.target.name,
+      )) {
+        updateTraversalControls();
+      }
       invalidateConnectionValidation(
         "Los datos cambiaron. Vuelve a probar la conexión y sus rutas.",
       );
     });
     $("#connection-form").addEventListener("change", (event) => {
       if (event.target.name === "protocol") updateTlsModeField();
+      if (["recursive", "max_depth", "full_local_reconciliation"].includes(
+        event.target.name,
+      )) {
+        updateTraversalControls();
+      }
       invalidateConnectionValidation(
         "Los datos cambiaron. Vuelve a probar la conexión y sus rutas.",
       );

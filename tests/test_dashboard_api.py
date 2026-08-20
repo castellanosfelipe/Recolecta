@@ -99,6 +99,7 @@ def test_connection_crud_duplicate_and_secret_never_leaks(tmp_path: Path) -> Non
         duplicate = client.post(
             f"/api/connections/{created.json()['id']}/duplicate"
         )
+        dashboard = client.get("/api/dashboard")
         paused_run = client.post(
             f"/api/connections/{duplicate.json()['id']}/run"
         )
@@ -115,6 +116,11 @@ def test_connection_crud_duplicate_and_secret_never_leaks(tmp_path: Path) -> Non
     assert duplicate.json()["enabled"] is False
     assert duplicate.json()["has_secret"] is False
     assert paused_run.status_code == 409
+    for item in dashboard.json()["connections"]:
+        assert item["last_discovery_scope"] is None
+        assert "last_discovery_paths_json" not in item
+        assert "last_discovery_recursive" not in item
+        assert "last_discovery_max_depth" not in item
 
 
 def test_draft_validation_uses_new_or_stored_secret_without_persisting(
@@ -299,8 +305,15 @@ def test_history_files_dashboard_settings_and_csv(tmp_path: Path) -> None:
         window_start_utc=started - timedelta(days=1),
         window_end_utc=started,
         started_at=started,
+        remote_paths=("/in",),
+        recursive=False,
+        max_depth=3,
     )
-    runs.finish_run(run_id, status="ok")
+    runs.finish_run(
+        run_id,
+        status="ok",
+        notices=("Se usó LIST por compatibilidad con el servidor FTP.",),
+    )
     with client:
         history = client.get("/api/runs?status=ok")
         detail = client.get(f"/api/runs/{run_id}")
@@ -324,11 +337,32 @@ def test_history_files_dashboard_settings_and_csv(tmp_path: Path) -> None:
     assert history.json()["items"][0]["status"] == "ok"
     assert history.json()["items"][0]["result_status"] == "no_files"
     assert history.json()["items"][0]["status_label"] == (
-        "Archivos no existentes"
+        "Sin archivos encontrados"
     )
+    assert history.json()["items"][0]["discovery_scope"] == {
+        "remote_paths": ["/in"],
+        "recursive": False,
+        "max_depth": 3,
+    }
+    assert history.json()["items"][0]["warnings"] == []
+    assert history.json()["items"][0]["notices"] == [
+        "Se usó LIST por compatibilidad con el servidor FTP."
+    ]
+    assert "subcarpetas no se exploraron" in history.json()["items"][0][
+        "status_detail"
+    ]
     assert detail.json()["status"] == "ok"
     assert detail.json()["result_status"] == "no_files"
-    assert detail.json()["status_label"] == "Archivos no existentes"
+    assert detail.json()["status_label"] == "Sin archivos encontrados"
+    assert detail.json()["discovery_scope"] == {
+        "remote_paths": ["/in"],
+        "recursive": False,
+        "max_depth": 3,
+    }
+    assert detail.json()["warnings"] == []
+    assert detail.json()["notices"] == [
+        "Se usó LIST por compatibilidad con el servidor FTP."
+    ]
     assert detail.json()["files"] == []
     assert detail.json()["files_returned"] == 0
     assert detail.json()["files_truncated"] is False
@@ -337,8 +371,27 @@ def test_history_files_dashboard_settings_and_csv(tmp_path: Path) -> None:
         "no_files"
     )
     assert dashboard.json()["connections"][0]["last_status_label"] == (
-        "Archivos no existentes"
+        "Sin archivos encontrados"
     )
+    assert dashboard.json()["connections"][0]["last_discovery_scope"] == {
+        "remote_paths": ["/in"],
+        "recursive": False,
+        "max_depth": 3,
+    }
+    assert dashboard.json()["connections"][0]["last_warnings"] == []
+    assert dashboard.json()["connections"][0]["last_notices"] == [
+        "Se usó LIST por compatibilidad con el servidor FTP."
+    ]
+    assert "subcarpetas no se exploraron" in dashboard.json()["connections"][
+        0
+    ]["last_status_detail"]
+    dashboard_connection = dashboard.json()["connections"][0]
+    assert "last_discovery_paths_json" not in dashboard_connection
+    assert "last_discovery_recursive" not in dashboard_connection
+    assert "last_discovery_max_depth" not in dashboard_connection
+    assert "last_warnings_json" not in dashboard_connection
+    assert "last_notices_json" not in dashboard_connection
+    assert "last_error_msg" not in dashboard_connection
     assert settings.json()["values"]["concurrency.global"] == 3
     assert settings.json()["values"]["schedule.hour"] == 3
     assert settings.json()["values"]["schedule.minute"] == 15
@@ -347,6 +400,48 @@ def test_history_files_dashboard_settings_and_csv(tmp_path: Path) -> None:
     assert exported.text.startswith("id,run_id,connection_name")
     assert rejected_secret.status_code == 422
     assert "no-guardar" not in rejected_secret.text
+
+
+def test_legacy_run_api_does_not_infer_scope_from_edited_connection(
+    tmp_path: Path,
+) -> None:
+    client, connections, runs = api(tmp_path)
+    saved = connections.create(
+        Connection(
+            name="Histórica",
+            host="example.test",
+            remote_paths=("/original",),
+            recursive=False,
+            max_depth=0,
+        )
+    )
+    started = datetime(2026, 7, 27, 3, tzinfo=timezone.utc)
+    run_id = runs.start_run(
+        connection_id=saved.id,
+        trigger="manual",
+        window_start_utc=started - timedelta(days=1),
+        window_end_utc=started,
+        started_at=started,
+    )
+    runs.finish_run(run_id, status="ok")
+    connections.update(
+        saved.id,
+        {
+            "remote_paths": ("/entrada",),
+            "recursive": True,
+            "max_depth": 9,
+        },
+    )
+
+    with client:
+        detail = client.get(f"/api/runs/{run_id}")
+
+    assert detail.status_code == 200
+    assert detail.json()["discovery_scope"] is None
+    assert detail.json()["status_detail"] == (
+        "La conexión respondió correctamente, pero no se encontraron "
+        "archivos dentro del alcance configurado."
+    )
 
 
 def test_run_detail_returns_at_most_500_files_and_reports_truncation(
@@ -496,7 +591,7 @@ def test_run_filters_use_visual_results_without_hiding_canonical_status(
     assert failed.json()["status"] == "failed"
     assert failed.json()["result_status"] == "failed"
     assert failed.json()["status_label"] == "Ruta remota no existente"
-    assert failed.json()["status_label"] != "Archivos no existentes"
+    assert failed.json()["status_label"] != "Sin archivos encontrados"
 
 
 def test_connection_error_paths_progress_and_delete(tmp_path: Path) -> None:

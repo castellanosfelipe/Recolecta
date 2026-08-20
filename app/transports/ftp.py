@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import BinaryIO, Callable
 from zoneinfo import ZoneInfo
 
+from app.errors import ErrorType, RecolectaError
 from app.models import Connection, Protocol
 from app.transports.base import (
     DirectoryWorkQueue,
@@ -172,7 +173,11 @@ class FtpTransport(Transport):
         try:
             ftp.voidcmd("TYPE I")
             size = ftp.size(path)
-        except ftplib.all_errors:
+        except AttributeError:
+            size = None
+        except ftplib.error_perm as exc:
+            if not _is_unsupported_command(exc):
+                raise
             size = None
         modified = self._mdtm(ftp, path)
         if modified is not None:
@@ -266,7 +271,7 @@ class FtpTransport(Transport):
                         directories.add(remote_path, depth + 1)
                     continue
                 if entry_type not in {"file"} and not is_symlink:
-                    continue
+                    raise _unparseable_listing_error("MLSD")
                 size = _parse_int(facts.get("size"))
                 # MLSD already reports RFC 3659 UTC metadata. Issuing MDTM
                 # here would require a second command per file and is invalid
@@ -306,19 +311,31 @@ class FtpTransport(Transport):
         depth: int,
         directories: DirectoryWorkQueue,
     ) -> Iterator[RemoteFile]:
+        parsed_entries = 0
+        nonempty_header = False
         for line in _iter_ftp_lines(
             ftp,
             f"LIST {path}",
             on_encoding_fallback=self._record_ansi_fallback,
         ):
-            parsed = _parse_list_line(
-                line,
-                server_zone=ZoneInfo(self.connection.timezone),
-                now=self._now(),
-            )
+            try:
+                parsed = _parse_list_line(
+                    line,
+                    server_zone=ZoneInfo(self.connection.timezone),
+                    now=self._now(),
+                )
+            except (OverflowError, ValueError) as exc:
+                raise _unparseable_listing_error("LIST") from exc
             if parsed is None:
+                header_total = _list_header_total(line)
+                if header_total is None and line.strip():
+                    raise _unparseable_listing_error("LIST")
+                nonempty_header = nonempty_header or bool(header_total)
                 continue
+            parsed_entries += 1
             name, is_dir, is_symlink, size, modified = parsed
+            if name in {".", ".."}:
+                continue
             remote_path = posixpath.join(path.rstrip("/"), name) or "/"
             if is_dir:
                 if recursive and not is_symlink and depth < max_depth:
@@ -332,6 +349,8 @@ class FtpTransport(Transport):
                 timestamp_source="LIST",
                 is_symlink=is_symlink,
             )
+        if nonempty_header and parsed_entries == 0:
+            raise _unparseable_listing_error("LIST")
 
     def _record_ansi_fallback(self) -> None:
         self._command_encoding = "cp1252"
@@ -341,7 +360,11 @@ class FtpTransport(Transport):
     def _mdtm(ftp: ftplib.FTP, remote_path: str) -> datetime | None:
         try:
             response = ftp.sendcmd(f"MDTM {remote_path}")
-        except ftplib.all_errors:
+        except AttributeError:
+            return None
+        except ftplib.error_perm as exc:
+            if not _is_unsupported_command(exc):
+                raise
             return None
         if not response.startswith("213 "):
             return None
@@ -395,10 +418,13 @@ def _iter_mlsd_entries(
     """Stream MLSD on real clients while retaining lightweight test doubles."""
     try:
         ftp.sendcmd("OPTS MLST type;size;modify;")
-    except (AttributeError, ftplib.Error):
+    except AttributeError:
         # OPTS only selects preferred facts. Some servers reject it while
         # still implementing MLSD, so MLSD itself is authoritative.
         pass
+    except ftplib.error_perm as exc:
+        if not _is_unsupported_command(exc):
+            raise
     if not callable(getattr(ftp, "transfercmd", None)):
         yield from ftp.mlsd(
             path,
@@ -411,14 +437,16 @@ def _iter_mlsd_entries(
         on_encoding_fallback=on_encoding_fallback,
     ):
         facts_text, separator, name = line.partition(" ")
-        if not separator:
-            continue
+        if not separator or not name.strip():
+            raise _unparseable_listing_error("MLSD")
         facts: dict[str, str] = {}
         for raw_fact in facts_text.split(";"):
             if not raw_fact or "=" not in raw_fact:
                 continue
             key, value = raw_fact.split("=", 1)
             facts[key.lower()] = value
+        if "type" not in facts:
+            raise _unparseable_listing_error("MLSD")
         yield name, facts
 
 
@@ -474,8 +502,38 @@ def _enable_utf8_best_effort(ftp: ftplib.FTP) -> None:
     """Ask for UTF-8 without rejecting otherwise usable legacy servers."""
     try:
         ftp.sendcmd("OPTS UTF8 ON")
-    except (AttributeError, ftplib.Error):
+    except AttributeError:
         pass
+    except ftplib.error_perm as exc:
+        if not _is_unsupported_command(exc):
+            raise
+
+
+def _is_unsupported_command(exc: ftplib.error_perm) -> bool:
+    return str(exc).lstrip().startswith(_MLSD_UNSUPPORTED)
+
+
+def _list_header_total(line: str) -> int | None:
+    stripped = line.strip()
+    if not stripped:
+        return 0
+    match = re.fullmatch(
+        r"total\s+(\d+)",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    return int(match.group(1)) if match is not None else None
+
+
+def _unparseable_listing_error(command: str) -> RecolectaError:
+    return RecolectaError(
+        ErrorType.PROTOCOL,
+        (
+            f"El servidor FTP devolvió una entrada {command} que Recolecta "
+            "no pudo interpretar. No se continuó para evitar omitir "
+            "archivos del origen."
+        ),
+    )
 
 
 def _parse_list_line(

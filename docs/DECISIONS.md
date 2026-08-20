@@ -54,7 +54,7 @@ Ventana, quiet period, globs, tamaños, symlinks y deduplicación se aplican en 
 
 ## D-014 · Jerarquía temporal FTP con degradación explícita
 
-FTP usa `modify` de `MLSD` durante listados —UTC según RFC 3659— y reserva `MDTM` para `stat` de un archivo individual. Esto evita un comando adicional por cada documento y permite inventarios de millones. Si el servidor no implementa MLSD, cae a `LIST`; esos resultados se conservan para operación, pero producen advertencias y un plan parcial por su precisión limitada.
+FTP usa `modify` de `MLSD` durante listados —UTC según RFC 3659— y reserva `MDTM` para `stat` de un archivo individual. Esto evita un comando adicional por cada documento. Si el servidor no implementa MLSD, cae a `LIST`; la precisión temporal limitada queda registrada como observación técnica, pero no convierte una corrida sin archivos fallidos en parcial.
 
 ## D-015 · Adaptadores de metadatos sin lectura de contenido
 
@@ -104,7 +104,7 @@ APScheduler mantiene un `CronTrigger` por conexión con su propia zona IANA. Par
 
 ## D-023 · Catch-up asociado por ventana, no por fecha de proceso
 
-Una ventana se considera atendida únicamente si existe una corrida `ok` con los mismos límites UTC. El catch-up examina hasta `catchup.max_days`, ordena candidatos del más antiguo al reciente y vuelve a comprobar dentro del coordinador para cerrar carreras con un misfire de APScheduler. La hora nominal calcula la ventana, mientras `runs.started_at` conserva la hora real de ejecución.
+Una ventana se considera atendida si existe una corrida `ok` con los mismos límites UTC. Por compatibilidad, también se reconoce un `partial` creado por versiones anteriores únicamente cuando no tiene archivos fallidos, `error_type`, mensaje de error ni advertencias accionables persistidas: esas versiones elevaban observaciones FTP benignas a parcial. El catch-up examina hasta `catchup.max_days`, ordena candidatos del más antiguo al reciente y vuelve a comprobar dentro del coordinador para cerrar carreras con un misfire de APScheduler. La hora nominal calcula la ventana, mientras `runs.started_at` conserva la hora real de ejecución.
 
 ## D-024 · Recuperación conservadora de estados interrumpidos
 
@@ -274,7 +274,9 @@ la credencial cifrada existente solo en memoria; escribir uno nuevo lo prueba
 sin guardarlo. Si cambia servidor, puerto, protocolo, usuario o autenticación,
 debe volver a ingresarlo para impedir que una credencial almacenada se envíe
 silenciosamente a otro destino. La validación exige al menos una ruta remota,
-autentica y lista cada raíz sin recursión ni descarga.
+autentica y lista cada raíz sin recursión ni descarga. Ese listado confirma el
+acceso a la raíz, pero no demuestra que no existan archivos en subcarpetas; la
+corrida operativa aplica `recursive` y `max_depth` según la conexión.
 
 El destino local y su plantilla se resuelven con las mismas reglas de operación
 y se prueban creando, escribiendo, renombrando y eliminando un archivo
@@ -308,18 +310,28 @@ existentes.
 
 Para la presentación se deriva `result_status` después de evaluar el estado
 canónico: `ok` con `files_found=0` produce `no_files` y la etiqueta
-**Archivos no existentes**; `ok` con archivos encontrados pero ninguno
+**Sin archivos encontrados**; `ok` con archivos encontrados pero ninguno
 descargado produce `no_changes` y **Sin archivos nuevos**; `ok` con al menos
-una descarga produce `completed` y **Descarga completada**. `partial`,
-`running` y `cancelled` se explican respectivamente como **Completada con
-incidencias**, **En ejecución** y **Cancelada por el usuario**.
+una descarga produce `completed` y **Descarga completada**. `partial` solo se
+usa como **Completada con incidencias** cuando hubo archivos fallidos, rutas
+aisladas u otra causa accionable. Las degradaciones compatibles de listado o
+precisión se guardan como observaciones y no alteran el resultado. Los
+`partial` históricos sin fallos, categoría, mensaje ni advertencias accionables
+conservan su valor de auditoría, pero se presentan según su resultado real.
+`running` y `cancelled` se explican
+como **En ejecución** y **Cancelada por el usuario**.
+
+`no_files` expresa cero archivos dentro del alcance recorrido, no inexistencia
+absoluta en el servidor. Sin recursión se inspecciona solo el nivel inicial de
+cada raíz; con recursión se incluyen subcarpetas hasta `max_depth`. La
+comparación completa constituye un alcance distinto y recorre todo el árbol
+remoto configurado.
 
 La precedencia evita que un fallo de autenticación, red o ruta con cero
 archivos se confunda con un listado vacío. Una corrida `failed` conserva ese
 estado y obtiene una etiqueta accionable desde `error_type`, con una causa
 genérica solo para códigos desconocidos. API y exports preservan `status` y
-pueden añadir `result_status` y `status_label`, sin migrar ni reinterpretar el
-historial.
+pueden añadir `result_status` y `status_label`, sin reescribir el historial.
 
 ## D-050 · Árbol remoto, reconciliación unidireccional y cola acotada
 

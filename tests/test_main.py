@@ -8,7 +8,7 @@ from cryptography.fernet import Fernet
 from app.config import AppConfig, AppPaths
 from app.db import ConnectionRepository, Database
 from app.downloader import StagingCleanupResult
-from app.main import _cleanup_runtime_staging, build_runtime
+from app.main import _cleanup_runtime_staging, _tray_status, build_runtime
 from app.models import Connection
 from app.platform.secrets_fernet import FernetSecretStore
 from app.settings_store import SettingsStore
@@ -123,3 +123,25 @@ def test_runtime_cleanup_warns_and_continues_after_destination_errors(
     assert "el arranque continuará" in caplog.text
     assert "2 errores" in caplog.text
     assert "1 parciales y 4 bytes" in caplog.text
+
+
+def test_tray_uses_derived_status_for_legacy_and_actionable_partials() -> None:
+    summary = {
+        "enabled": 1,
+        "last_status": "partial",
+        "last_files_found": 0,
+        "last_files_downloaded": 0,
+        "last_files_failed": 0,
+        "last_error_type": None,
+        "last_error_msg": "",
+        "last_warnings_json": "[]",
+    }
+    runtime = SimpleNamespace(
+        progress=SimpleNamespace(snapshot=lambda: {"active": False}),
+        runs=SimpleNamespace(dashboard_summary=lambda: [summary]),
+    )
+
+    assert _tray_status(runtime) == "ok"
+
+    summary["last_warnings_json"] = '["ruta aislada"]'
+    assert _tray_status(runtime) == "partial"

@@ -84,6 +84,11 @@ def test_connection_import_schedule_and_dialog_close_controls_are_exposed(
     assert 'name="recursive" type="checkbox"' in page
     assert 'name="max_depth" type="number" min="0" value="3"' in page
     assert 'name="full_local_reconciliation" type="checkbox"' in page
+    assert "Buscar también dentro de subcarpetas" in page
+    assert "revisa únicamente los archivos ubicados directamente" in page
+    assert 'id="traversal-scope-summary"' in page
+    assert "Alcance actual: solo el nivel inicial" in page
+    assert "1 incluye las subcarpetas inmediatas" in page
     assert "Comparación completa" in page
     assert "repara archivos ausentes o diferentes" in page
     assert "conserva los extras locales" in page
@@ -144,9 +149,22 @@ def test_connection_import_schedule_and_dialog_close_controls_are_exposed(
     assert "input.checked = previous" in script
     assert "Comparación completa habilitada." in script
     assert "payload.recursive = form.elements.recursive.checked" in script
+    assert 'form.elements.namedItem("max_depth").value' in script
     assert "payload.full_local_reconciliation" in script
+    assert "updateTraversalControls" in script
+    assert "recursive.disabled = fullScan" in script
+    assert "maxDepth.disabled = fullScan || !recursive.checked" in script
+    assert "la comparación completa recorre todo el árbol remoto" in script
+    assert "las subcarpetas no se exploran" in script
+    assert "showConnectionValidationSuccess(result)" in script
+    assert "Conteo del nivel inicial" in script
+    assert "Muestra acotada" in script
+    assert "Advertencias (${warnings.length})" in script
     assert ".reconciliation-action" in styles
     assert ".check-with-help" in styles
+    assert ".traversal-scope-summary" in styles
+    assert ".validation-status ul" in styles
+    assert ".detail-actions" in styles
 
 
 def test_dashboard_exposes_descriptive_domain_specific_statuses(
@@ -159,7 +177,7 @@ def test_dashboard_exposes_descriptive_domain_specific_statuses(
         styles = client.get("/static/app.css").text
 
     for value, label in (
-        ("no_files", "Archivos no existentes"),
+        ("no_files", "Sin archivos encontrados"),
         ("no_changes", "Sin archivos nuevos"),
         ("completed", "Descarga completada"),
         ("partial", "Completada con incidencias"),
@@ -168,6 +186,19 @@ def test_dashboard_exposes_descriptive_domain_specific_statuses(
     ):
         assert f'<option value="{value}">{label}</option>' in page
         assert f'{value}: "{label}"' in script
+
+    assert "Archivos no existentes" not in page
+    assert "Archivos no existentes" not in script
+    assert "dentro del alcance configurado" in script
+    assert "simulatedNoFiles" in script
+    assert "noFilesPresentation(run)" in script
+    assert 'data-configure-subfolders="${run.connection_id}"' in script
+    assert 'data-configure-focus="${noFiles.focusField}"' in script
+    assert "Activar búsqueda en subcarpetas" in script
+    assert "Aumentar profundidad" in script
+    assert "target.dataset.configureSubfolders" in script
+    assert 'target.dataset.configureFocus === "max_depth"' in script
+    assert "elements.namedItem(focusField).focus" in script
 
     for value, label in (
         ("pending", "Pendiente de descarga"),
@@ -186,6 +217,16 @@ def test_dashboard_exposes_descriptive_domain_specific_statuses(
     assert "alertStatusBadge(alert)" in script
     assert ".status.no_files" in styles
     assert ".status.no_changes" in styles
+    summary_renderer = script[
+        script.index("function renderSummary(connections)") :
+        script.index("function renderConnectionCards(items)")
+    ]
+    assert "item.last_result_status || item.last_status" in summary_renderer
+    assert 'successfulResults.has(lastResult(item))' in summary_renderer
+    assert '["failed", "partial"].includes(lastResult(item))' in (
+        summary_renderer
+    )
+    assert 'item.last_status === "ok"' not in summary_renderer
 
 
 def test_dashboard_exposes_responsive_and_accessible_interactions(
@@ -219,6 +260,26 @@ def test_dashboard_exposes_responsive_and_accessible_interactions(
     assert "Muestra del plan" in script
     assert "result.items_truncated" in script
     assert "result.warnings" in script
+    assert "result.notices" in script
+    assert 'partial: "Simulación con incidencias"' in script
+    assert "La simulación detectó incidencias" in script
+    assert "run.warnings" in script
+    assert "run.notices" in script
+    assert '<h3 id="run-warnings-title">Incidencias detectadas</h3>' in script
+    assert "warnings.map((warning)" in script
+    assert "const warningContent = warnings.length" in script
+    assert "Observaciones (${notices.length})" in script
+    assert '<h3 id="run-notices-title">Observaciones técnicas</h3>' in script
+    assert "notices.map((notice)" in script
+    assert "escapeHtml(notice)" in script
+    assert "const noticeContent = notices.length" in script
+    assert "${noticeContent}" in script
+    history_renderer = script[
+        script.index("function renderHistory()") :
+        script.index("function renderFiles()")
+    ]
+    assert "runStatusBadge(run)" in history_renderer
+    assert ".notices" not in history_renderer
     assert '<caption>Muestra de ${items.length}' in script
 
     assert 'name="ssl_mode"' in page

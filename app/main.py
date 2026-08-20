@@ -35,6 +35,7 @@ from app.run_logging import RunLogStore
 from app.retention import RetentionService
 from app.scheduler import SchedulerService, SchedulerSettings
 from app.settings_store import SettingsStore
+from app.statuses import SUCCESSFUL_RUN_RESULTS, enrich_run
 from app.throttle import ThrottleManager
 
 
@@ -346,11 +347,25 @@ def _tray_status(runtime: RuntimeComponents) -> str:
     if runtime.progress.snapshot()["active"]:
         return "running"
     summaries = runtime.runs.dashboard_summary()
-    statuses = {item["last_status"] for item in summaries if item["enabled"]}
+    statuses = {
+        enrich_run(
+            {
+                "status": item["last_status"],
+                "files_found": item.get("last_files_found"),
+                "files_downloaded": item.get("last_files_downloaded"),
+                "files_failed": item.get("last_files_failed"),
+                "error_type": item.get("last_error_type"),
+                "error_msg": item.get("last_error_msg"),
+                "warnings_json": item.get("last_warnings_json"),
+            }
+        )["result_status"]
+        for item in summaries
+        if item["enabled"]
+    }
     if "failed" in statuses:
         return "failed"
     if "partial" in statuses:
         return "partial"
-    if "ok" in statuses:
+    if statuses & SUCCESSFUL_RUN_RESULTS:
         return "ok"
     return "paused"

@@ -103,7 +103,7 @@ def test_planner_classifies_every_filter_and_dedupe() -> None:
     assert sum(plan.counters.values()) == 11
 
 
-def test_unreliable_timestamps_make_plan_partial() -> None:
+def test_unreliable_timestamps_are_observations_not_incidents() -> None:
     started = datetime(2026, 7, 27, 2, tzinfo=timezone.utc)
     listing = ListingResult(
         (remote("legacy.csv", when=started - timedelta(hours=2), reliable=False),),
@@ -115,9 +115,10 @@ def test_unreliable_timestamps_make_plan_partial() -> None:
         window=TimeWindow(started - timedelta(days=1), started),
         started_at=started,
     )
-    assert plan.is_partial
-    assert len(plan.warnings) == 2
-    assert "precisión temporal" in plan.warnings[1]
+    assert plan.is_partial is False
+    assert plan.warnings == ()
+    assert len(plan.notices) == 2
+    assert "precisión temporal" in plan.notices[1]
 
 
 def test_exclusion_glob_can_match_a_directory_component() -> None:
@@ -328,6 +329,54 @@ def test_worker_factory_captures_discovery_ftp_encoding(
     assert captured == [
         ("credencial", "cp1252", tmp_path / "known_hosts")
     ]
+
+
+@pytest.mark.parametrize("failure_timing", ("immediate", "deferred"))
+def test_listing_iterator_preserves_unclassified_adapter_failure_and_notices(
+    failure_timing: str,
+) -> None:
+    class BrokenListingTransport(Transport):
+        def connect(self):
+            return None
+
+        def close(self):
+            return None
+
+        def iter_files(self, remote_paths, *, recursive, max_depth):
+            del remote_paths, recursive, max_depth
+            self._reset_listing_warnings()
+            self._add_listing_warning("Observación previa del adaptador.")
+            if failure_timing == "immediate":
+                raise ValueError("formato propietario inesperado")
+
+            def stream():
+                if False:
+                    yield
+                raise ValueError("formato propietario inesperado")
+
+            return stream()
+
+        def stat(self, remote_path):
+            raise AssertionError
+
+        def download_to(self, *args, **kwargs):
+            raise AssertionError
+
+    notices: list[str] = []
+    with pytest.raises(
+        ValueError,
+        match="formato propietario inesperado",
+    ):
+        with _listing_iterator(
+            BrokenListingTransport(),
+            ("/entrada",),
+            recursive=False,
+            max_depth=0,
+            notices=notices,
+        ) as discovered:
+            next(discovered)
+
+    assert notices == ["Observación previa del adaptador."]
 
 
 def test_dry_run_loads_successful_identities_from_database(tmp_path: Path) -> None:

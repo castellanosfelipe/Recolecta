@@ -75,8 +75,12 @@ ejecute primero `.\uninstall.ps1` y luego el instalador elegido.
 4. Elija FTP, FTPS, SFTP, WebDAV, WebDAVS o SMB.
 5. Escriba servidor, puerto, usuario y secreto. Si omite el puerto se usa el
    estándar del protocolo.
-6. Indique una ruta remota por línea. Active recursividad solo si necesita
-   subcarpetas y fije una profundidad razonable para las corridas por ventana.
+6. Indique una ruta remota por línea. Con **Buscar también dentro de
+   subcarpetas** desactivado,
+   Recolecta revisa únicamente los archivos ubicados directamente en cada ruta.
+   Actívelo cuando los archivos puedan estar dentro de carpetas y defina la
+   profundidad: `1` incluye las subcarpetas inmediatas, `2` un nivel adicional,
+   y así sucesivamente.
 7. Elija la zona IANA, por ejemplo `America/Bogota`, y una ventana:
    día calendario anterior, últimas N horas o desde la última corrida correcta.
    Si esa conexión debe ejecutarse a una hora distinta, complete **Hora
@@ -185,22 +189,35 @@ se cifra al importarlo y no se expone en la interfaz.
 
 ### Cómo leer los estados
 
-Una ejecución que logra consultar el origen, pero no encuentra archivos, no es
-un fallo. Recolecta conserva el resultado técnico correcto y muestra una
-explicación más útil:
+Una ejecución que logra consultar el origen, pero no encuentra archivos dentro
+del alcance recorrido, no es un fallo. Recolecta conserva el resultado técnico
+correcto y muestra una explicación más útil:
 
 | Estado visible | Qué significa |
 |---|---|
 | **Sin ejecuciones** | La conexión todavía no tiene historial. |
 | **En ejecución** | El trabajo continúa activo. |
-| **Archivos no existentes** | La consulta terminó correctamente y las rutas configuradas no contenían archivos. |
+| **Sin archivos encontrados** | La consulta terminó correctamente, pero no encontró archivos dentro del alcance recorrido. |
 | **Sin archivos nuevos** | Se encontraron archivos, pero ninguno requería descarga por ventana, filtros o deduplicación. |
 | **Descarga completada** | Se descargó al menos un archivo y la corrida terminó sin incidencias. |
-| **Completada con incidencias** | La corrida avanzó, pero tuvo advertencias o fallos en parte de los archivos. |
+| **Completada con incidencias** | La corrida avanzó, pero tuvo archivos fallidos, rutas aisladas u otra causa que requiere acción. |
 | **Cancelada por el usuario** | Un operador solicitó detener la corrida. |
 
-**Archivos no existentes** describe el resultado de un listado válido. Si
-Recolecta no pudo autenticar, conectar o abrir una ruta, muestra la causa real:
+Las degradaciones compatibles del servidor —por ejemplo, FTP `LIST` en lugar
+de `MLSD` o nombres Windows-1252— aparecen en el detalle como **Observaciones
+técnicas**. Se conservan para diagnóstico, pero no convierten por sí solas la
+corrida en una incidencia ni impiden cerrar su ventana programada.
+
+**Sin archivos encontrados** describe el resultado de un listado válido, no la
+ausencia absoluta de archivos en el servidor. Con **Buscar también dentro de
+subcarpetas**
+desactivado se revisa solo el nivel inicial de cada ruta remota; cuando está
+activado se recorren subcarpetas hasta la profundidad configurada. Si WinSCP u
+otro cliente muestra archivos dentro de carpetas, active esa opción y use una
+profundidad suficiente antes de ejecutar de nuevo. La **Comparación completa
+con carpeta local** recorre todo el árbol remoto configurado.
+
+Si Recolecta no pudo autenticar, conectar o abrir una ruta, muestra la causa real:
 **Credencial rechazada**, **Servidor no encontrado**, **Servidor no
 disponible**, **Tiempo de conexión agotado**, **Seguridad TLS/SSH no validada**,
 **Acceso denegado**, **Ruta remota no existente**, **Espacio local
@@ -209,8 +226,8 @@ fallida**, **Transferencia incompleta**, **Ruta no permitida**, **Ejecución
 interrumpida** o **Error de protocolo**. Use el detalle de la corrida para ver
 el mensaje técnico saneado.
 
-Si una conexión que normalmente recibe archivos muestra **Archivos no
-existentes**, Recolecta puede emitir además una alerta de silencio sospechoso.
+Si una conexión que normalmente recibe archivos muestra **Sin archivos
+encontrados**, Recolecta puede emitir además una alerta de silencio sospechoso.
 La alerta invita a revisar el origen, pero no convierte la corrida válida en
 fallida.
 

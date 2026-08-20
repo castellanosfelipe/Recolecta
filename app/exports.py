@@ -18,7 +18,12 @@ from app.config import AppPaths
 from app.db import ConnectionRepository, RunRepository
 from app.run_logging import RunLogStore
 from app.settings_store import SettingsStore
-from app.statuses import RUN_ERROR_LABELS, enrich_file, enrich_run
+from app.statuses import (
+    RUN_ERROR_LABELS,
+    SUCCESSFUL_RUN_RESULTS,
+    enrich_file,
+    enrich_run,
+)
 
 
 RUN_FIELDS = (
@@ -154,7 +159,9 @@ class ExportService:
                 row for row in rows if row["connection_id"] in connection_ids
             ]
         total = len(rows)
-        successful = sum(row["status"] == "ok" for row in rows)
+        successful = sum(
+            row["result_status"] in SUCCESSFUL_RUN_RESULTS for row in rows
+        )
         files = sum(int(row["files_downloaded"] or 0) for row in rows)
         volume = sum(int(row["bytes_downloaded"] or 0) for row in rows)
         errors = Counter(

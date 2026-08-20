@@ -221,17 +221,47 @@ def create_router(
                         "files_downloaded": item["last_files_downloaded"],
                         "files_failed": item["last_files_failed"],
                         "error_type": item["last_error_type"],
+                        "error_msg": item["last_error_msg"],
+                        "scan_mode": item["last_scan_mode"],
+                        "discovery_paths_json": item[
+                            "last_discovery_paths_json"
+                        ],
+                        "discovery_recursive": item[
+                            "last_discovery_recursive"
+                        ],
+                        "discovery_max_depth": item[
+                            "last_discovery_max_depth"
+                        ],
+                        "warnings_json": item["last_warnings_json"],
+                        "notices_json": item["last_notices_json"],
                     }
                 )
                 item["last_result_status"] = last_run["result_status"]
                 item["last_status_label"] = last_run["status_label"]
                 item["last_status_detail"] = last_run["status_detail"]
+                item["last_discovery_scope"] = last_run[
+                    "discovery_scope"
+                ]
+                item["last_warnings"] = last_run["warnings"]
+                item["last_notices"] = last_run["notices"]
             else:
                 item["last_result_status"] = "never_run"
                 item["last_status_label"] = CONNECTION_STATUS_LABELS["never_run"]
                 item["last_status_detail"] = (
                     "Esta conexión todavía no tiene ejecuciones registradas."
                 )
+                item["last_discovery_scope"] = None
+                item["last_warnings"] = []
+                item["last_notices"] = []
+            for raw_scope_key in (
+                "last_discovery_paths_json",
+                "last_discovery_recursive",
+                "last_discovery_max_depth",
+                "last_warnings_json",
+                "last_notices_json",
+                "last_error_msg",
+            ):
+                item.pop(raw_scope_key, None)
             next_run = None
             if scheduler is not None:
                 job = scheduler.scheduler.get_job(
@@ -470,7 +500,10 @@ def create_router(
                 status_code=422,
                 detail=redact_secrets(validation_error),
             ) from exc
-        return _plan_response(execution.plan)
+        return _plan_response(
+            execution.plan,
+            discovery_scope=execution.discovery_scope,
+        )
 
     @router.post(
         "/api/connections/{connection_id}/run",
@@ -842,7 +875,11 @@ def create_router(
     return router
 
 
-def _plan_response(plan: DryRunPlan) -> dict[str, object]:
+def _plan_response(
+    plan: DryRunPlan,
+    *,
+    discovery_scope: dict[str, object] | None = None,
+) -> dict[str, object]:
     return enrich_plan({
         "connection_id": plan.connection_id,
         "window_start_utc": plan.window.start_utc.isoformat(),
@@ -851,9 +888,15 @@ def _plan_response(plan: DryRunPlan) -> dict[str, object]:
         "files_to_download": plan.files_to_download_count,
         "planned_bytes": plan.planned_bytes,
         "scan_mode": plan.scan_mode,
+        "discovery_scope": (
+            dict(discovery_scope)
+            if discovery_scope is not None
+            else None
+        ),
         "items_truncated": plan.items_truncated,
         "is_partial": plan.is_partial,
         "warnings": list(plan.warnings),
+        "notices": list(plan.notices),
         "counters": plan.counters,
         "items": [
             {

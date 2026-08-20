@@ -1,6 +1,7 @@
+import json
 import sqlite3
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,21 @@ def test_migration_from_release_schema_preserves_connections(
             """,
             (r"{client}\{connection}\{yyyy}\{MM}\{dd}\{filename}",),
         )
+        legacy.execute(
+            """
+            INSERT INTO runs(
+                connection_id, trigger, window_start_utc, window_end_utc,
+                started_at, finished_at, status, files_found
+            ) VALUES (
+                1, 'manual',
+                '2026-07-28T00:00:00+00:00',
+                '2026-07-29T00:00:00+00:00',
+                '2026-07-29T02:00:00+00:00',
+                '2026-07-29T02:01:00+00:00',
+                'ok', 0
+            )
+            """
+        )
 
     database.initialize()
 
@@ -119,6 +135,13 @@ def test_migration_from_release_schema_preserves_connections(
             row["name"]: row["type"]
             for row in upgraded.execute("PRAGMA table_info(run_files)")
         }
+        run_columns = {
+            row["name"]: row
+            for row in upgraded.execute("PRAGMA table_info(runs)")
+        }
+        legacy_run = upgraded.execute(
+            "SELECT * FROM runs WHERE id = 1"
+        ).fetchone()
     assert database.schema_version() == max(MIGRATIONS)
     assert connection["full_local_reconciliation"] == 0
     assert connection["dest_template"] == "{remote_tree}"
@@ -127,6 +150,16 @@ def test_migration_from_release_schema_preserves_connections(
     assert reservation_columns["local_key"] == "BLOB"
     assert run_file_columns["timestamp_reliable"] == "INTEGER"
     assert run_file_columns["timestamp_source"] == "TEXT"
+    assert run_columns["discovery_paths_json"]["notnull"] == 0
+    assert run_columns["discovery_recursive"]["notnull"] == 0
+    assert run_columns["discovery_max_depth"]["notnull"] == 0
+    assert run_columns["warnings_json"]["notnull"] == 1
+    assert run_columns["notices_json"]["notnull"] == 1
+    assert legacy_run["discovery_paths_json"] is None
+    assert legacy_run["discovery_recursive"] is None
+    assert legacy_run["discovery_max_depth"] is None
+    assert legacy_run["warnings_json"] == "[]"
+    assert legacy_run["notices_json"] == "[]"
 
 
 def test_create_read_list_update_and_delete_connection(
@@ -263,6 +296,155 @@ def test_file_identity_is_unique_per_run_but_can_be_repaired_later(
         status="ok",
     )
     assert repair_file > 0
+
+
+def test_run_scope_snapshot_is_optional_and_does_not_follow_connection_edits(
+    database: Database,
+    repository: ConnectionRepository,
+) -> None:
+    created = repository.create(connection())
+    runs = RunRepository(database)
+    started = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    legacy_id = runs.start_run(
+        connection_id=created.id,
+        trigger="manual",
+        window_start_utc=started - timedelta(days=1),
+        window_end_utc=started,
+    )
+    snapshot_id = runs.start_run(
+        connection_id=created.id,
+        trigger="manual",
+        window_start_utc=started - timedelta(days=1),
+        window_end_utc=started,
+        remote_paths=("/entrada", "/archivo histórico"),
+        recursive=True,
+        max_depth=4,
+    )
+
+    repository.update(
+        created.id,
+        {
+            "remote_paths": ("/editada",),
+            "recursive": False,
+            "max_depth": 0,
+        },
+    )
+    legacy = runs.get_run(legacy_id)
+    snapshot = runs.get_run(snapshot_id)
+
+    assert legacy["discovery_paths_json"] is None
+    assert legacy["discovery_recursive"] is None
+    assert legacy["discovery_max_depth"] is None
+    assert json.loads(snapshot["discovery_paths_json"]) == [
+        "/entrada",
+        "/archivo histórico",
+    ]
+    assert snapshot["discovery_recursive"] == 1
+    assert snapshot["discovery_max_depth"] == 4
+
+
+def test_warning_only_legacy_partials_close_windows_and_follow_result_filters(
+    database: Database,
+    repository: ConnectionRepository,
+) -> None:
+    created = repository.create(connection())
+    runs = RunRepository(database)
+    base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+
+    def insert_partial(
+        day: int,
+        *,
+        files_found: int,
+        files_downloaded: int,
+        files_failed: int = 0,
+        error_type: str | None = None,
+        error_msg: str = "",
+        warnings_json: str = "[]",
+    ) -> int:
+        window_start = base + timedelta(days=day)
+        window_end = window_start + timedelta(days=1)
+        with database.connect() as db:
+            cursor = db.execute(
+                """
+                INSERT INTO runs(
+                    connection_id, trigger, window_start_utc,
+                    window_end_utc, started_at, finished_at, status,
+                    files_found, files_downloaded, files_failed, error_type,
+                    error_msg, warnings_json
+                ) VALUES (
+                    ?, 'schedule', ?, ?, ?, ?, 'partial', ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    created.id,
+                    window_start.isoformat(),
+                    window_end.isoformat(),
+                    (window_end + timedelta(hours=1)).isoformat(),
+                    (window_end + timedelta(hours=2)).isoformat(),
+                    files_found,
+                    files_downloaded,
+                    files_failed,
+                    error_type,
+                    error_msg,
+                    warnings_json,
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    empty_id = insert_partial(0, files_found=0, files_downloaded=0)
+    unchanged_id = insert_partial(1, files_found=5, files_downloaded=0)
+    completed_id = insert_partial(2, files_found=5, files_downloaded=4)
+    failed_file_id = insert_partial(
+        3,
+        files_found=5,
+        files_downloaded=4,
+        files_failed=1,
+    )
+    errored_id = insert_partial(
+        4,
+        files_found=0,
+        files_downloaded=0,
+        error_type="protocol",
+    )
+    messaged_id = insert_partial(
+        5,
+        files_found=0,
+        files_downloaded=0,
+        error_msg="Fallo heredado sin categorizar.",
+    )
+    warned_id = insert_partial(
+        6,
+        files_found=0,
+        files_downloaded=0,
+        warnings_json='["Ruta remota no permitida."]',
+    )
+
+    assert runs.last_successful_end(created.id) == base + timedelta(days=3)
+    assert runs.has_successful_window(
+        created.id,
+        window_start_utc=base + timedelta(days=2),
+        window_end_utc=base + timedelta(days=3),
+    )
+    assert not runs.has_successful_window(
+        created.id,
+        window_start_utc=base + timedelta(days=3),
+        window_end_utc=base + timedelta(days=4),
+    )
+    assert [row["id"] for row in runs.list_runs(status="no_files")] == [
+        empty_id
+    ]
+    assert [row["id"] for row in runs.list_runs(status="no_changes")] == [
+        unchanged_id
+    ]
+    assert [row["id"] for row in runs.list_runs(status="completed")] == [
+        completed_id
+    ]
+    assert {row["id"] for row in runs.list_runs(status="partial")} == {
+        failed_file_id,
+        errored_id,
+        messaged_id,
+        warned_id,
+    }
 
 
 def test_run_queue_preserves_remote_timestamp_reliability(

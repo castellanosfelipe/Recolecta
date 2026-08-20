@@ -235,7 +235,9 @@ CREATE TABLE runs (
     files_planned INTEGER DEFAULT 0, planned_bytes INTEGER DEFAULT 0,
     files_skipped INTEGER DEFAULT 0, files_failed INTEGER DEFAULT 0,
     bytes_downloaded INTEGER DEFAULT 0,
-    error_type TEXT, error_msg TEXT NOT NULL DEFAULT ''
+    error_type TEXT, error_msg TEXT NOT NULL DEFAULT '',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    notices_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX idx_runs_conn_started ON runs(connection_id, started_at);
 
@@ -287,19 +289,29 @@ reemplazar el estado canónico:
 
 | Condición canónica | `result_status` | Etiqueta visible |
 |---|---|---|
-| `status='ok'` y `files_found=0` | `no_files` | **Archivos no existentes** |
+| `status='ok'` y `files_found=0` | `no_files` | **Sin archivos encontrados** |
 | `status='ok'`, `files_found>0` y `files_downloaded=0` | `no_changes` | **Sin archivos nuevos** |
 | `status='ok'` y `files_downloaded>0` | `completed` | **Descarga completada** |
 | `status='running'` | `running` | **En ejecución** |
-| `status='partial'` | `partial` | **Completada con incidencias** |
+| `status='partial'` con fallos o causa accionable | `partial` | **Completada con incidencias** |
 | `status='cancelled'` | `cancelled` | **Cancelada por el usuario** |
 | `status='failed'` | `failed` | Causa específica según `error_type` |
 
 La evaluación del estado canónico tiene precedencia sobre los contadores. Por
 lo tanto, una autenticación rechazada, una ruta remota inexistente o cualquier
 otro fallo con `files_found=0` nunca puede presentarse como
-**Archivos no existentes**. Los exports conservan `status` como dato estable y
+**Sin archivos encontrados**. `no_files` significa cero archivos dentro del
+alcance efectivamente recorrido, no ausencia absoluta en el servidor: sin
+recursión solo incluye el nivel inicial de cada raíz y, con recursión, incluye
+subcarpetas hasta `max_depth`. Los exports conservan `status` como dato estable y
 pueden añadir `result_status` y `status_label` para consumo humano.
+
+Las limitaciones no fatales de compatibilidad o precisión se persisten en
+`notices_json` y se muestran como **Observaciones técnicas**; no producen
+`partial`. `warnings_json` queda reservado para incidencias accionables. Para
+compatibilidad histórica, un `partial` sin archivos fallidos ni `error_type` se
+presenta y se considera atendido como el resultado exitoso que corresponda,
+sin reescribir su valor de auditoría.
 
 ---
 
@@ -353,15 +365,20 @@ Esta es la regla de negocio más delicada del sistema. Impleméntala con tests e
   - FTP/FTPS: en listados usa `MLSD` (`modify=` en UTC, RFC 3659) de forma incremental y reserva `MDTM`
     para `stat` individual; así evita una orden adicional por cada archivo. **No confíes en el `LIST`**:
     da hora local del servidor, sin zona, con precisión de minutos, y para archivos de más de 6 meses omite
-    la hora y da el año. Si `MLSD` no está soportado, cae a `LIST` y **marca la corrida como `partial` con
-    advertencia explícita de precisión temporal**.
+    la hora y da el año. Si `MLSD` no está soportado, cae a `LIST` y registra
+    una **observación técnica de precisión temporal**, sin marcar como parcial
+    una corrida que no tuvo fallos.
   - SFTP: `st_mtime` de `sftp.listdir_attr()` (epoch UTC).
   - WebDAV: `PROPFIND` con `Depth: 1`, propiedad `getlastmodified` (RFC 1123, GMT).
   - SMB/UNC: `smbclient.stat().st_mtime` mediante SMB2/SMB3 (epoch → UTC); `Path.stat()` queda limitado a rutas locales de desarrollo y pruebas.
 - **Quiet period:** omite archivos cuyo `mtime` sea más reciente que `quiet_period_s` (default 120 s) — probablemente
   aún se están escribiendo. Opcionalmente valida estabilidad de tamaño entre dos listados separados 5 s.
 - Filtros: globs de inclusión/exclusión (`*.csv`, `!tmp_*`), tamaño mínimo/máximo, recursión con `max_depth`,
-  exclusión de directorios, sin seguir symlinks.
+  exclusión de directorios, sin seguir symlinks. Con `recursive=false` se lista
+  únicamente el nivel inicial de cada raíz. Con `recursive=true`, `max_depth=1`
+  incorpora las subcarpetas inmediatas y cada incremento habilita un nivel
+  adicional. Los directorios fuera de ese alcance no se interpretan como
+  archivos encontrados.
 - **Deduplicación:** un archivo con la misma `(remote_path, mtime_utc, size)` ya descargado con éxito se marca
   `duplicate` y no se vuelve a bajar, sin importar cuántas veces se dispare la corrida.
 - **Comparación completa local opcional:** cuando
@@ -756,8 +773,9 @@ Escríbelos en `docs/ACCEPTANCE.md` como checklist verificable:
     y **no escribe nada fuera de `dest_root`**.
 14. Ninguna credencial aparece en `logs/`, en los exports, ni en ninguna respuesta de la API.
 15. `pytest` pasa completo y `build.ps1` genera el paquete sin acceso a la red.
-16. Una corrida `ok` con `files_found=0` se presenta como **Archivos no
-    existentes**, no como fallo; los demás resultados correctos distinguen
+16. Una corrida `ok` con `files_found=0` se presenta como **Sin archivos
+    encontrados**, no como fallo; el detalle aclara que el conteo corresponde
+    al alcance recorrido según recursión y profundidad. Los demás resultados correctos distinguen
     **Sin archivos nuevos** y **Descarga completada**.
 17. Una corrida `failed` con cero archivos conserva el fallo y muestra la causa
     específica de `error_type`; nunca se reclasifica como `no_files`.

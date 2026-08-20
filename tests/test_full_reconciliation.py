@@ -277,6 +277,7 @@ def test_full_reconciliation_repairs_missing_and_different_local_files(
     extra_path = tmp_path / "downloads" / "solo-local.txt"
 
     first = coordinator.execute_connection(saved.id, trigger="manual")
+    persisted = coordinator.runs.get_run(first.run_id)
     assert first.status == "ok"
     assert first.plan.scan_mode == "full_local_reconciliation"
     assert first.plan.items[0].status == PlanStatus.LOCAL_MISSING
@@ -284,6 +285,14 @@ def test_full_reconciliation_repairs_missing_and_different_local_files(
     assert remote.downloads == [remote_path]
     assert remote.listings[-1][1] is True
     assert remote.listings[-1][2] > saved.max_depth
+    assert persisted["scan_mode"] == "full_local_reconciliation"
+    assert persisted["discovery_recursive"] == 1
+    assert persisted["discovery_max_depth"] == remote.listings[-1][2]
+    assert first.summary()["discovery_scope"] == {
+        "remote_paths": ["/entrada"],
+        "recursive": True,
+        "max_depth": remote.listings[-1][2],
+    }
 
     local_path.unlink()
     second = coordinator.execute_connection(saved.id, trigger="manual")
@@ -353,7 +362,9 @@ def test_full_reconciliation_repairs_when_remote_metadata_is_unknown(
 
     execution = coordinator.execute_connection(saved.id, trigger="manual")
 
-    assert execution.status == "partial"
+    assert execution.status == "ok"
+    assert execution.plan.warnings == ()
+    assert any("no informaron fecha" in item for item in execution.plan.notices)
     assert execution.plan.items[0].status == PlanStatus.LOCAL_DIFFERENT
     assert "no informó tamaño ni fecha" in execution.plan.items[0].reason
     assert local_path.read_bytes() == payload
@@ -396,7 +407,9 @@ def test_unknown_size_preflight_is_bounded_by_active_workers(
     execution = coordinator.execute_connection(saved.id, trigger="manual")
 
     bounded_reserve = 2 * DEFAULT_UNKNOWN_SIZE_RESERVE_BYTES
-    assert execution.status == "partial"
+    assert execution.status == "ok"
+    assert execution.plan.warnings == ()
+    assert any("no informaron fecha" in item for item in execution.plan.notices)
     assert execution.plan.files_to_download_count == file_count
     assert len(remote.downloads) == file_count
     assert disk_checks

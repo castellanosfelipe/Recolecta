@@ -120,6 +120,49 @@ def test_validation_checks_all_remote_roots_and_local_write_access(
 
 
 @pytest.mark.parametrize(
+    ("recursive", "full_local_reconciliation", "max_depth", "expected"),
+    (
+        (False, False, 3, "no recorrerá subcarpetas"),
+        (True, False, 3, "podrán encontrar archivos"),
+        (True, False, 0, "auméntela al menos a 1"),
+        (False, True, 0, "recorrerán todo el árbol remoto"),
+    ),
+)
+def test_validation_keeps_an_empty_initial_level_valid_and_explains_scope(
+    tmp_path: Path,
+    recursive: bool,
+    full_local_reconciliation: bool,
+    max_depth: int,
+    expected: str,
+) -> None:
+    transport = FakeTransport()
+
+    result = validate_connection_paths(
+        connection(
+            tmp_path / "destino",
+            recursive=recursive,
+            max_depth=max_depth,
+            full_local_reconciliation=full_local_reconciliation,
+        ),
+        secret=None,
+        portable_root=tmp_path,
+        known_hosts=tmp_path / "known_hosts",
+        transport_factory=lambda *args, **kwargs: transport,
+    )
+
+    assert result.to_dict()["valid"] is True
+    assert result.remote_files_found == 0
+    assert result.remote_files_found_is_exact is True
+    assert any(expected in warning for warning in result.warnings)
+    assert any("nivel inicial" in warning for warning in result.warnings)
+    assert transport.list_calls == [
+        (("/entrada",), False, 0),
+        (("/reportes",), False, 0),
+    ]
+    assert transport.closed is True
+
+
+@pytest.mark.parametrize(
     "protocol",
     (Protocol.FTP, Protocol.SFTP, Protocol.WEBDAV),
 )
@@ -242,7 +285,7 @@ def test_validation_error_messages_are_actionable_without_raw_details(
 def test_validation_reports_safe_context_for_the_remote_root_that_failed(
     tmp_path: Path,
 ) -> None:
-    secret_path = "/FONVIVIENDA_CAVIÑ_UT?token=credencial-real"
+    secret_path = "/ORIGEN_AÑO?token=credencial-real"
 
     class FailingSecondRoot(FakeTransport):
         def iter_files(self, remote_paths, *, recursive, max_depth):
@@ -273,7 +316,7 @@ def test_validation_reports_safe_context_for_the_remote_root_that_failed(
 
     message = str(captured.value)
     assert captured.value.error_type == ErrorType.PARTIAL_TRANSFER
-    assert "/FONVIVIENDA_CAVIÑ_UT?token=***" in message
+    assert "/ORIGEN_AÑO?token=***" in message
     assert "/primera" not in message
     assert "canal de datos" in message
     assert "credencial-real" not in message
@@ -312,10 +355,10 @@ def test_validation_redacts_a_preclassified_error_message_for_a_remote_root(
 def test_validation_uses_ftp_cp1252_listing_and_preserves_enye_path(
     tmp_path: Path,
 ) -> None:
-    remote_root = "/FONVIVIENDA_CAVIÑ_UT"
+    remote_root = "/ORIGEN_AÑO"
     listing = (
         "-rw-r--r-- 1 owner group 42 Jul 31 2026 "
-        "INFORMACIÓN_Ñ.pdf\r\n"
+        "ARCHIVO_Ñ.pdf\r\n"
     ).encode("cp1252")
 
     class DataSocket:

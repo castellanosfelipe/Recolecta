@@ -201,6 +201,88 @@ def test_preflight_failure_remains_terminal_when_run_log_is_unavailable(
     assert coordinator.runs.has_active_run(saved.id) is False
 
 
+def test_unclassified_listing_failure_keeps_unknown_taxonomy_and_notices(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    paths = AppPaths.from_root(tmp_path).ensure()
+    database = Database(paths.database)
+    database.initialize()
+    connections = ConnectionRepository(
+        database,
+        FernetSecretStore(Fernet.generate_key()),
+    )
+    saved = connections.create(
+        Connection(
+            name="Listado propietario",
+            protocol=Protocol.FTP,
+            host="example.test",
+            remote_paths=("/entrada",),
+        )
+    )
+
+    class ProprietaryListingTransport(Transport):
+        def connect(self):
+            return None
+
+        def close(self):
+            return None
+
+        def iter_files(self, remote_paths, *, recursive, max_depth):
+            del remote_paths, recursive, max_depth
+            self._reset_listing_warnings()
+            self._add_listing_warning(
+                "El adaptador activó su modo de listado compatible."
+            )
+
+            def stream():
+                if False:
+                    yield
+                raise ValueError("respuesta password=credencial-real")
+
+            return stream()
+
+        def stat(self, remote_path):
+            raise AssertionError
+
+        def download_to(self, *args, **kwargs):
+            raise AssertionError
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "create_transport",
+        lambda connection, secret, known_hosts: ProprietaryListingTransport(),
+    )
+    coordinator = RunCoordinator(database, connections, paths)
+
+    with pytest.raises(
+        ValueError,
+        match="respuesta password=credencial-real",
+    ):
+        coordinator.execute_connection(saved.id, trigger="manual")
+
+    with database.connect() as db:
+        run = db.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    assert run["status"] == "failed"
+    assert run["error_type"] == ErrorType.UNKNOWN.value
+    assert run["error_msg"] == "respuesta password=***"
+    assert json.loads(run["warnings_json"]) == []
+    assert json.loads(run["notices_json"]) == [
+        "El adaptador activó su modo de listado compatible."
+    ]
+    log_path = next(paths.run_logs.glob("*.jsonl"))
+    final_event = json.loads(
+        log_path.read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert final_event["event"] == "run_finished"
+    assert final_event["error_type"] == ErrorType.UNKNOWN.value
+    assert final_event["error_msg"] == "respuesta password=***"
+    assert final_event["warnings"] == []
+    assert final_event["notices"] == [
+        "El adaptador activó su modo de listado compatible."
+    ]
+
+
 def test_coordinator_plans_downloads_persists_and_deduplicates(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -322,7 +404,7 @@ def test_coordinator_plans_downloads_persists_and_deduplicates(
         assert db.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
 
 
-def test_valid_empty_listing_is_success_with_no_files_result(
+def test_empty_listing_with_technical_notice_is_still_successful(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -340,7 +422,13 @@ def test_valid_empty_listing_is_success_with_no_files_result(
             self.closed = True
 
         def list_files(self, remote_paths, *, recursive, max_depth):
-            return ListingResult(())
+            return ListingResult(
+                (),
+                (
+                    "El servidor usó un listado FTP compatible con fecha "
+                    "de precisión limitada.",
+                ),
+            )
 
         def stat(self, remote_path):
             raise AssertionError("No debe consultar archivos inexistentes.")
@@ -388,9 +476,26 @@ def test_valid_empty_listing_is_success_with_no_files_result(
     assert persisted["status"] == "ok"
     assert persisted["files_found"] == 0
     assert persisted["files_failed"] == 0
+    assert json.loads(persisted["warnings_json"]) == []
+    assert json.loads(persisted["notices_json"]) == [
+        "El servidor usó un listado FTP compatible con fecha de precisión limitada."
+    ]
+    assert json.loads(persisted["discovery_paths_json"]) == ["/entrada"]
+    assert persisted["discovery_recursive"] == 0
+    assert persisted["discovery_max_depth"] == 3
     assert summary["status"] == "ok"
     assert summary["result_status"] == "no_files"
-    assert summary["status_label"] == "Archivos no existentes"
+    assert summary["status_label"] == "Sin archivos encontrados"
+    assert summary["warnings"] == []
+    assert summary["notices"] == [
+        "El servidor usó un listado FTP compatible con fecha de precisión limitada."
+    ]
+    assert summary["discovery_scope"] == {
+        "remote_paths": ["/entrada"],
+        "recursive": False,
+        "max_depth": 3,
+    }
+    assert "subcarpetas no se exploraron" in summary["status_detail"]
     assert transports
     assert all(transport.closed for transport in transports)
 
@@ -420,6 +525,7 @@ def test_cancellation_closes_partially_consumed_remote_listing(
         )
     )
     state = {"iterator_closed": False, "transport_closed": False}
+    listing_notice = "Observación conservada durante la cancelación."
     coordinator_holder: list[RunCoordinator] = []
 
     class CancellableListingTransport(Transport):
@@ -432,6 +538,7 @@ def test_cancellation_closes_partially_consumed_remote_listing(
         def iter_files(self, remote_paths, *, recursive, max_depth):
             del remote_paths, recursive, max_depth
             self._reset_listing_warnings()
+            self._add_listing_warning(listing_notice)
 
             def stream():
                 try:
@@ -488,6 +595,20 @@ def test_cancellation_closes_partially_consumed_remote_listing(
 
     assert execution.status == "cancelled"
     assert execution.plan.files_found_count == 0
+    assert execution.plan.notices == (listing_notice,)
+    with database.connect() as db:
+        run = db.execute(
+            "SELECT * FROM runs WHERE id = ?",
+            (execution.run_id,),
+        ).fetchone()
+    assert json.loads(run["notices_json"]) == [listing_notice]
+    final_event = json.loads(
+        next(paths.run_logs.glob("*.jsonl"))
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert final_event["event"] == "run_finished"
+    assert final_event["notices"] == [listing_notice]
     assert state == {
         "iterator_closed": True,
         "transport_closed": True,

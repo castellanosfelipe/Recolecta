@@ -157,6 +157,36 @@ def test_ftp_utf8_negotiation_is_best_effort(monkeypatch) -> None:
     assert client.passive is True
 
 
+def test_ftp_utf8_negotiation_propagates_transient_failure(monkeypatch) -> None:
+    class TemporarilyUnavailableFtp:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def connect(self, host, port, timeout):
+            return None
+
+        def login(self, username, secret):
+            return None
+
+        def sendcmd(self, command):
+            raise ftplib.error_temp(
+                "421 Service not available, closing control connection"
+            )
+
+        def quit(self):
+            self.closed = True
+
+    client = TemporarilyUnavailableFtp()
+    monkeypatch.setattr(ftplib, "FTP", lambda: client)
+    transport = FtpTransport(connection(Protocol.FTP), secret="x")
+
+    with pytest.raises(ftplib.error_temp, match="421"):
+        transport.connect()
+
+    assert client.closed is True
+    assert transport._ftp is None
+
+
 def test_ftp_uses_streamed_mlsd_modify_metadata() -> None:
     transport = FtpTransport(
         connection(Protocol.FTP),
@@ -170,6 +200,49 @@ def test_ftp_uses_streamed_mlsd_modify_metadata() -> None:
     assert result.files[0].mtime_utc == datetime(
         2026, 1, 1, 1, 1, 1, tzinfo=timezone.utc
     )
+
+
+def test_ftp_directory_only_root_finds_nested_files_only_with_recursion() -> None:
+    class NestedOnlyFtp(FakeFtp):
+        def mlsd(self, path, facts):
+            if path == "/entrada":
+                return iter([("lote-01", {"type": "dir"})])
+            if path == "/entrada/lote-01":
+                return iter(
+                    [
+                        (
+                            "documento.pdf",
+                            {
+                                "type": "file",
+                                "size": "12",
+                                "modify": "20260814115121",
+                            },
+                        )
+                    ]
+                )
+            raise AssertionError(f"Ruta FTP inesperada: {path}")
+
+    transport = FtpTransport(
+        connection(Protocol.FTP, remote_paths=("/entrada",)),
+        secret="x",
+        client=NestedOnlyFtp(),
+    )
+
+    root_only = transport.list_files(
+        ("/entrada",),
+        recursive=False,
+        max_depth=3,
+    )
+    recursive = transport.list_files(
+        ("/entrada",),
+        recursive=True,
+        max_depth=1,
+    )
+
+    assert root_only.files == ()
+    assert [item.remote_path for item in recursive.files] == [
+        "/entrada/lote-01/documento.pdf"
+    ]
 
 
 def test_ftp_iter_files_consumes_mlsd_lazily() -> None:
@@ -274,6 +347,31 @@ class _BytesDataSocket:
         self.closed = True
 
 
+def test_ftp_rejects_malformed_streamed_mlsd_instead_of_omitting_it() -> None:
+    class MalformedMlsdFtp(FakeFtp):
+        encoding = "utf-8"
+
+        def transfercmd(self, command):
+            assert command == "MLSD /root"
+            return _BytesDataSocket(b"respuesta-no-mlsd dato-sensible\r\n")
+
+        def voidresp(self):
+            return "226 Transfer complete"
+
+    transport = FtpTransport(
+        connection(Protocol.FTP),
+        secret="x",
+        client=MalformedMlsdFtp(),
+    )
+
+    with pytest.raises(RecolectaError) as captured:
+        transport.list_files(("/root",), recursive=False, max_depth=0)
+
+    assert captured.value.error_type == ErrorType.PROTOCOL
+    assert "MLSD" in str(captured.value)
+    assert "dato-sensible" not in str(captured.value)
+
+
 def test_ftp_partial_listing_ignores_expected_426_abort_reply() -> None:
     client = _FtpListingWithAbortReply()
     transport = FtpTransport(
@@ -359,6 +457,34 @@ def test_ftp_attempts_mlsd_when_opts_mlst_is_rejected() -> None:
     ]
 
 
+def test_ftp_opts_mlst_propagates_transient_failure() -> None:
+    class TemporarilyUnavailableFtp(FakeFtp):
+        def __init__(self) -> None:
+            super().__init__()
+            self.mlsd_calls = 0
+
+        def sendcmd(self, command):
+            raise ftplib.error_temp(
+                "421 Service not available, closing control connection"
+            )
+
+        def mlsd(self, path, facts):
+            self.mlsd_calls += 1
+            return super().mlsd(path, facts)
+
+    client = TemporarilyUnavailableFtp()
+    transport = FtpTransport(
+        connection(Protocol.FTP),
+        secret="x",
+        client=client,
+    )
+
+    with pytest.raises(ftplib.error_temp, match="421"):
+        transport.list_files(("/root",), recursive=False, max_depth=0)
+
+    assert client.mlsd_calls == 0
+
+
 def test_ftp_ansi_hint_reaches_a_separate_worker_without_retrying_retr(
     monkeypatch,
 ) -> None:
@@ -382,13 +508,13 @@ def test_ftp_ansi_hint_reaches_a_separate_worker_without_retrying_retr(
             self.commands.append(encoded)
             if command.startswith("MLSD "):
                 raise ftplib.error_perm("500 MLSD not understood")
-            if command == "LIST /FONVIVIENDA_CAVIS_UT":
+            if command == "LIST /ORIGEN_DOCUMENTOS":
                 return _BytesDataSocket(
                     b"08-13-26  09:17AM       <DIR>          "
-                    b"COMFAMILIAR NARI\xd1O ok\r\n"
+                    b"CARPETA NI\xd1O\r\n"
                 )
             assert command == (
-                "LIST /FONVIVIENDA_CAVIS_UT/COMFAMILIAR NARIÑO ok"
+                "LIST /ORIGEN_DOCUMENTOS/CARPETA NIÑO"
             )
             return _BytesDataSocket(
                 b"08-13-26  09:18AM                    5 documento.bin\r\n"
@@ -435,7 +561,7 @@ def test_ftp_ansi_hint_reaches_a_separate_worker_without_retrying_retr(
     listing_client = LegacyAnsiIisListingFtp()
     configured = connection(
         Protocol.FTP,
-        remote_paths=("/FONVIVIENDA_CAVIS_UT",),
+        remote_paths=("/ORIGEN_DOCUMENTOS",),
         recursive=True,
         max_depth=1,
     )
@@ -469,14 +595,14 @@ def test_ftp_ansi_hint_reaches_a_separate_worker_without_retrying_retr(
     )
 
     assert result.files[0].remote_path == (
-        "/FONVIVIENDA_CAVIS_UT/COMFAMILIAR NARIÑO ok/documento.bin"
+        "/ORIGEN_DOCUMENTOS/CARPETA NIÑO/documento.bin"
     )
     assert listing_client.encoding == "cp1252"
     assert listing_transport.command_encoding == "cp1252"
     assert download_client.encoding == "cp1252"
     assert sum("Windows-1252" in warning for warning in result.warnings) == 1
     assert any(
-        b"COMFAMILIAR NARI\xd1O ok" in command
+        b"CARPETA NI\xd1O" in command
         for command in download_client.commands
     )
     assert download_client.retr_calls == 1
@@ -518,6 +644,145 @@ def test_ftp_list_fallback_aggregates_warning_across_roots() -> None:
     assert len(result.files) == 2
     assert len(result.warnings) == 1
     assert transport.last_listing_warnings == result.warnings
+
+
+def test_ftp_rejects_unparseable_list_line_instead_of_reporting_empty() -> None:
+    class ProprietaryListFtp(FakeFtp):
+        def __init__(self) -> None:
+            super().__init__(mlsd_supported=False)
+
+        def retrlines(self, command, callback):
+            callback("entrada-propietaria dato-sensible")
+
+    transport = FtpTransport(
+        connection(Protocol.FTP),
+        secret="x",
+        client=ProprietaryListFtp(),
+    )
+
+    with pytest.raises(RecolectaError) as captured:
+        transport.list_files(("/root",), recursive=False, max_depth=0)
+
+    assert captured.value.error_type == ErrorType.PROTOCOL
+    assert "LIST" in str(captured.value)
+    assert "dato-sensible" not in str(captured.value)
+
+
+def test_ftp_accepts_standard_empty_list_header() -> None:
+    class EmptyListFtp(FakeFtp):
+        def __init__(self) -> None:
+            super().__init__(mlsd_supported=False)
+
+        def retrlines(self, command, callback):
+            callback("total 0")
+
+    transport = FtpTransport(
+        connection(Protocol.FTP),
+        secret="x",
+        client=EmptyListFtp(),
+    )
+
+    result = transport.list_files(("/root",), recursive=False, max_depth=0)
+
+    assert result.files == ()
+
+
+def test_ftp_rejects_nonempty_list_header_without_any_entries() -> None:
+    class TruncatedListFtp(FakeFtp):
+        def __init__(self) -> None:
+            super().__init__(mlsd_supported=False)
+
+        def retrlines(self, command, callback):
+            callback("total 8")
+
+    transport = FtpTransport(
+        connection(Protocol.FTP),
+        secret="x",
+        client=TruncatedListFtp(),
+    )
+
+    with pytest.raises(RecolectaError) as captured:
+        transport.list_files(("/root",), recursive=False, max_depth=0)
+
+    assert captured.value.error_type == ErrorType.PROTOCOL
+
+
+@pytest.mark.parametrize("failed_command", ("SIZE", "MDTM"))
+def test_ftp_stat_propagates_transient_metadata_failure(
+    failed_command: str,
+) -> None:
+    class TemporarilyUnavailableFtp(FakeFtp):
+        def size(self, path):
+            if failed_command == "SIZE":
+                raise ftplib.error_temp("450 File temporarily unavailable")
+            return 12
+
+        def sendcmd(self, command):
+            if failed_command == "MDTM" and command.startswith("MDTM "):
+                raise ftplib.error_temp("450 File temporarily unavailable")
+            return super().sendcmd(command)
+
+    transport = FtpTransport(
+        connection(Protocol.FTP),
+        secret="x",
+        client=TemporarilyUnavailableFtp(),
+    )
+
+    with pytest.raises(ftplib.error_temp, match="450"):
+        transport.stat("/root/report.csv")
+
+
+@pytest.mark.parametrize(
+    "directory_lines",
+    (
+        (
+            "drwxr-xr-x 1 owner group 0 Jul 26 03:04 .",
+            "drwxr-xr-x 1 owner group 0 Jul 26 03:04 ..",
+            "drwxr-xr-x 1 owner group 0 Jul 26 03:04 child",
+        ),
+        (
+            "08-13-26  09:17AM       <DIR>          .",
+            "08-13-26  09:17AM       <DIR>          ..",
+            "08-13-26  09:17AM       <DIR>          child",
+        ),
+    ),
+    ids=("unix-list", "iis-list"),
+)
+def test_ftp_list_fallback_never_traverses_dot_directories(
+    directory_lines: tuple[str, ...],
+) -> None:
+    class DotDirectoryFtp(FakeFtp):
+        def __init__(self) -> None:
+            super().__init__(mlsd_supported=False)
+            self.list_commands: list[str] = []
+
+        def retrlines(self, command, callback):
+            self.list_commands.append(command)
+            if command == "LIST /root":
+                for line in directory_lines:
+                    callback(line)
+                return
+            if command == "LIST /root/child":
+                callback(
+                    "-rw-r--r-- 1 owner group 42 Jul 26 03:05 report.csv"
+                )
+                return
+            raise AssertionError(f"LIST no esperado: {command}")
+
+    client = DotDirectoryFtp()
+    transport = FtpTransport(
+        connection(Protocol.FTP, timezone="America/Bogota"),
+        secret="x",
+        client=client,
+        now=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+    )
+
+    result = transport.list_files(("/root",), recursive=True, max_depth=1)
+
+    assert [item.remote_path for item in result.files] == [
+        "/root/child/report.csv"
+    ]
+    assert client.list_commands == ["LIST /root", "LIST /root/child"]
 
 
 def test_ftp_resumes_with_rest_and_restarts_when_unsupported() -> None:

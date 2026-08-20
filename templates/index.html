@@ -119,7 +119,7 @@
         <div class="section-heading"><div><p class="eyebrow">AUDITORÍA</p><h2 id="history-heading">Historial de corridas</h2></div></div>
         <form id="history-filters" class="filter-bar">
           <label>Conexión<select name="connection_id" data-connections><option value="">Todas</option></select></label>
-          <label>Resultado<select name="status"><option value="">Todos los resultados</option><option value="no_files">Archivos no existentes</option><option value="no_changes">Sin archivos nuevos</option><option value="completed">Descarga completada</option><option value="partial">Completada con incidencias</option><option value="failed">Ejecución fallida</option><option value="running">En ejecución</option><option value="cancelled">Cancelada por el usuario</option></select></label>
+          <label>Resultado<select name="status"><option value="">Todos los resultados</option><option value="no_files">Sin archivos encontrados</option><option value="no_changes">Sin archivos nuevos</option><option value="completed">Descarga completada</option><option value="partial">Completada con incidencias</option><option value="failed">Ejecución fallida</option><option value="running">En ejecución</option><option value="cancelled">Cancelada por el usuario</option></select></label>
           <label>Desde<input name="date_from" type="date"></label>
           <label>Hasta<input name="date_to" type="date"></label>
           <button class="btn secondary" type="submit">Filtrar</button>
@@ -252,14 +252,15 @@
         <label class="span-2">Destino local<input name="dest_root" value="downloads" required aria-describedby="dest-root-help"><small id="dest-root-help">En modo servicio/SYSTEM, usa una ruta UNC (\\servidor\recurso\carpeta): las unidades mapeadas, como W:, pueden no existir para esa cuenta.</small></label>
         <label>Ventana<select name="window_mode"><option value="calendar_day">Día calendario anterior</option><option value="rolling_hours">Últimas horas</option><option value="since_last_run">Desde última corrida</option></select></label>
         <label>Horas de ventana<input name="window_hours" type="number" min="1" value="24"></label>
-        <label class="check check-with-help"><input name="recursive" type="checkbox"><span>Incluir subcarpetas<small>Recorre el árbol remoto hasta la profundidad indicada.</small></span></label>
-        <label>Profundidad máxima<input name="max_depth" type="number" min="0" value="3"><small>0 revisa solo la ruta configurada.</small></label>
+        <label class="check check-with-help"><input name="recursive" type="checkbox" aria-describedby="recursive-help traversal-scope-summary"><span>Buscar también dentro de subcarpetas<small id="recursive-help">Desactivado: revisa únicamente los archivos ubicados directamente en cada ruta remota. Actívalo si los archivos pueden estar dentro de carpetas.</small></span></label>
+        <label>Profundidad máxima<input name="max_depth" type="number" min="0" value="3" aria-describedby="max-depth-help traversal-scope-summary"><small id="max-depth-help">1 incluye las subcarpetas inmediatas; 2 incluye un nivel adicional.</small></label>
+        <p id="traversal-scope-summary" class="traversal-scope-summary span-2" role="status" aria-live="polite">Alcance actual: solo el nivel inicial de cada ruta remota.</p>
         <label>Archivos paralelos<input name="max_parallel_files" type="number" min="1" value="2"></label>
         <label>Reintentos<input name="retries" type="number" min="0" value="3"></label>
       </div>
-      <label class="check check-with-help"><input name="full_local_reconciliation" type="checkbox"><span>Comparación completa<small>Compara todo el árbol, repara archivos ausentes o diferentes y conserva los extras locales. Puede tardar en orígenes grandes.</small></span></label>
+      <label class="check check-with-help"><input name="full_local_reconciliation" type="checkbox" aria-describedby="traversal-scope-summary"><span>Comparación completa<small>Compara todo el árbol, repara archivos ausentes o diferentes y conserva los extras locales. Puede tardar en orígenes grandes.</small></span></label>
       <label class="check"><input name="enabled" type="checkbox" checked> Conexión activa</label>
-      <p id="connection-validation-status" class="validation-status" role="status" aria-live="polite">Prueba la conexión y sus rutas antes de guardar.</p>
+      <div id="connection-validation-status" class="validation-status" role="status" aria-live="polite">Prueba la conexión y sus rutas antes de guardar.</div>
       <div class="dialog-actions">
         <button class="btn secondary" type="button" data-close-dialog="connection-dialog">Cancelar</button>
         <button class="btn secondary" id="connection-test-button" type="button" aria-describedby="connection-validation-status">Probar conexión y rutas</button>

@@ -28,9 +28,12 @@
 - [x] Cada conexión puede tener una hora diaria distinta o heredar la hora global; scheduler y catch-up respetan la elección.
 - [x] Todas las vistas son navegables y los diálogos de conexión y detalle cierran mediante sus controles visibles.
 - [x] El editor no permite guardar hasta validar credencial, todas las rutas remotas y escritura en el destino local; cualquier cambio exige repetir la prueba.
-- [x] Una corrida canónica `ok` con `files_found=0` se presenta como `no_files` —**Archivos no existentes**— y no como fallida.
+- [x] Una corrida canónica `ok` con `files_found=0` se presenta como `no_files` —**Sin archivos encontrados**— y no como fallida; el detalle indica que son cero archivos dentro del alcance recorrido.
+- [x] Con recursión desactivada se revisa solo el nivel inicial; al activarla, las subcarpetas se recorren hasta la profundidad configurada y esa limitación no se comunica como inexistencia absoluta en el servidor.
 - [x] Los resultados `ok` distinguen `no_changes` —**Sin archivos nuevos**— cuando no descargan, y `completed` —**Descarga completada**— cuando descargan al menos un archivo.
 - [x] Los estados persistidos continúan limitados a `running|ok|partial|failed|cancelled`; una corrida fallida con cero archivos conserva el fallo y muestra la causa específica de `error_type`.
+- [x] Los avisos FTP de compatibilidad y precisión quedan como observaciones técnicas persistidas y no convierten una corrida sin fallos en `partial`.
+- [x] Un `partial` histórico sin archivos fallidos ni `error_type` cierra su ventana y se presenta según su resultado real, sin reescribir el registro de auditoría.
 - [x] El pre-flight aborta con `disk_space` antes de escribir.
 - [x] Una ruta remota maliciosa produce `path_invalid` y no escapa de `dest_root`.
 - [x] Una ruta remota inválida falla de forma aislada y no impide descargar las entradas válidas del mismo listado.
@@ -46,10 +49,10 @@
 - [x] Código, interfaz, tareas, exportaciones y artefactos usan exclusivamente la marca `Recolecta`.
 - [x] El dashboard enlaza al repositorio de GitHub y al perfil de LinkedIn con iconos locales, etiquetas accesibles y apertura segura.
 
-Evidencia previa a la compilación del release v0.2.3: CPython.org 3.12.10 x64,
-396 pruebas aprobadas, una omisión esperada por permisos de symlink y cobertura
-total 87,24 %. El autodiagnóstico congelado y el tamaño del bundle se verifican
-nuevamente en `build.ps1` antes de publicar.
+Evidencia del release v0.2.4: CPython.org 3.12.10 x64, 447 pruebas
+aprobadas, una omisión esperada por permisos de symlink y cobertura total
+87,63 %. El autodiagnóstico congelado y el tamaño del bundle deben verificarse
+nuevamente con `build.ps1` antes de publicar estos ajustes.
 
 ## Pruebas de aceptación en equipo destino
 

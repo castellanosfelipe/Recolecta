@@ -50,7 +50,11 @@ class RemoteFile:
 
 @dataclass(frozen=True)
 class ListingResult:
-    """Files plus non-fatal precision or protocol warnings."""
+    """Files plus non-fatal precision or compatibility observations.
+
+    ``warnings`` is retained as the transport-level compatibility field; the
+    orchestrator promotes these values to run ``notices``, not incidents.
+    """
 
     files: tuple[RemoteFile, ...] = field(default_factory=tuple)
     warnings: tuple[str, ...] = field(default_factory=tuple)
@@ -134,7 +138,7 @@ class Transport(ABC):
 
     @property
     def last_listing_warnings(self) -> tuple[str, ...]:
-        """Return aggregated warnings from the most recent listing."""
+        """Return non-fatal observations from the most recent listing."""
         return getattr(self, "_last_listing_warnings", ())
 
     def _reset_listing_warnings(self) -> None:

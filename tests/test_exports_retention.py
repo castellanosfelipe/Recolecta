@@ -140,9 +140,37 @@ def test_empty_success_export_is_descriptive_but_keeps_raw_status(
     )
     assert values["status"] == "ok"
     assert values["result_status"] == "no_files"
-    assert values["status_label"] == "Archivos no existentes"
-    assert "Archivos no existentes" in report
+    assert values["status_label"] == "Sin archivos encontrados"
+    assert "Sin archivos encontrados" in report
     assert ">ok</span>" not in report
+
+
+def test_html_success_rate_uses_the_derived_legacy_result(
+    tmp_path: Path,
+) -> None:
+    paths, _, connections, saved, runs, settings, logs = build_data(tmp_path)
+    now = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    run_id = runs.start_run(
+        connection_id=saved.id,
+        trigger="schedule",
+        window_start_utc=now - timedelta(days=1),
+        window_end_utc=now,
+        started_at=now,
+    )
+    runs.finish_run(run_id, status="partial")
+    service = ExportService(
+        paths=paths,
+        runs=runs,
+        connections=connections,
+        settings=settings,
+        run_logs=logs,
+        now=lambda: now,
+    )
+
+    report = service.html_report(days=30)
+
+    assert "Sin archivos encontrados" in report
+    assert "Ejecuciones sin error</span><strong>100.0%</strong>" in report
 
 
 def test_retention_removes_only_old_audit_data(tmp_path: Path) -> None:
