@@ -123,6 +123,7 @@ class WebDavTransport(Transport):
                 if work is None:
                     return
                 path, depth = work
+                self._report_listing_location(path, depth)
                 yield from self._walk(
                     path,
                     recursive=recursive,
@@ -201,7 +202,16 @@ class WebDavTransport(Transport):
         directories: DirectoryWorkQueue,
     ) -> Iterator[RemoteFile]:
         entries = self._propfind(path, depth="1")
-        for entry in entries:
+        entries_seen = 0
+        for entry_number, entry in enumerate(entries, start=1):
+            entries_seen = entry_number
+            if entry_number % 100 == 0:
+                self._report_listing_location(
+                    path,
+                    depth,
+                    count_location=False,
+                    entries_delta=100,
+                )
             if _same_resource(entry.path, path):
                 if not entry.is_directory and entry.file is not None:
                     yield entry.file
@@ -211,6 +221,13 @@ class WebDavTransport(Transport):
                     directories.add(entry.path, depth + 1)
             elif entry.file is not None:
                 yield entry.file
+        if entries_seen % 100:
+            self._report_listing_location(
+                path,
+                depth,
+                count_location=False,
+                entries_delta=entries_seen % 100,
+            )
 
     def _propfind(
         self,

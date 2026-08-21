@@ -72,6 +72,8 @@ class FtpTransport(Transport):
             else command_encoding
         )
         self._command_encoding = _normalize_command_encoding(inferred_encoding)
+        self._mlsd_options_attempted = False
+        self._mlsd_supported: bool | None = None
         if client is not None:
             client.encoding = self._command_encoding
 
@@ -83,6 +85,8 @@ class FtpTransport(Transport):
     def connect(self) -> None:
         if self._ftp is not None:
             return
+        self._mlsd_options_attempted = False
+        self._mlsd_supported = None
         if self.connection.protocol == Protocol.FTPS:
             context = ssl.create_default_context()
             if self.connection.ssl_mode == "insecure":
@@ -157,6 +161,7 @@ class FtpTransport(Transport):
                 if work is None:
                     return
                 path, depth = work
+                self._report_listing_location(path, depth)
                 yield from self._walk_mlsd(
                     ftp,
                     path,
@@ -251,14 +256,38 @@ class FtpTransport(Transport):
         depth: int,
         directories: DirectoryWorkQueue,
     ) -> Iterator[RemoteFile]:
+        if self._mlsd_supported is False:
+            self._add_listing_warning(_LIST_FALLBACK_WARNING)
+            yield from self._walk_list(
+                ftp,
+                path,
+                recursive=recursive,
+                max_depth=max_depth,
+                depth=depth,
+                directories=directories,
+            )
+            return
+
         listed_any = False
+        entries_seen = 0
         try:
+            configure_facts = not self._mlsd_options_attempted
+            self._mlsd_options_attempted = True
             for name, facts in _iter_mlsd_entries(
                 ftp,
                 path,
                 on_encoding_fallback=self._record_ansi_fallback,
+                configure_facts=configure_facts,
             ):
                 listed_any = True
+                entries_seen += 1
+                if entries_seen % 100 == 0:
+                    self._report_listing_location(
+                        path,
+                        depth,
+                        count_location=False,
+                        entries_delta=100,
+                    )
                 if name in {".", ".."}:
                     continue
                 remote_path = posixpath.join(path.rstrip("/"), name) or "/"
@@ -285,12 +314,21 @@ class FtpTransport(Transport):
                     timestamp_source="MLSD",
                     is_symlink=is_symlink,
                 )
+            if entries_seen % 100:
+                self._report_listing_location(
+                    path,
+                    depth,
+                    count_location=False,
+                    entries_delta=entries_seen % 100,
+                )
+            self._mlsd_supported = True
         except (AttributeError, ftplib.error_perm) as exc:
             unsupported = not isinstance(
                 exc, ftplib.error_perm
             ) or str(exc).startswith(_MLSD_UNSUPPORTED)
             if not unsupported or listed_any:
                 raise
+            self._mlsd_supported = False
             self._add_listing_warning(_LIST_FALLBACK_WARNING)
             yield from self._walk_list(
                 ftp,
@@ -313,11 +351,20 @@ class FtpTransport(Transport):
     ) -> Iterator[RemoteFile]:
         parsed_entries = 0
         nonempty_header = False
+        lines_seen = 0
         for line in _iter_ftp_lines(
             ftp,
             f"LIST {path}",
             on_encoding_fallback=self._record_ansi_fallback,
         ):
+            lines_seen += 1
+            if lines_seen % 100 == 0:
+                self._report_listing_location(
+                    path,
+                    depth,
+                    count_location=False,
+                    entries_delta=100,
+                )
             try:
                 parsed = _parse_list_line(
                     line,
@@ -348,6 +395,13 @@ class FtpTransport(Transport):
                 timestamp_reliable=False,
                 timestamp_source="LIST",
                 is_symlink=is_symlink,
+            )
+        if lines_seen % 100:
+            self._report_listing_location(
+                path,
+                depth,
+                count_location=False,
+                entries_delta=lines_seen % 100,
             )
         if nonempty_header and parsed_entries == 0:
             raise _unparseable_listing_error("LIST")
@@ -414,17 +468,19 @@ def _iter_mlsd_entries(
     path: str,
     *,
     on_encoding_fallback: Callable[[], None] | None = None,
+    configure_facts: bool = True,
 ) -> Iterator[tuple[str, dict[str, str]]]:
     """Stream MLSD on real clients while retaining lightweight test doubles."""
-    try:
-        ftp.sendcmd("OPTS MLST type;size;modify;")
-    except AttributeError:
-        # OPTS only selects preferred facts. Some servers reject it while
-        # still implementing MLSD, so MLSD itself is authoritative.
-        pass
-    except ftplib.error_perm as exc:
-        if not _is_unsupported_command(exc):
-            raise
+    if configure_facts:
+        try:
+            ftp.sendcmd("OPTS MLST type;size;modify;")
+        except AttributeError:
+            # OPTS only selects preferred facts. Some servers reject it while
+            # still implementing MLSD, so MLSD itself is authoritative.
+            pass
+        except ftplib.error_perm as exc:
+            if not _is_unsupported_command(exc):
+                raise
     if not callable(getattr(ftp, "transfercmd", None)):
         yield from ftp.mlsd(
             path,

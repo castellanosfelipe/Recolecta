@@ -121,6 +121,7 @@ class SftpTransport(Transport):
                 if work is None:
                     return
                 path, depth = work
+                self._report_listing_location(path, depth)
                 yield from self._walk(
                     sftp,
                     path,
@@ -189,7 +190,16 @@ class SftpTransport(Transport):
             if callable(listdir_iter)
             else iter(sftp.listdir_attr(path))
         )
-        for attributes in attributes_list:
+        entries_seen = 0
+        for entry_number, attributes in enumerate(attributes_list, start=1):
+            entries_seen = entry_number
+            if entry_number % 100 == 0:
+                self._report_listing_location(
+                    path,
+                    depth,
+                    count_location=False,
+                    entries_delta=100,
+                )
             name = attributes.filename
             if name in {".", ".."}:
                 continue
@@ -204,6 +214,13 @@ class SftpTransport(Transport):
                 continue
             if stat_module.S_ISREG(mode) or mode == 0:
                 yield _attributes_to_file(remote_path, attributes)
+        if entries_seen % 100:
+            self._report_listing_location(
+                path,
+                depth,
+                count_location=False,
+                entries_delta=entries_seen % 100,
+            )
 
     def _require_client(self) -> paramiko.SFTPClient:
         if self._sftp is None:

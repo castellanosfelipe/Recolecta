@@ -136,6 +136,35 @@ class DirectoryWorkQueue:
 class Transport(ABC):
     """Synchronous listing/stat interface shared by every protocol."""
 
+    def set_listing_progress_callback(
+        self,
+        callback: Callable[[str, int, bool, int], None] | None,
+    ) -> None:
+        """Observe each remote location as recursive discovery reaches it.
+
+        The callback is intentionally lightweight and protocol-neutral.  It
+        lets the coordinator publish a heartbeat even when a wide directory
+        tree has not yielded its first file yet.
+        """
+        self._listing_progress_callback = callback
+
+    def _report_listing_location(
+        self,
+        path: str,
+        depth: int,
+        *,
+        count_location: bool = True,
+        entries_delta: int = 0,
+    ) -> None:
+        callback = getattr(self, "_listing_progress_callback", None)
+        if callback is not None:
+            callback(
+                path,
+                max(0, depth),
+                count_location,
+                max(0, entries_delta),
+            )
+
     @property
     def last_listing_warnings(self) -> tuple[str, ...]:
         """Return non-fatal observations from the most recent listing."""

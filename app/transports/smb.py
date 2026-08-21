@@ -103,6 +103,7 @@ class SmbTransport(Transport):
                 if work is None:
                     return
                 raw_path, depth = work
+                self._report_listing_location(raw_path, depth)
                 if self._is_unc(raw_path):
                     metadata = self._remote_metadata(raw_path)
                     if metadata.is_symlink or metadata.size_bytes is not None:
@@ -180,8 +181,17 @@ class SmbTransport(Transport):
         depth: int,
         directories: DirectoryWorkQueue,
     ) -> Iterator[RemoteFile]:
+        entries_seen = 0
         with os.scandir(directory) as entries:
-            for directory_entry in entries:
+            for entry_number, directory_entry in enumerate(entries, start=1):
+                entries_seen = entry_number
+                if entry_number % 100 == 0:
+                    self._report_listing_location(
+                        str(directory),
+                        depth,
+                        count_location=False,
+                        entries_delta=100,
+                    )
                 entry = Path(directory_entry.path)
                 if directory_entry.is_symlink():
                     yield _path_to_remote_file(entry)
@@ -192,6 +202,13 @@ class SmbTransport(Transport):
                     continue
                 if directory_entry.is_file(follow_symlinks=False):
                     yield _path_to_remote_file(entry)
+        if entries_seen % 100:
+            self._report_listing_location(
+                str(directory),
+                depth,
+                count_location=False,
+                entries_delta=entries_seen % 100,
+            )
 
     def _walk_remote(
         self,
@@ -202,11 +219,20 @@ class SmbTransport(Transport):
         depth: int,
         directories: DirectoryWorkQueue,
     ) -> Iterator[RemoteFile]:
+        entries_seen = 0
         with self._client().scandir(
             directory,
             **self._operation_kwargs(),
         ) as entries:
-            for entry in entries:
+            for entry_number, entry in enumerate(entries, start=1):
+                entries_seen = entry_number
+                if entry_number % 100 == 0:
+                    self._report_listing_location(
+                        directory,
+                        depth,
+                        count_location=False,
+                        entries_delta=100,
+                    )
                 path = str(entry.path)
                 if entry.is_symlink():
                     yield self._metadata_from_stat(
@@ -223,6 +249,13 @@ class SmbTransport(Transport):
                         path,
                         entry.stat(follow_symlinks=False),
                     )
+        if entries_seen % 100:
+            self._report_listing_location(
+                directory,
+                depth,
+                count_location=False,
+                entries_delta=entries_seen % 100,
+            )
 
     def _resolve(self, remote_path: str) -> str:
         value = remote_path.strip()

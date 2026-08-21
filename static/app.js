@@ -448,6 +448,22 @@
       return;
     }
     root.innerHTML = state.progress.runs.map((run) => {
+      const discovering = run.phase === "discovering";
+      const filesDiscovered = Number(run.files_discovered || 0);
+      const filesPlanned = Number(run.files_planned || 0);
+      const locationsVisited = Number(run.locations_visited || 0);
+      const entriesSeen = Number(run.entries_seen || 0);
+      const activityAge = Number(run.seconds_since_activity || 0);
+      const runPercent = discovering ? null : run.percent;
+      const headerSummary = discovering
+        ? `${filesDiscovered.toLocaleString("es-CO")} archivos encontrados · ${filesPlanned.toLocaleString("es-CO")} candidatos · ${locationsVisited.toLocaleString("es-CO")} rutas consultadas · ${entriesSeen.toLocaleString("es-CO")} entradas leídas`
+        : `${run.files_completed} de ${run.files_total} archivos · ${formatBytes(run.average_bps)}/s · ETA ${formatDuration(run.eta_s)}`;
+      const discoveryLocation = run.current_remote_path
+        ? `Explorando ${escapeHtml(run.current_remote_path)}`
+        : "Conectando con el origen remoto";
+      const discoveryActivity = activityAge >= 2
+        ? `Última actividad visible hace ${escapeHtml(formatDuration(activityAge))}.`
+        : "Actividad remota detectada ahora.";
       const files = run.files.map((file) => `
         <tr>
           <td class="path-cell mono" title="${escapeHtml(file.remote_path)}">${escapeHtml(file.remote_path)}</td>
@@ -462,12 +478,12 @@
       return `
         <article class="live-run">
           <div class="live-head">
-            <div><p class="eyebrow">CORRIDA #${run.run_id}</p><h3>${escapeHtml(run.connection_name)}</h3><p>${run.files_completed} de ${run.files_total} archivos · ${escapeHtml(formatBytes(run.average_bps))}/s · ETA ${escapeHtml(formatDuration(run.eta_s))}</p></div>
+            <div><p class="eyebrow">CORRIDA #${run.run_id}</p><h3>${escapeHtml(run.connection_name)}</h3><p>${escapeHtml(headerSummary)}</p></div>
             <button class="btn danger small" data-cancel="${run.run_id}" ${run.cancel_requested ? "disabled" : ""}>${run.cancel_requested ? "Cancelación solicitada" : "Cancelar corrida"}</button>
           </div>
-          <div class="progress-meta"><span>Progreso global</span><strong>${run.percent === null ? "Tamaño desconocido" : `${run.percent}%`}</strong></div>
-          <div class="progress-track" role="progressbar" aria-label="Progreso global de ${escapeHtml(run.connection_name)}" ${run.percent === null ? `aria-valuetext="Progreso indeterminado; ${run.files_completed} de ${run.files_total} archivos completados"` : `aria-valuenow="${run.percent}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${run.percent}%"`}><span class="${run.percent === null ? "indeterminate" : ""}" style="width:${run.percent ?? 100}%"></span></div>
-          <div class="table-panel live-files"><table><caption class="sr-only">Archivos de la corrida ${run.run_id}</caption><thead><tr><th>Archivo</th><th>Estado</th><th>Progreso</th><th>Velocidad</th><th>ETA</th></tr></thead><tbody>${files || `<tr><td colspan="5">Preparando archivos…</td></tr>`}</tbody></table></div>
+          <div class="progress-meta"><span>${discovering ? "Inventario remoto" : "Progreso global"}</span><strong>${discovering ? "Exploración en curso" : (runPercent === null ? "Tamaño desconocido" : `${runPercent}%`)}</strong></div>
+          <div class="progress-track" role="progressbar" aria-label="${discovering ? "Inventario remoto" : "Progreso global"} de ${escapeHtml(run.connection_name)}" ${runPercent === null ? `aria-valuetext="${discovering ? `Exploración en curso; ${filesDiscovered} archivos y ${locationsVisited} rutas detectadas` : `Progreso indeterminado; ${run.files_completed} de ${run.files_total} archivos completados`}"` : `aria-valuenow="${runPercent}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${runPercent}%"`}><span class="${runPercent === null ? "indeterminate" : ""}" style="width:${runPercent ?? 100}%"></span></div>
+          <div class="table-panel live-files"><table><caption class="sr-only">Archivos de la corrida ${run.run_id}</caption><thead><tr><th>Archivo</th><th>Estado</th><th>Progreso</th><th>Velocidad</th><th>ETA</th></tr></thead><tbody>${files || (discovering ? `<tr><td colspan="5"><strong>${discoveryLocation}</strong><br>${escapeHtml(discoveryActivity)} Las descargas comenzarán al finalizar el inventario.</td></tr>` : `<tr><td colspan="5">Preparando la cola de descargas…</td></tr>`)}</tbody></table></div>
         </article>`;
     }).join("");
   }

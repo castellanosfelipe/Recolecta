@@ -84,3 +84,66 @@ def test_progress_cancel_finish_and_unknown_size() -> None:
         "active_runs": 0,
         "runs": [],
     }
+
+
+def test_discovery_progress_reports_inventory_locations_and_activity() -> None:
+    clock = [10.0]
+    registry = ProgressRegistry(
+        monotonic=lambda: clock[0],
+        wall_clock=lambda: datetime.fromtimestamp(
+            1_800_000_000 + clock[0],
+            tz=timezone.utc,
+        ),
+    )
+    registry.start_run(
+        run_id=6,
+        connection_id=4,
+        connection_name="Gesdoc",
+        trigger="manual",
+        files=(),
+        bounded=True,
+        phase="discovering",
+        total_files=0,
+        total_size_bytes=0,
+    )
+
+    clock[0] = 12.0
+    registry.visit_listing_location(6, "/gesdoc", 0)
+    clock[0] = 13.0
+    registry.visit_listing_location(
+        6,
+        "/gesdoc",
+        0,
+        count_location=False,
+        entries_delta=100,
+    )
+    registry.update_discovery(
+        6,
+        files_discovered=500,
+        files_planned=125,
+        planned_bytes=4_096,
+    )
+    clock[0] = 18.5
+
+    snapshot = registry.snapshot()["runs"][0]
+    assert snapshot["phase"] == "discovering"
+    assert snapshot["files_discovered"] == 500
+    assert snapshot["files_planned"] == 125
+    assert snapshot["planned_bytes"] == 4_096
+    assert snapshot["locations_visited"] == 1
+    assert snapshot["entries_seen"] == 100
+    assert snapshot["current_remote_path"] == "/gesdoc"
+    assert snapshot["current_remote_depth"] == 0
+    assert snapshot["seconds_since_activity"] == 5.5
+
+    registry.set_totals(
+        6,
+        files_total=125,
+        total_size_bytes=4_096,
+        phase="downloading",
+    )
+    transitioned = registry.snapshot()["runs"][0]
+    assert transitioned["phase"] == "downloading"
+    assert transitioned["files_total"] == 125
+    assert transitioned["current_remote_path"] is None
+    assert transitioned["seconds_since_activity"] == 0.0

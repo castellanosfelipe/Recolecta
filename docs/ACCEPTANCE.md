@@ -48,10 +48,12 @@
 - [x] `installer_smoke.ps1` verifica hash, extracción y autodiagnóstico sin registrar tareas en CI.
 - [x] Código, interfaz, tareas, exportaciones y artefactos usan exclusivamente la marca `Recolecta`.
 - [x] El dashboard enlaza al repositorio de GitHub y al perfil de LinkedIn con iconos locales, etiquetas accesibles y apertura segura.
+- [x] Un inventario remoto largo publica archivos encontrados, candidatos, rutas consultadas, entradas leídas, ubicación actual y última actividad antes de iniciar las descargas.
+- [x] FTP negocia MLSD una sola vez por sesión, recuerda el fallback LIST y observa cancelación durante directorios extensos.
 
-Evidencia del release v0.2.4: CPython.org 3.12.10 x64, 447 pruebas
+Evidencia del release v0.2.5: CPython.org 3.12.10 x64, 452 pruebas
 aprobadas, una omisión esperada por permisos de symlink y cobertura total
-87,63 %. El autodiagnóstico congelado y el tamaño del bundle deben verificarse
+87,56 %. El autodiagnóstico congelado y el tamaño del bundle deben verificarse
 nuevamente con `build.ps1` antes de publicar estos ajustes.
 
 ## Pruebas de aceptación en equipo destino

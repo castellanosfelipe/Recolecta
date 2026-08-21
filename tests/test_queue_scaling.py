@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import threading
 
 from cryptography.fernet import Fernet
 import pytest
@@ -135,6 +136,160 @@ class LazyInventoryTransport(Transport):
         raise AssertionError(
             "La prueba sustituye el motor para aislar el tamaño de los lotes."
         )
+
+
+class PausedInventoryTransport(LazyInventoryTransport):
+    """Pause before a second batch so live discovery state can be inspected."""
+
+    def __init__(self, *args, pause_at: int, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.pause_at = pause_at
+        self.paused = threading.Event()
+        self.release = threading.Event()
+
+    def iter_files(
+        self,
+        remote_paths: tuple[str, ...],
+        *,
+        recursive: bool,
+        max_depth: int,
+    ):
+        assert self.connected
+        assert remote_paths == ("/entrada",)
+        for index in range(self.file_count):
+            if index == self.pause_at:
+                self.paused.set()
+                if not self.release.wait(timeout=10):
+                    raise TimeoutError("La prueba no liberó el inventario.")
+            self.yielded += 1
+            yield RemoteFile(
+                f"/entrada/lote/{index:05d}.bin",
+                1,
+                self.modified_at,
+            )
+
+
+def test_live_discovery_publishes_each_persisted_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 27, 12, tzinfo=timezone.utc)
+    paths = AppPaths.from_root(tmp_path).ensure()
+    database = Database(paths.database)
+    database.initialize()
+    connections = ConnectionRepository(
+        database,
+        FernetSecretStore(Fernet.generate_key()),
+    )
+    saved = connections.create(
+        Connection(
+            name="Gesdoc",
+            protocol=Protocol.FTP,
+            host="example.test",
+            remote_paths=("/entrada",),
+            recursive=True,
+            dest_root="downloads",
+            dest_template="{remote_tree}",
+            window_mode=WindowMode.ROLLING_HOURS,
+            window_hours=24,
+            quiet_period_s=0,
+        )
+    )
+    batch_size = 3
+    listing_transport = PausedInventoryTransport(
+        database,
+        modified_at=now - timedelta(hours=1),
+        file_count=batch_size + 1,
+        pause_at=batch_size,
+    )
+    monkeypatch.setattr(
+        orchestrator_module,
+        "DISCOVERY_BATCH_SIZE",
+        batch_size,
+    )
+    monkeypatch.setattr(
+        orchestrator_module,
+        "create_transport",
+        lambda connection, secret, known_hosts: listing_transport,
+    )
+
+    def download_batch(
+        self,
+        files,
+        *,
+        run_id,
+        cancel_event=None,
+        on_progress=None,
+        on_outcome=None,
+        destination_paths=None,
+        replace_existing=False,
+        check_disk_space=True,
+    ):
+        del (
+            self,
+            run_id,
+            cancel_event,
+            on_progress,
+            replace_existing,
+            check_disk_space,
+        )
+        outcomes = tuple(
+            DownloadOutcome(
+                remote_file,
+                DownloadStatus.OK,
+                destination_paths[remote_file.identity],
+                attempts=1,
+                bytes_done=remote_file.size_bytes or 0,
+                duration_s=0.001,
+            )
+            for remote_file in files
+        )
+        if on_outcome is not None:
+            for outcome in outcomes:
+                on_outcome(outcome)
+        return outcomes
+
+    monkeypatch.setattr(
+        orchestrator_module.DownloadEngine,
+        "download_files",
+        download_batch,
+    )
+    coordinator = RunCoordinator(
+        database,
+        connections,
+        paths,
+        now=lambda: now,
+    )
+    worker = coordinator.submit_connection(saved.id, trigger="manual")
+    try:
+        assert listing_transport.paused.wait(timeout=10)
+        with database.connect() as connection:
+            run = dict(
+                connection.execute(
+                    "SELECT * FROM runs WHERE status = 'running'"
+                ).fetchone()
+            )
+        snapshot = coordinator.progress.snapshot()["runs"][0]
+
+        assert run["phase"] == "discovering"
+        assert run["files_found"] == batch_size
+        assert run["files_planned"] == batch_size
+        assert run["planned_bytes"] == batch_size
+        assert snapshot["phase"] == "discovering"
+        assert snapshot["files_discovered"] == batch_size
+        assert snapshot["files_planned"] == batch_size
+        assert snapshot["planned_bytes"] == batch_size
+    finally:
+        listing_transport.release.set()
+        worker.join(timeout=10)
+
+    assert worker.is_alive() is False
+    with database.connect() as connection:
+        finished = connection.execute(
+            "SELECT status, files_found FROM runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert finished["status"] == "ok"
+    assert finished["files_found"] == batch_size + 1
 
 
 def test_large_lazy_inventory_uses_bounded_samples_and_queue_batches(

@@ -103,7 +103,7 @@ validar. Si cambias un dato de conectividad, deberás probarla otra vez.
 | **Recursos bajo control** | Tope agregado e individual de ancho de banda, comprobación incremental de espacio y cancelación durante esperas o backoff. |
 | **Contenido sin alteraciones** | Trata cada documento como bytes opacos: no lo decodifica, recodifica ni normaliza durante la descarga. |
 | **Seguridad local** | Secretos protegidos con DPAPI, TLS verificado por defecto y credenciales excluidas de API, logs y exportaciones. |
-| **Trazabilidad accionable** | Progreso, velocidad, ETA, historial por archivo, alertas, CSV, reportes HTML y bundle de soporte. |
+| **Trazabilidad accionable** | Durante el inventario muestra archivos, candidatos, rutas consultadas, entradas leídas y ubicación remota actual; durante la descarga informa progreso, velocidad y ETA. Conserva historial por archivo, alertas, CSV, reportes HTML y bundle de soporte. |
 | **Migración controlada** | Importa backups JSON de Recolecta o StabilityMonitor; cada conexión nace en pausa y las fuentes no compatibles, como SQL Server u Oracle, se informan sin abortar el resto. |
 | **Distribución offline** | Setup autoextraíble y ZIP portable construidos con dependencias inventariadas y verificadas por SHA-256. |
 
@@ -213,12 +213,12 @@ explica recuperación, rotación de credenciales, respaldos y soporte.
 
 | Evidencia | Resultado |
 |-----------|-----------|
-| Rama actual | 447 pruebas aprobadas; 1 omisión esperada por permisos de symlink en Windows. |
-| Cobertura | 87,63 %, por encima de la compuerta obligatoria del 85 %. |
+| Rama actual | 452 pruebas aprobadas; 1 omisión esperada por permisos de symlink en Windows. |
+| Cobertura | 87,56 %, por encima de la compuerta obligatoria del 85 %. |
 | Protocolos | FTP/FTPS, SFTP y WebDAV con smokes locales reales; SMB cubierto por pruebas del cliente, timeout, binarios y reanudación. |
 | Paquete portable | Autodiagnóstico congelado, dashboard y recursos estáticos aprobados. |
 | Instalador | Extracción aislada y autodiagnóstico aprobados sin alterar tareas durante el smoke. |
-| Último release publicado | [`v0.2.4`](https://github.com/castellanosfelipe/Recolecta/releases/tag/v0.2.4), con Setup, ZIP, hashes y evidencias JSON. |
+| Último release publicado | [`v0.2.5`](https://github.com/castellanosfelipe/Recolecta/releases/tag/v0.2.5), con Setup, ZIP, hashes y evidencias JSON. |
 
 Pendientes conocidos: firma de código, validación posterior a reinicio en una
 VM limpia y certificación SMB contra endpoints autenticados representativos.

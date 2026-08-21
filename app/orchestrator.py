@@ -73,6 +73,10 @@ SYSTEMIC_DOWNLOAD_ERRORS = frozenset(
 )
 
 
+class _DiscoveryCancelled(Exception):
+    """Internal signal used to stop a listing between remote locations."""
+
+
 @dataclass(frozen=True)
 class TimeWindow:
     start_utc: datetime
@@ -620,6 +624,9 @@ class RunCoordinator:
             unknown_sized_planned = 0
             unreliable_timestamps = 0
             missing_timestamps = 0
+            locations_visited = 0
+            entries_seen = 0
+            current_remote_path: str | None = None
             mapping_scope = _mapping_scope(connection, self.paths.root)
             destination_root = resolve_destination_root(
                 connection,
@@ -670,12 +677,46 @@ class RunCoordinator:
             quiet_before = started_at.astimezone(timezone.utc) - timedelta(
                 seconds=connection.quiet_period_s
             )
+
+            def report_listing_location(
+                remote_path: str,
+                depth: int,
+                count_location: bool,
+                entries_delta: int,
+            ) -> None:
+                nonlocal locations_visited, entries_seen, current_remote_path
+                if count_location:
+                    locations_visited += 1
+                entries_seen += max(0, entries_delta)
+                current_remote_path = remote_path
+                self.progress.visit_listing_location(
+                    run_id,
+                    remote_path,
+                    depth,
+                    count_location=count_location,
+                    entries_delta=entries_delta,
+                )
+                if count_location and (
+                    locations_visited == 1
+                    or locations_visited % 250 == 0
+                ):
+                    run_log.write(
+                        "discovery_progress",
+                        files_found=total_items,
+                        files_planned=planned_total,
+                        locations_visited=locations_visited,
+                        entries_seen=entries_seen,
+                        current_remote_path=current_remote_path,
+                    )
+
             with _listing_iterator(
                 listing_transport,
                 connection.remote_paths,
                 recursive=discovery_recursive,
                 max_depth=discovery_max_depth,
                 notices=notices,
+                cancel_event=cancel,
+                on_location=report_listing_location,
             ) as discovered:
                 for remote_batch in _iter_batches(
                     discovered,
@@ -872,6 +913,36 @@ class RunCoordinator:
                         run_id=run_id,
                         connection_id=connection.id,
                         items=persistence_batch,
+                    )
+                    discovery_skipped = max(
+                        0,
+                        total_items
+                        - planned_total
+                        - counters[PlanStatus.PATH_INVALID.value],
+                    )
+                    self.runs.update_discovery(
+                        run_id,
+                        files_found=total_items,
+                        files_planned=planned_total,
+                        planned_bytes=planned_bytes,
+                        files_skipped=discovery_skipped,
+                        phase="discovering",
+                    )
+                    self.progress.update_discovery(
+                        run_id,
+                        files_discovered=total_items,
+                        files_planned=planned_total,
+                        planned_bytes=planned_bytes,
+                    )
+                    run_log.write(
+                        "discovery_batch_finished",
+                        files_found=total_items,
+                        files_planned=planned_total,
+                        planned_bytes=planned_bytes,
+                        files_skipped=discovery_skipped,
+                        locations_visited=locations_visited,
+                        entries_seen=entries_seen,
+                        current_remote_path=current_remote_path,
                     )
                     persisted_ids = dict(
                         zip(
@@ -2016,40 +2087,60 @@ def _listing_iterator(
     recursive: bool,
     max_depth: int,
     notices: list[str] | None = None,
+    cancel_event: threading.Event | None = None,
+    on_location: Callable[[str, int, bool, int], None] | None = None,
 ) -> Iterator[Iterator[RemoteFile]]:
     """Close a partially consumed listing before its transport session."""
     discovered: Iterator[RemoteFile] | None = None
+
+    def report_location(
+        path: str,
+        depth: int,
+        count_location: bool,
+        entries_delta: int,
+    ) -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise _DiscoveryCancelled
+        if on_location is not None:
+            on_location(path, depth, count_location, entries_delta)
+
+    transport.set_listing_progress_callback(report_location)
     try:
-        with transport:
-            try:
-                discovered = transport.iter_files(
-                    remote_paths,
-                    recursive=recursive,
-                    max_depth=max_depth,
-                )
-                # Protocol adapters own exception classification.  Keeping
-                # the original exception here avoids presenting application
-                # or parser bugs as a verified remote protocol failure.
-                yield discovered
-            finally:
-                if discovered is not None:
-                    close_discovered = getattr(discovered, "close", None)
-                    if callable(close_discovered):
-                        try:
-                            close_discovered()
-                        except Exception:
-                            # A partially consumed network listing can report
-                            # an abort while its generator is being closed.
-                            # The enclosing transport is closed next, so this
-                            # cleanup error must not turn cancellation (or a
-                            # primary planning error) into a failed run.
-                            logger.warning(
-                                "El iterador remoto informó un error al "
-                                "cerrarse; la sesión se cerrará a "
-                                "continuación.",
-                                exc_info=True,
-                            )
+        try:
+            with transport:
+                try:
+                    discovered = transport.iter_files(
+                        remote_paths,
+                        recursive=recursive,
+                        max_depth=max_depth,
+                    )
+                    # Protocol adapters own exception classification.  Keeping
+                    # the original exception here avoids presenting application
+                    # or parser bugs as a verified remote protocol failure.
+                    yield discovered
+                finally:
+                    if discovered is not None:
+                        close_discovered = getattr(discovered, "close", None)
+                        if callable(close_discovered):
+                            try:
+                                close_discovered()
+                            except Exception:
+                                # A partially consumed network listing can
+                                # report an abort while its generator is being
+                                # closed. The enclosing transport is closed
+                                # next, so cleanup must not mask cancellation
+                                # or a primary planning error.
+                                logger.warning(
+                                    "El iterador remoto informó un error al "
+                                    "cerrarse; la sesión se cerrará a "
+                                    "continuación.",
+                                    exc_info=True,
+                                )
+        except _DiscoveryCancelled:
+            if cancel_event is None or not cancel_event.is_set():
+                raise
     finally:
+        transport.set_listing_progress_callback(None)
         if notices is not None:
             for notice in transport.last_listing_warnings:
                 _append_warning(notices, notice)

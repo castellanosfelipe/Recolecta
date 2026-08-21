@@ -312,6 +312,13 @@ def test_dashboard_exposes_responsive_and_accessible_interactions(
     assert "error ? 12000 : 7000" in script
     assert 'aria-valuetext="Progreso indeterminado;' in script
     assert 'aria-valuenow="${file.percent ?? 0}"' not in script
+    assert 'run.phase === "discovering"' in script
+    assert "archivos encontrados" in script
+    assert "rutas consultadas" in script
+    assert "entradas leídas" in script
+    assert "Exploración en curso" in script
+    assert "Las descargas comenzarán al finalizar el inventario." in script
+    assert "Preparando archivos…" not in script
 
     assert "grid-template-columns: 238px minmax(0, 1fr)" in styles
     assert ".chart-wrap canvas" in styles

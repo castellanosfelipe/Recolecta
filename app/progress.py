@@ -67,6 +67,15 @@ class _RunProgress:
     total_size_bytes: int
     completed_bytes: int
     terminal_statuses: dict[str, int]
+    files_discovered: int
+    files_planned: int
+    planned_bytes: int
+    locations_visited: int
+    entries_seen: int
+    current_remote_path: str | None
+    current_remote_depth: int | None
+    last_activity_at: str
+    last_activity_mono: float
 
 
 class ProgressRegistry:
@@ -123,13 +132,14 @@ class ProgressRegistry:
         started = self._wall_clock()
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
+        started_iso = started.astimezone(timezone.utc).isoformat()
         with self._lock:
             self._runs[run_id] = _RunProgress(
                 run_id=run_id,
                 connection_id=connection_id,
                 connection_name=connection_name,
                 trigger=trigger,
-                started_at=started.astimezone(timezone.utc).isoformat(),
+                started_at=started_iso,
                 started_mono=now,
                 cancel_requested=False,
                 files=progress_files,
@@ -151,7 +161,64 @@ class ProgressRegistry:
                 ),
                 completed_bytes=0,
                 terminal_statuses={},
+                files_discovered=0,
+                files_planned=0,
+                planned_bytes=0,
+                locations_visited=0,
+                entries_seen=0,
+                current_remote_path=None,
+                current_remote_depth=None,
+                last_activity_at=started_iso,
+                last_activity_mono=now,
             )
+
+    def visit_listing_location(
+        self,
+        run_id: int,
+        remote_path: str,
+        depth: int,
+        *,
+        count_location: bool = True,
+        entries_delta: int = 0,
+    ) -> None:
+        """Publish a discovery heartbeat before a remote location is listed."""
+        now = self._monotonic()
+        activity_at = self._activity_timestamp()
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                return
+            if count_location:
+                run.locations_visited += 1
+            run.entries_seen += max(0, entries_delta)
+            run.current_remote_path = remote_path
+            run.current_remote_depth = max(0, depth)
+            run.last_activity_at = activity_at
+            run.last_activity_mono = now
+
+    def update_discovery(
+        self,
+        run_id: int,
+        *,
+        files_discovered: int,
+        files_planned: int,
+        planned_bytes: int,
+    ) -> None:
+        """Publish cumulative inventory counters while discovery continues."""
+        now = self._monotonic()
+        activity_at = self._activity_timestamp()
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                return
+            run.files_discovered = max(
+                run.files_discovered,
+                max(0, files_discovered),
+            )
+            run.files_planned = max(run.files_planned, max(0, files_planned))
+            run.planned_bytes = max(run.planned_bytes, max(0, planned_bytes))
+            run.last_activity_at = activity_at
+            run.last_activity_mono = now
 
     def set_totals(
         self,
@@ -169,6 +236,12 @@ class ProgressRegistry:
             run.files_total = max(0, files_total)
             run.total_size_bytes = max(0, total_size_bytes)
             run.phase = phase
+            run.files_planned = max(run.files_planned, run.files_total)
+            run.planned_bytes = max(run.planned_bytes, run.total_size_bytes)
+            run.current_remote_path = None
+            run.current_remote_depth = None
+            run.last_activity_at = self._activity_timestamp()
+            run.last_activity_mono = self._monotonic()
 
     def add_files(
         self,
@@ -286,6 +359,12 @@ class ProgressRegistry:
             "runs": runs,
         }
 
+    def _activity_timestamp(self) -> str:
+        activity = self._wall_clock()
+        if activity.tzinfo is None:
+            activity = activity.replace(tzinfo=timezone.utc)
+        return activity.astimezone(timezone.utc).isoformat()
+
     @staticmethod
     def _run_snapshot(run: _RunProgress, now: float) -> dict[str, Any]:
         files = [file.snapshot(now) for file in run.files.values()]
@@ -345,6 +424,18 @@ class ProgressRegistry:
             "percent": _percent(total_known, bytes_done),
             "statuses": statuses,
             "files": files,
+            "files_discovered": run.files_discovered,
+            "files_planned": run.files_planned,
+            "planned_bytes": run.planned_bytes,
+            "locations_visited": run.locations_visited,
+            "entries_seen": run.entries_seen,
+            "current_remote_path": run.current_remote_path,
+            "current_remote_depth": run.current_remote_depth,
+            "last_activity_at": run.last_activity_at,
+            "seconds_since_activity": round(
+                max(0.0, now - run.last_activity_mono),
+                1,
+            ),
         }
 
 

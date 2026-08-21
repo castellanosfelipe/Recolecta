@@ -245,6 +245,152 @@ def test_ftp_directory_only_root_finds_nested_files_only_with_recursion() -> Non
     ]
 
 
+def test_ftp_negotiates_mlsd_facts_once_for_recursive_session() -> None:
+    class RecursiveFtp(FakeFtp):
+        def __init__(self) -> None:
+            super().__init__()
+            self.commands: list[str] = []
+
+        def sendcmd(self, command):
+            self.commands.append(command)
+            return "200 OK"
+
+        def mlsd(self, path, facts):
+            if path == "/entrada":
+                return iter(
+                    [
+                        ("uno", {"type": "dir"}),
+                        ("dos", {"type": "dir"}),
+                    ]
+                )
+            return iter(
+                [
+                    (
+                        "documento.pdf",
+                        {
+                            "type": "file",
+                            "size": "12",
+                            "modify": "20260814115121",
+                        },
+                    )
+                ]
+            )
+
+    client = RecursiveFtp()
+    transport = FtpTransport(
+        connection(Protocol.FTP, remote_paths=("/entrada",)),
+        secret="x",
+        client=client,
+    )
+
+    result = transport.list_files(
+        ("/entrada",),
+        recursive=True,
+        max_depth=1,
+    )
+
+    assert len(result.files) == 2
+    assert client.commands.count("OPTS MLST type;size;modify;") == 1
+
+
+def test_ftp_caches_list_fallback_for_recursive_session() -> None:
+    class ListOnlyTreeFtp(FakeFtp):
+        def __init__(self) -> None:
+            super().__init__(mlsd_supported=False)
+            self.mlsd_calls = 0
+            self.commands: list[str] = []
+            self.list_commands: list[str] = []
+
+        def sendcmd(self, command):
+            self.commands.append(command)
+            return "200 OK"
+
+        def mlsd(self, path, facts):
+            self.mlsd_calls += 1
+            raise ftplib.error_perm("500 MLSD not understood")
+
+        def retrlines(self, command, callback):
+            self.list_commands.append(command)
+            if command == "LIST /entrada":
+                callback("drwxr-xr-x 1 owner group 0 Aug 14 2026 uno")
+                callback("drwxr-xr-x 1 owner group 0 Aug 14 2026 dos")
+                return
+            callback(
+                "-rw-r--r-- 1 owner group 12 Aug 14 2026 documento.pdf"
+            )
+
+    client = ListOnlyTreeFtp()
+    transport = FtpTransport(
+        connection(Protocol.FTP, remote_paths=("/entrada",)),
+        secret="x",
+        client=client,
+    )
+
+    result = transport.list_files(
+        ("/entrada",),
+        recursive=True,
+        max_depth=1,
+    )
+
+    assert len(result.files) == 2
+    assert client.mlsd_calls == 1
+    assert client.commands.count("OPTS MLST type;size;modify;") == 1
+    assert client.list_commands == [
+        "LIST /entrada",
+        "LIST /entrada/uno",
+        "LIST /entrada/dos",
+    ]
+
+
+def test_ftp_wide_directory_emits_heartbeat_during_listing() -> None:
+    entries_consumed = 0
+
+    class WideFtp(FakeFtp):
+        def mlsd(self, path, facts):
+            def entries():
+                nonlocal entries_consumed
+                for index in range(1_000):
+                    entries_consumed += 1
+                    yield f"carpeta-{index:04d}", {"type": "dir"}
+
+            return entries()
+
+    class StopListing(Exception):
+        pass
+
+    callbacks: list[tuple[str, int, bool, int]] = []
+
+    def observe(
+        path: str,
+        depth: int,
+        count_location: bool,
+        entries_delta: int,
+    ) -> None:
+        callbacks.append((path, depth, count_location, entries_delta))
+        if not count_location:
+            raise StopListing
+
+    transport = FtpTransport(
+        connection(Protocol.FTP, remote_paths=("/entrada",)),
+        secret="x",
+        client=WideFtp(),
+    )
+    transport.set_listing_progress_callback(observe)
+
+    with pytest.raises(StopListing):
+        transport.list_files(
+            ("/entrada",),
+            recursive=True,
+            max_depth=1,
+        )
+
+    assert callbacks == [
+        ("/entrada", 0, True, 0),
+        ("/entrada", 0, False, 100),
+    ]
+    assert entries_consumed == 100
+
+
 def test_ftp_iter_files_consumes_mlsd_lazily() -> None:
     consumed: list[str] = []
 
